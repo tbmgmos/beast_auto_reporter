@@ -1,0 +1,121 @@
+# Beast Auto Reporter - Configuration
+
+# Audio Analysis Parameters
+audio:
+  # LUFS settings (EBU R128 standard)
+  target_lufs: -23.0
+  lufs_tolerance: 0.5  # ±0.5 LUFS
+  
+  # TRUE PEAK settings
+  true_peak: -2.0  # dBTP
+  
+  # Loudness Range
+  lra_max: 18.0  # LU
+  
+  # Sample rate and bit depth
+  sample_rate: 48000  # 48kHz
+  bit_depth: 24
+
+# Defect Detection Thresholds
+detection:
+  # Click detection
+  click_threshold: 0.05
+  click_min_duration: 0.001  # 1ms
+  
+  # Noise detection (high-frequency hiss)
+  noise_threshold: -60  # dB
+  noise_frequency_range: [8000, 20000]  # Hz
+  
+  # Clipping detection
+  clipping_threshold: -1.0  # dBTP
+  clipping_duration: 0.1  # seconds
+  
+  # Silence detection
+  silence_threshold: -70  # dB
+  silence_duration: 1.0  # seconds
+  
+  # Channel verification (5.1)
+  check_channel_order: true
+  expected_channel_order: ["L", "R", "C", "LFE", "Ls", "Rs"]
+
+# LLM Integration
+llm:
+  # Model selection
+  model: "llama3.2"  # Options: llama3.2, mistral, qwen2.5
+  
+  # Generation parameters
+  temperature: 0.7
+  max_tokens: 2000
+  
+  # Language
+  language: "ru"  # ru or en
+  
+  # Ollama settings
+  ollama_host: "http://localhost:11434"
+  timeout: 60
+
+# Report Generation
+report:
+  # Company info
+  company_name: "Beast Audio QC"
+  company_logo: null  # Path to logo image
+  
+  # Report metadata
+  include_metadata: true
+  include_graphs: true
+  include_spectrograms: false  # CPU intensive
+  
+  # Severity levels
+  severity_levels:
+    blocker: "БЛОКЕР"
+    fix_required: "ТРЕБУЕТ ИСПРАВЛЕНИЯ"
+    comment_required: "ТРЕБУЕТ КОММЕНТАРИЯ"
+  
+  # File naming
+  output_prefix: "report"
+  date_format: "%Y_%m_%d"
+  
+  # PDF settings
+  pdf:
+    page_size: "A4"
+    dpi: 300
+    include_watermark: false
+  
+  # DOCX settings
+  docx:
+    template: "templates/report_template.docx"
+    font: "Arial"
+    font_size: 11
+
+# UI Settings
+ui:
+  theme: "light"  # light or dark
+  language: "ru"
+  max_file_size_mb: 2000  # 2GB
+  
+  # Progress updates
+  show_progress: true
+  progress_interval: 1  # seconds
+  
+  # Preview
+  waveform_preview: true
+  spectrogram_preview: false
+
+# Advanced
+advanced:
+  # Multiprocessing
+  use_multiprocessing: true
+  num_workers: 4  # or "auto"
+  
+  # Caching
+  cache_analysis: true
+  cache_dir: "cache/"
+  
+  # Logging
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: "logs/beast_reporter.log"
+  
+  # Performance
+  chunk_size: 10  # seconds for processing
+  memory_limit_gb: 8
+

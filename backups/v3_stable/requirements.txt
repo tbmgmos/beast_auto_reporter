@@ -1,0 +1,39 @@
+# Audio Analysis
+pyloudnorm==0.1.1
+librosa==0.10.1
+scipy==1.11.4
+pydub==0.25.1
+soundfile==0.12.1
+ffmpeg-python==0.2.0
+
+# LLM Integration (Local)
+ollama==0.1.6
+langchain==0.1.0
+langchain-community==0.0.13
+
+# Report Generation
+pandas==2.1.4
+matplotlib==3.8.2
+seaborn==0.13.0
+reportlab==4.0.7
+python-docx==1.1.0
+Pillow==10.1.0
+
+# Web UI
+streamlit==1.29.0
+streamlit-option-menu==0.3.6
+
+# Utilities
+pyyaml==6.0.1
+numpy==1.26.2
+tqdm==4.66.1
+python-dateutil==2.8.2
+
+# Development
+pytest==7.4.3
+black==23.12.1
+flake8==6.1.0
+
+# Desktop GUI
+PyQt5==5.15.11
+

@@ -1,0 +1,166 @@
+# AI Prompts для Beast Auto Reporter
+
+# Основной промпт для генерации заключения
+main_conclusion_prompt: |
+  Ты - профессиональный звукорежиссер и специалист по контролю качества аудио.
+  На основе предоставленных данных анализа аудиофайла, напиши профессиональное заключение.
+  
+  Включи в заключение:
+  1. Общую оценку качества
+  2. Анализ соответствия стандартам (EBU R128)
+  3. Описание основных проблем
+  4. Рекомендации по исправлению
+  5. Итоговый вывод
+  
+  Пиши на русском языке, профессионально но понятно.
+
+# Промпт для описания дефектов
+defect_description_prompt: |
+  Опиши аудио дефект профессионально и кратко.
+  Тип дефекта: {defect_type}
+  Локация: {timecode}
+  Детали: {details}
+  
+  Используй терминологию звукорежиссуры.
+
+# Промпт для рекомендаций
+recommendations_prompt: |
+  На основе следующих дефектов, предложи конкретные рекомендации по исправлению:
+  
+  Дефекты:
+  {defects_list}
+  
+  Дай практические советы по:
+  1. Инструментам для исправления
+  2. Настройкам обработки
+  3. Приоритетам исправления
+
+# Промпт для краткого резюме
+summary_prompt: |
+  Создай краткое резюме (2-3 предложения) качества аудио на основе:
+  
+  LUFS: {lufs}
+  TRUE PEAK: {true_peak}
+  LRA: {lra}
+  Дефектов: {defects_count}
+  
+  Укажи, готов ли материал к использованию.
+
+# Системные промпты для разных моделей
+system_prompts:
+  llama3.2: |
+    You are a professional audio engineer and quality control specialist.
+    Analyze audio measurements and provide expert conclusions in Russian.
+    Use technical terminology appropriately.
+  
+  mistral: |
+    Tu es un ingénieur du son professionnel. 
+    Fournis des conclusions techniques en russe sur la qualité audio.
+  
+  qwen2.5: |
+    你是专业的音频工程师。请用俄语提供音频质量分析。
+
+# Шаблоны описаний дефектов
+defect_templates:
+  clipping:
+    ru: "В данном фрагменте {context} звучит пережато. Ощущение, что есть перегруз"
+    en: "In this segment {context} sounds clipped. Apparent overload"
+  
+  click:
+    ru: "Посторонний щёлкающий звук{location}"
+    en: "Extraneous click sound{location}"
+  
+  high_frequency_noise:
+    ru: "В данном фрагменте слышно высокочастотное шипение на {context}"
+    en: "High-frequency hiss audible in this segment on {context}"
+  
+  silence:
+    ru: "В данном фрагменте отсутствует звук"
+    en: "No audio present in this segment"
+  
+  channel_order:
+    ru: "В звуковой дорожке 5.1 перепутана последовательность каналов"
+    en: "Channel order is incorrect in 5.1 audio track"
+  
+  desync:
+    ru: "В данном фрагменте реплика актёра выглядит немного несинхронно"
+    en: "Audio appears slightly out of sync in this segment"
+  
+  splice:
+    ru: "Слышна склейка в аудио"
+    en: "Audible splice in audio"
+
+# Контекстные варианты
+contexts:
+  dialog:
+    ru: "реплика актёра"
+    en: "actor's line"
+  
+  dialogs:
+    ru: "реплики актёров"
+    en: "actors' lines"
+  
+  music:
+    ru: "музыка"
+    en: "music"
+  
+  effects:
+    ru: "звуковые эффекты"
+    en: "sound effects"
+  
+  ambience:
+    ru: "фоновый звук"
+    en: "ambient sound"
+
+# Severity descriptions
+severity_descriptions:
+  blocker:
+    ru: "КРИТИЧНЫЙ - требует обязательного исправления перед релизом"
+    en: "CRITICAL - must be fixed before release"
+  
+  fix_required:
+    ru: "ВАЖНЫЙ - настоятельно рекомендуется исправить"
+    en: "IMPORTANT - strongly recommended to fix"
+  
+  comment_required:
+    ru: "НЕКРИТИЧНЫЙ - требует комментария или проверки"
+    en: "MINOR - requires comment or review"
+
+# Рекомендации по исправлению
+fix_recommendations:
+  clipping:
+    ru: |
+      Рекомендации:
+      - Снизить общий уровень громкости на 3-6 dB
+      - Использовать limiting с софт-клиппингом
+      - Проверить исходные записи на предмет перегруза
+    en: |
+      Recommendations:
+      - Reduce overall level by 3-6 dB
+      - Use limiting with soft clipping
+      - Check source recordings for overload
+  
+  clicks:
+    ru: |
+      Рекомендации:
+      - Использовать iZotope RX Declicker
+      - Ручное редактирование в редакторе
+      - Проверить источник на механические повреждения
+    en: |
+      Recommendations:
+      - Use iZotope RX Declicker
+      - Manual editing in waveform editor
+      - Check source for mechanical damage
+  
+  high_frequency_noise:
+    ru: |
+      Рекомендации:
+      - Применить де-эссер
+      - Использовать EQ для подавления 8-12 kHz
+      - Проверить настройки микрофона при записи
+    en: |
+      Recommendations:
+      - Apply de-esser
+      - Use EQ to reduce 8-12 kHz
+      - Check microphone settings during recording
+
