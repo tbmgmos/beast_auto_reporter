@@ -252,12 +252,30 @@ class ProcessingThread(QThread):
             report_name = f"отчет_{base_name}_rus.docx"
             report_path = output_folder / report_name
             
+            # Определяем пути к PDF файлам (приоритет: cens версии, потом общие)
+            pdf_20_path = None
+            pdf_51_path = None
+            
+            if files.get('pdf_20_c'):
+                pdf_20_path = str(files['pdf_20_c'])
+            elif files.get('pdf_20_uc'):
+                pdf_20_path = str(files['pdf_20_uc'])
+            elif files.get('pdf_20'):
+                pdf_20_path = str(files['pdf_20'])
+            
+            if files.get('pdf_51_c'):
+                pdf_51_path = str(files['pdf_51_c'])
+            elif files.get('pdf_51_uc'):
+                pdf_51_path = str(files['pdf_51_uc'])
+            elif files.get('pdf_51'):
+                pdf_51_path = str(files['pdf_51'])
+            
             self.app.report_gen.create_exact_report(
                 issues=issues,
                 output_path=str(report_path),
                 tech_info=tech_info,
-                pdf_20_path=str(files['pdf_20']) if files.get('pdf_20') else None,
-                pdf_51_path=str(files['pdf_51']) if files.get('pdf_51') else None,
+                pdf_20_path=pdf_20_path,
+                pdf_51_path=pdf_51_path,
                 conclusion_technical=technical_conclusion,
                 conclusion_subjective=subjective_conclusion,
                 report_type=self.report_type
