@@ -519,9 +519,28 @@ class ExactReportGenerator:
                 self._format_cell(cell, bg="D9D9D9", bold=True, align="center", font_size=9, vertical_align="center")
             
             # Строки 3-5: Данные M&E (только 2.0 ME, 5.1 ME, VIDEO)
+            # Определяем правильные PDF ключи с приоритетом
+            pdf_20_key = None
+            pdf_51_key = None
+            
+            if tech_info:
+                if 'pdf_20_c' in tech_info:
+                    pdf_20_key = 'pdf_20_c'
+                elif 'pdf_20_uc' in tech_info:
+                    pdf_20_key = 'pdf_20_uc'
+                elif 'pdf_20' in tech_info:
+                    pdf_20_key = 'pdf_20'
+                
+                if 'pdf_51_c' in tech_info:
+                    pdf_51_key = 'pdf_51_c'
+                elif 'pdf_51_uc' in tech_info:
+                    pdf_51_key = 'pdf_51_uc'
+                elif 'pdf_51' in tech_info:
+                    pdf_51_key = 'pdf_51'
+            
             rows_data = [
-                ("2.0 ME", "audio_20_c", "pdf_20"),
-                ("5.1 ME", "audio_51_c", "pdf_51"),
+                ("2.0 ME", "audio_20_c", pdf_20_key),
+                ("5.1 ME", "audio_51_c", pdf_51_key),
                 ("VIDEO", "video", None)
             ]
             
