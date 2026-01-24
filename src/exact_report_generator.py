@@ -356,11 +356,10 @@ class ExactReportGenerator:
                         self._format_cell(row.cells[6], bg=format_bg, align="left")
                     
                     elif key == 'video':
-                        # Для видео - показываем формат и таймкод
+                        # Для видео - показываем только формат и FPS
                         video_format = data.get('format', 'MOV')
-                        timecode = data.get('timecode', '01:00:00:00')
                         fps_video = data.get('fps', 25)
-                        format_text = f"{video_format} {fps_video}fps, TC: {timecode}"
+                        format_text = f"{video_format} {fps_video}fps"
                         row.cells[6].text = format_text
                         self._format_cell(row.cells[6], bg="00FA02", align="left")
                 
@@ -659,11 +658,10 @@ class ExactReportGenerator:
                         format_bg = "00FA02" if is_complete else "FBBA18"
                         self._format_cell(row.cells[4], bg=format_bg, align="left")
                     elif key == 'video':
-                        # Формат видео
+                        # Формат видео - только формат и FPS
                         video_format = data.get('format', 'MOV')
-                        timecode = data.get('timecode', '01:00:00:00')
                         fps_video = data.get('fps', 25)
-                        format_text = f"{video_format} {fps_video}fps, TC: {timecode}"
+                        format_text = f"{video_format} {fps_video}fps"
                         row.cells[4].text = format_text
                         self._format_cell(row.cells[4], bg="00FA02", align="left")
             
