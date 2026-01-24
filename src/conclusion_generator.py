@@ -109,9 +109,12 @@ class ConclusionGenerator:
                 # TRUE PEAK
                 true_peak = pdf_data.get('true_peak')
                 if true_peak is not None and true_peak > target_peak:
+                    # Добавляем знак + для положительных значений
+                    sign = "+" if true_peak > 0 else ""
+                    target_sign = "+" if target_peak > 0 else ""
                     problems.append(
                         f"Максимальный пик (TRUE PEAK) фонограммы {file_type} "
-                        f"({true_peak:.1f} dBTP) превышает допустимое значение ({target_peak:.1f} dBTP)"
+                        f"({sign}{true_peak:.1f} dBTP) превышает допустимое значение ({target_sign}{target_peak:.1f} dBTP)"
                     )
                 
                 # LRA

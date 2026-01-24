@@ -304,7 +304,9 @@ class ExactReportGenerator:
                         # TRUE PEAK с цветовой индикацией
                         true_peak = pdf_data.get('true_peak')
                         if true_peak is not None:
-                            row.cells[4].text = f"{true_peak:.1f} dBTP"
+                            # Добавляем знак + для положительных значений
+                            sign = "+" if true_peak > 0 else ""
+                            row.cells[4].text = f"{sign}{true_peak:.1f} dBTP"
                             # Проверка нормы (должен быть МЕНЬШЕ target_peak)
                             if true_peak <= target_peak:
                                 peak_bg = "00FA02"  # Зеленый - норма
@@ -379,7 +381,9 @@ class ExactReportGenerator:
                     # TRUE PEAK
                     true_peak = pdf_data.get('true_peak')
                     if true_peak is not None:
-                        row.cells[4].text = f"{true_peak:.1f} dBTP"
+                        # Добавляем знак + для положительных значений
+                        sign = "+" if true_peak > 0 else ""
+                        row.cells[4].text = f"{sign}{true_peak:.1f} dBTP"
                         if true_peak <= target_peak:
                             peak_bg = "00FA02"
                         else:
@@ -628,10 +632,12 @@ class ExactReportGenerator:
                         pdf_data = tech_info[pdf_key]
                         true_peak = pdf_data.get('true_peak')
                         if true_peak is not None:
-                            row.cells[3].text = f"{true_peak:.1f} dBTP"
+                            # Добавляем знак + для положительных значений
+                            sign = "+" if true_peak > 0 else ""
+                            row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
                             peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
                             self._format_cell(row.cells[3], bg=peak_bg, align="center")
-                            logger.info(f"M&E: {label} TRUE PEAK форматирован ({true_peak:.1f} dBTP)")
+                            logger.info(f"M&E: {label} TRUE PEAK форматирован ({sign}{true_peak:.1f} dBTP)")
                         else:
                             # Если нет данных TRUE PEAK для аудио
                             row.cells[3].text = ""
