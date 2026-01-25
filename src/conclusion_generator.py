@@ -334,7 +334,7 @@ class ConclusionGenerator:
     
     def _generate_subjective_with_llm(self, issues: List[Issue]) -> str:
         """
-        Генерация субъективного заключения через Ollama (ЧИСТЫЙ промпт)
+        ГИБРИДНАЯ генерация: Python группирует, затем формирует по правилам
         
         Args:
             issues: Список проблем из CSV
@@ -343,82 +343,171 @@ class ConclusionGenerator:
             Сгенерированное заключение
         """
         try:
-            import ollama
-            
             # Разделяем блокеры и обычные проблемы
             blockers = [issue for issue in issues if issue.blocker]
             regular_issues = [issue for issue in issues if not issue.blocker]
             
-            # Формируем простой список проблем
-            all_problems = []
+            # Группируем обычные проблемы по типу
+            groups = self._smart_group_issues(regular_issues)
             
-            if blockers:
-                all_problems.append("БЛОКЕРЫ (критические):")
-                for b in blockers:
-                    all_problems.append(f"  {b.timecode_in} - {b.description}")
-                all_problems.append("")
+            # Формируем заключение
+            conclusion_lines = ["По субъективной оценке выявлены следующие недочёты:", ""]
             
-            if regular_issues:
-                all_problems.append("ОБЫЧНЫЕ ПРОБЛЕМЫ:")
-                for r in regular_issues:
-                    all_problems.append(f"  {r.timecode_in} - {r.description}")
+            # 1. БЛОКЕРЫ - всегда первыми с таймкодами
+            for blocker in blockers:
+                conclusion_lines.append(f"-    На таймкоде {blocker.timecode_in}: {blocker.description}")
             
-            problems_text = "\n".join(all_problems)
+            # 2. ОБЫЧНЫЕ ПРОБЛЕМЫ - применяем правила
+            for group_type, items in groups.items():
+                count = len(items)
+                
+                if count == 1:
+                    # Единичная проблема - с таймкодом
+                    item = items[0]
+                    conclusion_lines.append(f"-    На таймкоде {item.timecode_in} {self._format_single_issue(item.description)}")
+                
+                elif count in [2, 3] and self._is_important_type(group_type):
+                    # Важные проблемы 2-3 раза - перечисляем таймкоды
+                    timecodes = [item.timecode_in for item in items]
+                    if count == 2:
+                        tc_text = f"{timecodes[0]} и {timecodes[1]}"
+                    else:
+                        tc_text = f"{timecodes[0]}, {timecodes[1]} и {timecodes[2]}"
+                    conclusion_lines.append(f"-    На таймкодах {tc_text} {self._format_multiple_issue(group_type, items)}")
+                
+                else:
+                    # Массовые (4+) или неважные повторяющиеся - обобщаем БЕЗ таймкодов
+                    conclusion_lines.append(f"-    {self._format_generalized_issue(group_type, items)}")
             
-            prompt = f"""Проанализируй проблемы и составь заключение.
-
-{problems_text}
-
-ПРАВИЛА:
-1. Начни с: "По субъективной оценке выявлены следующие недочёты:"
-2. Блокеры - ПЕРВЫМИ, формат: "- На таймкоде 01:00:10:08: [описание]"
-3. Если проблема 1 раз → с таймкодом: "- На таймкоде XX:XX:XX:XX присутствует..."
-4. Если 2-3 раза И важная → перечисли таймкоды: "- На таймкодах 01:19:09:23, 01:19:25:20 и 01:21:34:16 присутствуют реплики, которые выглядят несинхронно"
-5. Если 4+ раз → обобщи БЕЗ таймкодов: "- В фонограмме присутствуют посторонние щёлкающие звуки"
-6. Щелчки И слюна (если обоих 4+) → "- В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны"
-
-Примеры фраз:
-- В фонограмме слышно высокочастотное шипение на репликах актёров
-- Некоторые реплики звучат пережато. Ощущение, что есть перегруз
-- В нескольких фрагментах изменяется реверберация на речи актёров
-- Есть ряд не исправленных маркеров (не исправлена маскировка...)
-
-ТОЛЬКО заключение, БЕЗ пояснений:"""
+            # Специальная обработка щелчков и слюны
+            conclusion_text = self._merge_clicks_and_saliva('\n'.join(conclusion_lines))
             
-            logger.info("Генерация субъективного заключения через Ollama...")
-            
-            response = ollama.generate(
-                model='llama3.2',
-                prompt=prompt,
-                options={
-                    'temperature': 0.2,
-                    'num_predict': 800
-                }
-            )
-            
-            conclusion = response['response'].strip()
-            
-            # Убираем лишнее если LLM добавил
-            lines = conclusion.split('\n')
-            clean_lines = []
-            for line in lines:
-                # Пропускаем строки с инструкциями
-                if any(x in line.lower() for x in ['правила', 'примеры', 'важно:', 'критически', 'сложные проблемы']):
-                    continue
-                clean_lines.append(line)
-            
-            conclusion = '\n'.join(clean_lines).strip()
-            
-            # Проверяем начало
-            if not conclusion.startswith("По субъективной оценке"):
-                conclusion = "По субъективной оценке выявлены следующие недочёты:\n\n" + conclusion
-            
-            logger.info("Субъективное заключение сгенерировано через Ollama")
-            return conclusion
+            logger.info(f"Субъективное заключение сформировано (блокеров: {len(blockers)}, групп: {len(groups)})")
+            return conclusion_text
             
         except Exception as e:
-            logger.error(f"Ошибка Ollama при генерации субъективного заключения: {e}")
+            logger.error(f"Ошибка при генерации субъективного заключения: {e}")
             raise
+    
+    def _smart_group_issues(self, issues: List[Issue]) -> dict:
+        """Умная группировка проблем по типам"""
+        groups = {}
+        
+        for issue in issues:
+            desc = issue.description.lower()
+            
+            # Определяем тип проблемы
+            if any(kw in desc for kw in ['щелч', 'щёлк', 'клик', 'click', 'цокан']):
+                group_type = 'щелчки'
+            elif any(kw in desc for kw in ['слюна', 'слюн']):
+                group_type = 'слюна'
+            elif any(kw in desc for kw in ['шип', 'шипение']):
+                group_type = 'шипение'
+            elif any(kw in desc for kw in ['синхрон', 'синхр', 'несинх']):
+                group_type = 'несинхронность'
+            elif any(kw in desc for kw in ['перегруз', 'пережат', 'клиппинг']):
+                group_type = 'перегруз'
+            elif any(kw in desc for kw in ['реверб', 'ревербер']):
+                group_type = 'реверберация'
+            elif any(kw in desc for kw in ['отсутств', 'нет звука', 'без звука']):
+                group_type = 'отсутствие_звука'
+            elif any(kw in desc for kw in ['треск', 'трещ']):
+                group_type = 'треск'
+            elif any(kw in desc for kw in ['шум', 'шуршан', 'noise']):
+                group_type = 'шумы'
+            elif any(kw in desc for kw in ['маскир', 'цензур', 'нецензур']):
+                group_type = 'маскировка'
+            elif any(kw in desc for kw in ['исправлен', 'попытк']):
+                group_type = 'исправления'
+            else:
+                group_type = f'другое_{len(groups)}'  # Уникальные проблемы
+            
+            if group_type not in groups:
+                groups[group_type] = []
+            groups[group_type].append(issue)
+        
+        return groups
+    
+    def _is_important_type(self, group_type: str) -> bool:
+        """Проверка, является ли тип проблемы важным для перечисления таймкодов"""
+        important = ['несинхронность', 'отсутствие_звука', 'маскировка', 'реверберация']
+        return group_type in important
+    
+    def _format_single_issue(self, description: str) -> str:
+        """Форматирование единичной проблемы"""
+        desc = description.strip()
+        if desc.startswith('В данном фрагменте'):
+            desc = desc[len('В данном фрагменте'):].strip()
+        if not desc[0].islower():
+            desc = desc[0].lower() + desc[1:]
+        return f"присутствует {desc}" if not desc.startswith('присутств') else desc
+    
+    def _format_multiple_issue(self, group_type: str, items: List[Issue]) -> str:
+        """Форматирование для 2-3 важных проблем"""
+        if group_type == 'несинхронность':
+            return "присутствуют реплики, которые выглядят несинхронно с изображением"
+        elif group_type == 'отсутствие_звука':
+            return "отсутствует звук"
+        elif group_type == 'маскировка':
+            return "отсутствует маскировка нецензурной лексики"
+        elif group_type == 'реверберация':
+            return "изменяется реверберация на речи актёров"
+        return "присутствуют проблемы"
+    
+    def _format_generalized_issue(self, group_type: str, items: List[Issue]) -> str:
+        """Форматирование обобщенной проблемы (4+ случаев)"""
+        if group_type == 'щелчки':
+            return "В фонограмме присутствуют посторонние щёлкающие звуки"
+        elif group_type == 'слюна':
+            return "В фонограмме присутствуют яркие звуки слюны"
+        elif group_type == 'шипение':
+            return "В фонограмме слышно высокочастотное шипение на репликах актёров"
+        elif group_type == 'несинхронность':
+            return "В некоторых фрагментах реплики актёров выглядят несинхронно с изображением"
+        elif group_type == 'перегруз':
+            return "Некоторые реплики звучат пережато. Ощущение, что есть перегруз"
+        elif group_type == 'реверберация':
+            return "В нескольких фрагментах изменяется реверберация на речи актёров на несоответствующую пространству в кадре"
+        elif group_type == 'треск':
+            return "В фонограмме присутствуют посторонние трескающие звуки"
+        elif group_type == 'шумы':
+            return "В фонограмме присутствуют посторонние шумы"
+        elif group_type == 'исправления':
+            return "Есть ряд маркеров, где были попытки исправления, однако проблемы остались"
+        else:
+            # Уникальные проблемы - берем описание из первой
+            return items[0].description
+    
+    def _merge_clicks_and_saliva(self, text: str) -> str:
+        """Объединение щелчков и слюны если оба встречаются"""
+        lines = text.split('\n')
+        
+        clicks_line = None
+        saliva_line = None
+        clicks_idx = None
+        saliva_idx = None
+        
+        for i, line in enumerate(lines):
+            if 'посторонние щёлкающие звуки' in line:
+                clicks_line = line
+                clicks_idx = i
+            if 'яркие звуки слюны' in line:
+                saliva_line = line
+                saliva_idx = i
+        
+        # Если нашли обе обобщенные фразы - объединяем
+        if clicks_line and saliva_line and clicks_idx is not None and saliva_idx is not None:
+            merged_line = "-    В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны"
+            # Удаляем обе строки и вставляем объединенную
+            new_lines = []
+            for i, line in enumerate(lines):
+                if i == min(clicks_idx, saliva_idx):
+                    new_lines.append(merged_line)
+                elif i not in [clicks_idx, saliva_idx]:
+                    new_lines.append(line)
+            return '\n'.join(new_lines)
+        
+        return text
     
     def generate_conclusion(self, issues: List[Issue], categories: dict, tech_info: dict = None) -> str:
         """
