@@ -221,81 +221,47 @@ class ConclusionGenerator:
         if not issues:
             return "По субъективной оценке нареканий не обнаружено"
         
-        # Если включен LLM - генерируем через Ollama
+        # Если включен LLM - генерируем через Ollama (ВСЕГДА приоритет)
         if self.use_llm:
             try:
                 return self._generate_subjective_with_llm(issues)
             except Exception as e:
                 logger.error(f"Ошибка генерации через Ollama: {e}")
-                logger.info("Переключаемся на шаблонную генерацию")
-                # Продолжаем с шаблонным методом
+                logger.warning("LLM недоступен, используем упрощенное заключение")
+                # Fallback - простое перечисление
+                return self._generate_simple_fallback(issues)
+        else:
+            # Без LLM - простое перечисление
+            return self._generate_simple_fallback(issues)
+    
+    def _generate_simple_fallback(self, issues: List[Issue]) -> str:
+        """
+        Упрощенное заключение без LLM (fallback)
         
+        Args:
+            issues: Список проблем
+            
+        Returns:
+            Простое заключение со списком проблем
+        """
         # Разделяем блокеры и обычные проблемы
         blockers = [issue for issue in issues if issue.blocker]
         regular_issues = [issue for issue in issues if not issue.blocker]
         
-        # Группируем обычные проблемы по типам
-        problem_groups = self._group_issues_by_type(regular_issues)
-        
-        # Убираем "другие проблемы" из основного списка
-        other_problems = problem_groups.pop('другие проблемы', [])
-        
-        # Формируем список недочетов
         problem_list = []
         
-        # СНАЧАЛА ДОБАВЛЯЕМ ВСЕ БЛОКЕРЫ С ТАЙМКОДАМИ
+        # Блокеры всегда с таймкодами
         for blocker in blockers:
-            problem_list.append(
-                f"На таймкоде {blocker.timecode_in}: {blocker.description}"
-            )
+            problem_list.append(f"На таймкоде {blocker.timecode_in}: {blocker.description}")
         
-        # ЗАТЕМ ОБРАБАТЫВАЕМ ОБЫЧНЫЕ ПРОБЛЕМЫ
-        # Сначала проверяем, нужно ли объединить щелчки и слюну
-        clicks = problem_groups.pop('щелчки', [])
-        saliva = problem_groups.pop('слюна', [])
+        # Обычные проблемы - все с таймкодами (простой fallback)
+        for issue in regular_issues:
+            problem_list.append(f"На таймкоде {issue.timecode_in}: {issue.description}")
         
-        # Если И щелчки, И слюна встречаются больше 1 раза → объединяем
-        if len(clicks) > 1 and len(saliva) > 1:
-            problem_list.append("В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны")
-        else:
-            # Обрабатываем щелчки отдельно
-            if len(clicks) == 1:
-                issue = clicks[0]
-                problem_list.append(f"На таймкоде {issue.timecode_in} присутствуют посторонние щёлкающие звуки")
-            elif len(clicks) > 1:
-                problem_list.append("В фонограмме присутствуют посторонние щёлкающие звуки")
-            
-            # Обрабатываем слюну отдельно
-            if len(saliva) == 1:
-                issue = saliva[0]
-                problem_list.append(f"На таймкоде {issue.timecode_in} присутствуют яркие звуки слюны")
-            elif len(saliva) > 1:
-                problem_list.append("В фонограмме присутствуют яркие звуки слюны")
-        
-        # Обрабатываем остальные группы
-        for problem_type, items in sorted(problem_groups.items(), key=lambda x: len(x[1]), reverse=True):
-            if problem_type == 'другие проблемы':
-                continue  # Обработаем позже
-            
-            if len(items) == 1:
-                # ЕДИНИЧНАЯ проблема - указываем с таймкодом
-                issue = items[0]
-                problem_list.append(f"На таймкоде {issue.timecode_in} присутствует {problem_type}")
-            else:
-                # 2 И БОЛЕЕ раз - ОБОБЩАЕМ БЕЗ таймкодов и количества
-                problem_list.append(f"В фонограмме присутствует {problem_type}")
-        
-        # Обрабатываем "другие проблемы" (НЕ блокеры) - всегда с таймкодами, т.к. уникальные
-        for issue in other_problems:
-            problem_list.append(
-                f"На таймкоде {issue.timecode_in}: {issue.description}"
-            )
-        
-        # Формируем финальное заключение
         conclusion = "По субъективной оценке выявлены следующие недочёты:\n"
         conclusion += "\n".join(f"- {problem}" for problem in problem_list)
         
-        logger.info(f"Субъективное заключение: {len(issues)} проблем (блокеров: {len(blockers)})")
+        logger.info(f"Субъективное заключение (fallback): {len(issues)} проблем")
         return conclusion
     
     def _generate_technical_with_llm(self, problems: list) -> str:
