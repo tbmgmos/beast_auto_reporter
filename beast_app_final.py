@@ -268,6 +268,24 @@ class ProcessingThread(QThread):
             self.status_update.emit("📄 Генерация итогового отчета...")
             self.progress_update.emit(90)
             
+            # Логируем tech_info перед генерацией
+            logger.info("=== TECH_INFO ПЕРЕД ГЕНЕРАЦИЕЙ ОТЧЕТА ===")
+            if tech_info:
+                for key, value in tech_info.items():
+                    if value:
+                        if key == 'video':
+                            logger.info(f"  {key}: файл={value.get('file_name')}, duration={value.get('duration')}, fps={value.get('fps')}, format={value.get('format')}")
+                        elif key == 'params':
+                            logger.info(f"  {key}: {value}")
+                        elif key.startswith('pdf'):
+                            logger.info(f"  {key}: lufs={value.get('lufs')}, peak={value.get('true_peak')}, lra={value.get('lra')}")
+                        elif key.startswith('audio'):
+                            logger.info(f"  {key}: файл={value.get('file_name')}, duration={value.get('duration')}")
+                    else:
+                        logger.warning(f"  {key}: ПУСТО!")
+            else:
+                logger.error("  tech_info = None!")
+            
             # Название файла берется из base_name (дата уже в нем)
             report_name = f"отчет_{base_name}_rus.docx"
             report_path = output_folder / report_name
@@ -355,7 +373,7 @@ class BeastAutoReporterFinalApp(QMainWindow):
         # Инициализация компонентов
         self.csv_importer = CSVImporter()
         self.tech_extractor = TechnicalInfoExtractor()
-        self.conclusion_gen = ConclusionGenerator(use_llm=True)  # С Ollama для генерации заключений
+        self.conclusion_gen = ConclusionGenerator(use_llm=False)  # По умолчанию ВЫКЛЮЧЕНО (как в стабильной версии)
         self.report_gen = ExactReportGenerator()
         self.pdf_extractor = PDFExtractor()
         
