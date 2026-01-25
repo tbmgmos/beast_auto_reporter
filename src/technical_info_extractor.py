@@ -14,6 +14,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 import re
+import subprocess
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,30 @@ class TechnicalInfoExtractor:
     
     def __init__(self):
         logger.info("TechnicalInfoExtractor инициализирован")
+        self.ffprobe_path = self._find_ffprobe()
+    
+    def _find_ffprobe(self) -> str:
+        """Поиск ffprobe в системе"""
+        # Сначала проверяем через shutil.which (проверяет PATH)
+        ffprobe = shutil.which('ffprobe')
+        if ffprobe:
+            logger.info(f"✅ ffprobe найден в PATH: {ffprobe}")
+            return ffprobe
+        
+        # Если не нашли в PATH, проверяем стандартные места установки (Homebrew)
+        common_paths = [
+            '/opt/homebrew/bin/ffprobe',  # Apple Silicon Homebrew
+            '/usr/local/bin/ffprobe',      # Intel Homebrew
+            '/usr/bin/ffprobe',            # System
+        ]
+        
+        for path in common_paths:
+            if Path(path).exists():
+                logger.info(f"✅ ffprobe найден: {path}")
+                return path
+        
+        logger.error("❌ ffprobe не найден! Установите FFmpeg: brew install ffmpeg")
+        return 'ffprobe'  # Возвращаем имя команды на случай если все же есть в PATH
     
     def extract_audio_info(self, file_path: str) -> Dict:
         """
@@ -112,12 +138,11 @@ class TechnicalInfoExtractor:
             
             logger.info(f"✅ Файл существует: {file_path_obj.name} ({file_path_obj.stat().st_size} bytes)")
             
-            # Используем ffmpeg для получения информации
-            import subprocess
+            # Используем ffprobe для получения информации
             import json
             
             cmd = [
-                'ffprobe',
+                self.ffprobe_path,  # Используем найденный путь
                 '-v', 'quiet',
                 '-print_format', 'json',
                 '-show_format',
@@ -125,7 +150,7 @@ class TechnicalInfoExtractor:
                 file_path
             ]
             
-            logger.info(f"🔍 Запуск ffprobe для видео...")
+            logger.info(f"🔍 Запуск ffprobe: {self.ffprobe_path}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             
             if result.returncode != 0:

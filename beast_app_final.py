@@ -33,6 +33,30 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def find_ffprobe() -> str:
+    """Поиск ffprobe в системе"""
+    # Сначала проверяем через shutil.which (проверяет PATH)
+    ffprobe = shutil.which('ffprobe')
+    if ffprobe:
+        logger.info(f"✅ ffprobe найден в PATH: {ffprobe}")
+        return ffprobe
+    
+    # Если не нашли в PATH, проверяем стандартные места установки (Homebrew)
+    common_paths = [
+        '/opt/homebrew/bin/ffprobe',  # Apple Silicon Homebrew
+        '/usr/local/bin/ffprobe',      # Intel Homebrew
+        '/usr/bin/ffprobe',            # System
+    ]
+    
+    for path in common_paths:
+        if Path(path).exists():
+            logger.info(f"✅ ffprobe найден: {path}")
+            return path
+    
+    logger.error("❌ ffprobe не найден! Установите FFmpeg: brew install ffmpeg")
+    return 'ffprobe'  # Возвращаем имя команды на случай если все же есть в PATH
+
+
 class ProcessingThread(QThread):
     """Поток для обработки файлов"""
     
@@ -899,8 +923,9 @@ class BeastAutoReporterFinalApp(QMainWindow):
                     else:
                         try:
                             import subprocess
+                            ffprobe_cmd = find_ffprobe()
                             result = subprocess.run(
-                                ['ffprobe', '-v', 'error', '-select_streams', 'a:0', 
+                                [ffprobe_cmd, '-v', 'error', '-select_streams', 'a:0', 
                                  '-show_entries', 'stream=channels', '-of', 
                                  'default=noprint_wrappers=1:nokey=1', str(file_path)],
                                 capture_output=True, text=True, timeout=5
