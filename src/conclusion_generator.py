@@ -416,7 +416,7 @@ class ConclusionGenerator:
             desc = issue.description.lower()
             
             # Определяем тип проблемы
-            if any(kw in desc for kw in ['щелч', 'щёлк', 'клик', 'click', 'цокан']):
+            if any(kw in desc for kw in ['щелч', 'щёлк', 'клик', 'click', 'цокан', 'щелкающ']):
                 group_type = 'щелчки'
             elif any(kw in desc for kw in ['слюна', 'слюн']):
                 group_type = 'слюна'
@@ -438,15 +438,14 @@ class ConclusionGenerator:
                 group_type = 'маскировка'
             elif any(kw in desc for kw in ['исправлен', 'попытк']):
                 group_type = 'исправления'
-            elif any(kw in desc for kw in ['замена', 'видна замена']):
+            elif any(kw in desc for kw in ['замена', 'видна замена', 'виден', 'видно']):
                 group_type = 'замена_текста'
-            elif any(kw in desc for kw in ['голос', 'реплик']):
+            elif any(kw in desc for kw in ['неразбор', 'разбор', 'непонятн', 'голос', 'реплик']):
                 group_type = 'проблемы_реплик'
             elif any(kw in desc for kw in ['звук', 'атмосфер']):
                 group_type = 'атмосфера'
             else:
-                # Уникальные проблемы - каждую в свою группу для сохранения
-                # Но НЕ создаем их бесконечно, а группируем в 'другие'
+                # Уникальные проблемы группируем в 'другие'
                 group_type = 'другие_проблемы'
             
             if group_type not in groups:
@@ -501,6 +500,10 @@ class ConclusionGenerator:
             return "В фонограмме присутствуют посторонние шумы"
         elif group_type == 'исправления':
             return "Есть ряд маркеров, где были попытки исправления, однако проблемы остались"
+        elif group_type == 'проблемы_реплик':
+            return "В нескольких фрагментах присутствуют реплики с проблемами разборчивости"
+        elif group_type == 'замена_текста':
+            return "В нескольких фрагментах видна замена текста"
         else:
             # Уникальные проблемы - берем описание из первой
             return items[0].description
