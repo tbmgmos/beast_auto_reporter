@@ -242,12 +242,25 @@ class ProcessingThread(QThread):
             self.status_update.emit("📝 Генерация заключения...")
             self.progress_update.emit(70)
             
-            # Техническая оценка (на основе технических параметров и PDF)
-            params = tech_info.get('params', {}) if tech_info else {}
-            technical_conclusion = self.app.conclusion_gen.generate_technical_conclusion(tech_info, params)
-            
-            # Субъективная оценка (на основе проблем из CSV)
-            subjective_conclusion = self.app.conclusion_gen.generate_subjective_conclusion(issues)
+            # Проверяем тип отчета для специальных случаев
+            if self.report_type == "me_ours":
+                # M&E наши работы - всё идеально
+                technical_conclusion = "По технической оценке нареканий не выявлено."
+                subjective_conclusion = "Ниже предоставлен список внесенных изменений:\n\n[ЗАПОЛНИТЬ ВРУЧНУЮ]"
+                logger.info("M&E наши работы: используются идеальные шаблоны")
+            elif self.report_type == "tifflo":
+                # TIFFLO - идеальный отчет
+                technical_conclusion = "По технической оценке нареканий не выявлено."
+                subjective_conclusion = "По субъективной оценке нареканий не обнаружено."
+                logger.info("TIFFLO: идеальный отчет без замечаний")
+            else:
+                # Стандартная генерация для основного и M&E отчетов
+                # Техническая оценка (на основе технических параметров и PDF)
+                params = tech_info.get('params', {}) if tech_info else {}
+                technical_conclusion = self.app.conclusion_gen.generate_technical_conclusion(tech_info, params)
+                
+                # Субъективная оценка (на основе проблем из CSV)
+                subjective_conclusion = self.app.conclusion_gen.generate_subjective_conclusion(issues)
             
             logger.info("Заключения сгенерированы")
             
@@ -400,12 +413,12 @@ class BeastAutoReporterFinalApp(QMainWindow):
         report_type_label.setStyleSheet("background: transparent; border: none; color: #1f77b4;")
         report_type_layout.addWidget(report_type_label)
         
-        # Радиокнопки в горизонтальном layout
-        radio_layout = QHBoxLayout()
-        radio_layout.setSpacing(30)
+        # Первый ряд радиокнопок (стандартные отчеты)
+        radio_layout_1 = QHBoxLayout()
+        radio_layout_1.setSpacing(20)
         
         self.report_type_main = QRadioButton("🎵 Основной (с LOUDNESS, TRUE PEAK, LRA)")
-        self.report_type_main.setFont(QFont("Arial", 11))
+        self.report_type_main.setFont(QFont("Arial", 10))
         self.report_type_main.setChecked(True)  # По умолчанию
         self.report_type_main.setStyleSheet("""
             QRadioButton {
@@ -419,10 +432,10 @@ class BeastAutoReporterFinalApp(QMainWindow):
                 height: 18px;
             }
         """)
-        radio_layout.addWidget(self.report_type_main)
+        radio_layout_1.addWidget(self.report_type_main)
         
         self.report_type_me = QRadioButton("🎼 M&E (только TRUE PEAK)")
-        self.report_type_me.setFont(QFont("Arial", 11))
+        self.report_type_me.setFont(QFont("Arial", 10))
         self.report_type_me.setStyleSheet("""
             QRadioButton {
                 background: transparent;
@@ -435,10 +448,51 @@ class BeastAutoReporterFinalApp(QMainWindow):
                 height: 18px;
             }
         """)
-        radio_layout.addWidget(self.report_type_me)
+        radio_layout_1.addWidget(self.report_type_me)
         
-        radio_layout.addStretch()
-        report_type_layout.addLayout(radio_layout)
+        radio_layout_1.addStretch()
+        report_type_layout.addLayout(radio_layout_1)
+        
+        # Второй ряд радиокнопок (наши работы)
+        radio_layout_2 = QHBoxLayout()
+        radio_layout_2.setSpacing(20)
+        
+        self.report_type_me_ours = QRadioButton("✅ M&E (наши работы)")
+        self.report_type_me_ours.setFont(QFont("Arial", 10))
+        self.report_type_me_ours.setStyleSheet("""
+            QRadioButton {
+                background: transparent;
+                border: none;
+                spacing: 8px;
+                color: #2e7d32;
+                font-weight: bold;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+            }
+        """)
+        radio_layout_2.addWidget(self.report_type_me_ours)
+        
+        self.report_type_tifflo = QRadioButton("🎬 TIFFLO (идеальный)")
+        self.report_type_tifflo.setFont(QFont("Arial", 10))
+        self.report_type_tifflo.setStyleSheet("""
+            QRadioButton {
+                background: transparent;
+                border: none;
+                spacing: 8px;
+                color: #2e7d32;
+                font-weight: bold;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+            }
+        """)
+        radio_layout_2.addWidget(self.report_type_tifflo)
+        
+        radio_layout_2.addStretch()
+        report_type_layout.addLayout(radio_layout_2)
         
         report_type_group.setLayout(report_type_layout)
         layout.addWidget(report_type_group)
@@ -633,7 +687,14 @@ class BeastAutoReporterFinalApp(QMainWindow):
         self.progress_bar.setValue(0)
         
         # Определяем тип отчета
-        report_type = "me" if self.report_type_me.isChecked() else "main"
+        if self.report_type_me.isChecked():
+            report_type = "me"
+        elif self.report_type_me_ours.isChecked():
+            report_type = "me_ours"
+        elif self.report_type_tifflo.isChecked():
+            report_type = "tifflo"
+        else:
+            report_type = "main"
         
         self.processing_thread = ProcessingThread(self, self.input_folder, report_type)
         self.processing_thread.status_update.connect(self.update_status)
