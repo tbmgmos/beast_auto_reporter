@@ -701,14 +701,18 @@ class BeastAutoReporterFinalApp(QMainWindow):
             # Включаем AI генерацию
             self.conclusion_gen = ConclusionGenerator(use_llm=True)
             logger.info("✨ AI генерация ВКЛЮЧЕНА (Ollama)")
+            logger.info(f"   ConclusionGenerator.use_llm = {self.conclusion_gen.use_llm}")
             self.status_label.setText("🤖 AI режим активирован")
             self.status_label.setStyleSheet("color: #F57C00; padding: 8px; background: transparent; font-weight: 600;")
+            QMessageBox.information(self, "AI включен", "✨ AI генерация субъективной оценки АКТИВИРОВАНА\n\nПри создании отчета будет использоваться Ollama для генерации заключений.")
         else:
             # Выключаем AI генерацию (заглушка)
             self.conclusion_gen = ConclusionGenerator(use_llm=False)
             logger.info("📝 AI генерация ВЫКЛЮЧЕНА (ручное заполнение)")
+            logger.info(f"   ConclusionGenerator.use_llm = {self.conclusion_gen.use_llm}")
             self.status_label.setText("📝 Ручное заполнение")
             self.status_label.setStyleSheet("color: #49454F; padding: 8px; background: transparent;")
+            QMessageBox.information(self, "AI выключен", "📝 AI генерация ВЫКЛЮЧЕНА\n\nСубъективная оценка будет добавлена с заглушкой [ЗАПОЛНИТЬ ВРУЧНУЮ].")
     
     def process_folder(self):
         """Запуск обработки"""
