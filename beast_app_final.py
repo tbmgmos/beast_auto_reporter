@@ -15,7 +15,7 @@ import logging
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QFileDialog, QProgressBar, QMessageBox, QRadioButton
+    QPushButton, QLabel, QFileDialog, QProgressBar, QMessageBox, QRadioButton, QCheckBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QColor
