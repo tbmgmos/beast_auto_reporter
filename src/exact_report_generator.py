@@ -584,6 +584,14 @@ class ExactReportGenerator:
                 
                 has_data = tech_info and key in tech_info and tech_info[key]
                 
+                if not has_data:
+                    logger.warning(f"M&E: Нет данных для {label} (key={key})")
+                    # Оставляем ячейки пустыми
+                    for col in range(1, 5):
+                        row.cells[col].text = ""
+                        self._format_cell(row.cells[col], bg="FFFFFF", align="center")
+                    continue
+                
                 if has_data:
                     data = tech_info[key]
                     
@@ -601,7 +609,11 @@ class ExactReportGenerator:
                         logger.warning(f"⚠️  M&E: Название файла с ошибкой: {file_name}")
                     
                     if key == 'video':
-                        logger.info(f"M&E: Обработка VIDEO, файл: {data.get('file_name', 'N/A')}")
+                        logger.info(f"M&E: Обработка VIDEO")
+                        logger.info(f"  - файл: {data.get('file_name', 'N/A')}")
+                        logger.info(f"  - duration: {data.get('duration', 0)}")
+                        logger.info(f"  - format: {data.get('format', 'N/A')}")
+                        logger.info(f"  - fps: {data.get('fps', 'N/A')}")
                     
                     # Хронометраж
                     duration = data.get('duration', 0)

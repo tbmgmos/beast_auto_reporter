@@ -188,7 +188,14 @@ class ProcessingThread(QThread):
                 tech_info['audio_51_uc'] = self.app.tech_extractor.extract_audio_info(str(files['audio_51_uc']))
             
             if files['video']:
+                logger.info(f"📹 Извлекаем информацию из видеофайла: {files['video']}")
                 tech_info['video'] = self.app.tech_extractor.extract_video_info(str(files['video']))
+                if tech_info['video']:
+                    logger.info(f"✅ Видео: {tech_info['video'].get('file_name')}, duration={tech_info['video'].get('duration')}, fps={tech_info['video'].get('fps')}, format={tech_info['video'].get('format')}")
+                else:
+                    logger.warning(f"⚠️  Видео: Не удалось извлечь информацию")
+            else:
+                logger.warning("⚠️  Видеофайл не найден в files")
             
             # Извлекаем параметры
             if files['params']:
