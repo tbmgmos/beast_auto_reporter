@@ -64,7 +64,8 @@ class ExactReportGenerator:
             
             # === 1. ТЕХНИЧЕСКАЯ ТАБЛИЦА с заключением ===
             if tech_info:
-                if report_type == "me":
+                if report_type == "me" or report_type == "me_ours":
+                    # Используем M&E таблицу для обычных M&E и наших работ
                     self._add_me_technical_table(
                         doc, tech_info, conclusion_technical, conclusion_subjective
                     )
