@@ -96,7 +96,7 @@ class TechnicalInfoExtractor:
             Словарь с техническими параметрами
         """
         try:
-            logger.info(f"Извлечение информации из видео: {file_path}")
+            logger.info(f"🎬 Извлечение информации из видео: {file_path}")
             
             file_path_obj = Path(file_path)
             
@@ -113,97 +113,127 @@ class TechnicalInfoExtractor:
                 file_path
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            logger.info(f"🔍 Запуск ffprobe для видео...")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                format_data = data.get('format', {})
-                
-                # Ищем аудио стрим
-                audio_stream = None
-                video_stream = None
-                for stream in data.get('streams', []):
-                    if stream.get('codec_type') == 'audio' and not audio_stream:
-                        audio_stream = stream
-                    elif stream.get('codec_type') == 'video' and not video_stream:
-                        video_stream = stream
-                
-                # Если есть аудио или видео стрим
-                if audio_stream or video_stream:
-                    # Извлекаем таймкод из метаданных
-                    timecode = None
-                    
-                    # Пробуем разные источники таймкода
-                    tags = format_data.get('tags', {})
-                    if 'timecode' in tags:
-                        timecode = tags['timecode']
-                    elif 'creation_time' in tags:
-                        timecode = tags['creation_time']
-                    
-                    # Проверяем метаданные видео стрима
-                    if not timecode and video_stream:
-                        video_tags = video_stream.get('tags', {})
-                        if 'timecode' in video_tags:
-                            timecode = video_tags['timecode']
-                    
-                    # Извлекаем FPS из видео потока СНАЧАЛА
-                    fps = 25  # По умолчанию
-                    if video_stream:
-                        # Пытаемся извлечь FPS
-                        fps_str = video_stream.get('r_frame_rate', '25/1')
-                        if '/' in fps_str:
-                            num, denom = fps_str.split('/')
-                            fps = round(float(num) / float(denom))
-                        else:
-                            fps = round(float(fps_str))
-                        
-                        # Определяем, 24 или 25 fps (округляем к ближайшему)
-                        if abs(fps - 24) < abs(fps - 25):
-                            fps = 24
-                        else:
-                            fps = 25
-                    
-                    # Если таймкода нет, используем start_time
-                    if not timecode:
-                        start_time = float(format_data.get('start_time', 0))
-                        if start_time > 0:
-                            # Конвертируем в таймкод, используя извлеченный FPS
-                            hours = int(start_time // 3600)
-                            mins = int((start_time % 3600) // 60)
-                            secs = int(start_time % 60)
-                            frames = int((start_time % 1) * fps)  # Используем извлеченный FPS
-                            timecode = f"{hours:02d}:{mins:02d}:{secs:02d}:{frames:02d}"
-                        else:
-                            # Используем 01:00:00:00 по умолчанию
-                            timecode = "01:00:00:00"
-                    
-                    tech_info = {
-                        'file_name': file_path_obj.name,
-                        'format': file_path_obj.suffix.upper().replace('.', ''),
-                        'duration': float(format_data.get('duration', 0)),
-                        'timecode': timecode,
-                        'fps': fps  # Добавляем FPS
-                    }
-                    
-                    # Добавляем аудио параметры если есть
-                    if audio_stream:
-                        tech_info.update({
-                            'sample_rate': int(audio_stream.get('sample_rate', 0)),
-                            'bit_depth': audio_stream.get('sample_fmt', 'Unknown'),
-                            'channels': audio_stream.get('channels', 0),
-                            'channel_order': self._get_channel_order(audio_stream.get('channels', 0)),
-                            'codec': audio_stream.get('codec_name', 'Unknown')
-                        })
-                        logger.info(f"Видео параметры: {tech_info['sample_rate']}Hz, {tech_info['channels']}ch, TC: {tech_info['timecode']}")
-                    else:
-                        logger.info(f"Видео параметры: TC: {tech_info['timecode']}, длительность: {tech_info['duration']:.2f}с")
-                    
-                    return tech_info
+            if result.returncode != 0:
+                logger.error(f"❌ ffprobe вернул код {result.returncode}")
+                logger.error(f"stderr: {result.stderr}")
+                return {}
             
+            data = json.loads(result.stdout)
+            format_data = data.get('format', {})
+            streams = data.get('streams', [])
+            
+            logger.info(f"📊 Найдено {len(streams)} потоков в видео файле")
+            
+            # Ищем аудио и видео стримы
+            audio_stream = None
+            video_stream = None
+            for idx, stream in enumerate(streams):
+                codec_type = stream.get('codec_type')
+                logger.info(f"  Поток {idx}: тип={codec_type}, codec={stream.get('codec_name')}")
+                
+                if codec_type == 'audio' and not audio_stream:
+                    audio_stream = stream
+                    logger.info(f"  ✅ Аудио поток найден")
+                elif codec_type == 'video' and not video_stream:
+                    video_stream = stream
+                    logger.info(f"  ✅ Видео поток найден")
+            
+            # Если нет ни аудио, ни видео потока
+            if not audio_stream and not video_stream:
+                logger.warning(f"⚠️  Не найдено аудио или видео потоков в файле")
+                return {}
+            
+            # Извлекаем таймкод из метаданных
+            timecode = None
+            
+            # Пробуем разные источники таймкода
+            tags = format_data.get('tags', {})
+            if 'timecode' in tags:
+                timecode = tags['timecode']
+            elif 'creation_time' in tags:
+                timecode = tags['creation_time']
+            
+            # Проверяем метаданные видео стрима
+            if not timecode and video_stream:
+                video_tags = video_stream.get('tags', {})
+                if 'timecode' in video_tags:
+                    timecode = video_tags['timecode']
+            
+            # Извлекаем FPS из видео потока СНАЧАЛА
+            fps = 25  # По умолчанию
+            if video_stream:
+                # Пытаемся извлечь FPS
+                fps_str = video_stream.get('r_frame_rate', '25/1')
+                logger.info(f"🎞️  FPS (raw): {fps_str}")
+                if '/' in fps_str:
+                    num, denom = fps_str.split('/')
+                    fps = round(float(num) / float(denom))
+                else:
+                    fps = round(float(fps_str))
+                
+                # Определяем, 24 или 25 fps (округляем к ближайшему)
+                if abs(fps - 24) < abs(fps - 25):
+                    fps = 24
+                else:
+                    fps = 25
+                
+                logger.info(f"🎞️  FPS (итоговый): {fps}")
+            
+            # Если таймкода нет, используем start_time
+            if not timecode:
+                start_time = float(format_data.get('start_time', 0))
+                if start_time > 0:
+                    # Конвертируем в таймкод, используя извлеченный FPS
+                    hours = int(start_time // 3600)
+                    mins = int((start_time % 3600) // 60)
+                    secs = int(start_time % 60)
+                    frames = int((start_time % 1) * fps)  # Используем извлеченный FPS
+                    timecode = f"{hours:02d}:{mins:02d}:{secs:02d}:{frames:02d}"
+                else:
+                    # Используем 01:00:00:00 по умолчанию
+                    timecode = "01:00:00:00"
+            
+            duration = float(format_data.get('duration', 0))
+            video_format = file_path_obj.suffix.upper().replace('.', '')
+            
+            tech_info = {
+                'file_name': file_path_obj.name,
+                'format': video_format,
+                'duration': duration,
+                'timecode': timecode,
+                'fps': fps  # Добавляем FPS
+            }
+            
+            logger.info(f"✅ Видео информация извлечена:")
+            logger.info(f"   - Файл: {tech_info['file_name']}")
+            logger.info(f"   - Формат: {tech_info['format']}")
+            logger.info(f"   - Длительность: {tech_info['duration']:.2f}с")
+            logger.info(f"   - FPS: {tech_info['fps']}")
+            logger.info(f"   - Таймкод: {tech_info['timecode']}")
+            
+            # Добавляем аудио параметры если есть
+            if audio_stream:
+                tech_info.update({
+                    'sample_rate': int(audio_stream.get('sample_rate', 0)),
+                    'bit_depth': audio_stream.get('sample_fmt', 'Unknown'),
+                    'channels': audio_stream.get('channels', 0),
+                    'channel_order': self._get_channel_order(audio_stream.get('channels', 0)),
+                    'codec': audio_stream.get('codec_name', 'Unknown')
+                })
+                logger.info(f"   - Аудио: {tech_info['sample_rate']}Hz, {tech_info['channels']}ch")
+            
+            return tech_info
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ ffprobe timeout при обработке видео")
             return {}
-            
         except Exception as e:
-            logger.error(f"Ошибка извлечения информации из видео: {e}")
+            logger.error(f"❌ Ошибка извлечения информации из видео: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {}
     
     def read_params_file(self, params_path: str) -> Dict:

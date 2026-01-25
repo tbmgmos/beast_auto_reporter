@@ -912,9 +912,10 @@ class BeastAutoReporterFinalApp(QMainWindow):
                         except Exception as e:
                             logger.warning(f"⚠️  Не удалось определить тип аудио {file_path.name}: {e}")
                 
-                # Видео
-                elif file_path.suffix.lower() in ['.mp4', '.mov', '.mkv', '.avi']:
+                # Видео (расширенный список форматов)
+                elif file_path.suffix.lower() in ['.mp4', '.mov', '.mkv', '.avi', '.mxf', '.m4v', '.webm', '.flv']:
                     files['video'] = file_path
+                    logger.info(f"🎬 Видеофайл найден: {file_path.name}")
                 
                 # PDF файлы (улучшенная логика поиска с поддержкой cens/uncens)
                 elif file_path.suffix.lower() == '.pdf':
