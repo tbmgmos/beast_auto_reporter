@@ -51,27 +51,123 @@ class ConclusionGenerator:
         target_lra = params.get('lra_max', 15.0) if params else 15.0
         lufs_tolerance = 0.5
         
+        # Проверяем LUFS, TRUE PEAK, LRA для PDF файлов
+        lufs_issues_20 = []
+        lufs_issues_51 = []
+        peak_issues_20 = []
+        peak_issues_51 = []
+        lra_issues_20 = []
+        lra_issues_51 = []
+        
+        for pdf_key in ['pdf_20_c', 'pdf_20_uc', 'pdf_20', 'pdf_51_c', 'pdf_51_uc', 'pdf_51']:
+            if pdf_key in tech_info and tech_info[pdf_key]:
+                pdf_data = tech_info[pdf_key]
+                is_20 = "20" in pdf_key
+                
+                # LUFS
+                lufs = pdf_data.get('lufs')
+                if lufs is not None and abs(lufs - target_lufs) > lufs_tolerance:
+                    if is_20:
+                        lufs_issues_20.append(lufs)
+                    else:
+                        lufs_issues_51.append(lufs)
+                
+                # TRUE PEAK
+                true_peak = pdf_data.get('true_peak')
+                if true_peak is not None and true_peak > target_peak:
+                    if is_20:
+                        peak_issues_20.append(true_peak)
+                    else:
+                        peak_issues_51.append(true_peak)
+                
+                # LRA
+                lra = pdf_data.get('lra')
+                if lra is not None and lra > target_lra:
+                    if is_20:
+                        lra_issues_20.append(lra)
+                    else:
+                        lra_issues_51.append(lra)
+        
+        # Формируем проблемы по интегральной громкости
+        if lufs_issues_20 and lufs_issues_51:
+            problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограммах 2.0 и 5.1")
+        elif lufs_issues_20:
+            problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограмме 2.0")
+        elif lufs_issues_51:
+            problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограмме 5.1")
+        
+        # Формируем проблемы по пиковым значениям
+        if peak_issues_20 and peak_issues_51:
+            problems.append("Параметр «пиковые значения» превышает допустимое значение в фонограммах 2.0 и 5.1")
+        elif peak_issues_20:
+            problems.append("Параметр «пиковые значения» превышает допустимое значение в фонограмме 2.0")
+        elif peak_issues_51:
+            problems.append("Параметр «пиковые значения» превышает допустимое значение в фонограмме 5.1")
+        
+        # Формируем проблемы по диапазону громкости
+        if lra_issues_20 and lra_issues_51:
+            problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограммах 2.0 и 5.1")
+        elif lra_issues_20:
+            problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограмме 2.0")
+        elif lra_issues_51:
+            problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограмме 5.1")
+        
+        # Проверяем порядок каналов для 5.1
+        for audio_key in ['audio_51_c', 'audio_51_uc']:
+            if audio_key in tech_info and tech_info[audio_key]:
+                data = tech_info[audio_key]
+                channel_order = data.get('channel_order', '')
+                # Проверяем, заполнен ли порядок каналов (если нет запятых, значит неполный)
+                if channel_order and ',' not in channel_order and 'Stereo' not in channel_order:
+                    problems.append("Некорректный порядок каналов в 5.1 дорожке")
+                    break
+        
         # Проверяем хронометраж
-        durations = []
-        file_names = []
+        durations = {}
+        has_video = False
+        has_audio = False
+        
         for key in ['audio_20_c', 'audio_51_c', 'audio_20_uc', 'audio_51_uc', 'video']:
             if key in tech_info and tech_info[key]:
                 data = tech_info[key]
-                if data.get('duration'):
-                    durations.append(data['duration'])
-                    file_names.append(data.get('file_name', key))
+                duration = data.get('duration')
+                if duration and duration > 0:
+                    durations[key] = duration
+                    if key == 'video':
+                        has_video = True
+                    elif key.startswith('audio'):
+                        has_audio = True
         
         # Проверяем совпадение хронометража
         if len(durations) > 1:
-            reference_duration = durations[0]
-            mismatches = []
-            for i, duration in enumerate(durations[1:], start=1):
-                if abs(duration - reference_duration) > 0.1:  # Допуск 100 мс
-                    diff = abs(duration - reference_duration)
-                    mismatches.append(f"{file_names[i]} (разница {diff:.3f} сек)")
+            duration_list = list(durations.values())
+            reference_duration = duration_list[0]
             
-            if mismatches:
-                problems.append(f"Хронометраж не совпадает между файлами: {', '.join(mismatches)}")
+            # Проверяем несовпадение видео и аудио
+            video_audio_mismatch = False
+            audio_mismatch = False
+            
+            if has_video and has_audio:
+                video_dur = durations.get('video', 0)
+                for key, dur in durations.items():
+                    if key.startswith('audio'):
+                        if abs(dur - video_dur) > 0.1:  # Допуск 100 мс
+                            video_audio_mismatch = True
+                            break
+            
+            # Проверяем несовпадение между аудиофайлами
+            audio_durations = [dur for key, dur in durations.items() if key.startswith('audio')]
+            if len(audio_durations) > 1:
+                ref_audio = audio_durations[0]
+                for dur in audio_durations[1:]:
+                    if abs(dur - ref_audio) > 0.1:
+                        audio_mismatch = True
+                        break
+            
+            if video_audio_mismatch:
+                problems.append("Хронометраж видеофайла и аудиодорожек не совпадает")
+            elif audio_mismatch:
+                problems.append("Звуковые файлы имеют разный хронометраж")
         
         # Проверяем кратность кадру (24 или 25 fps)
         if '_frame_issues' in tech_info and tech_info['_frame_issues']:
@@ -92,42 +188,9 @@ class ConclusionGenerator:
                     f"({fps} fps, длительность кадра {frame_duration_ms:.2f} мс)"
                 )
         
-        # Проверяем LUFS, TRUE PEAK, LRA для PDF файлов
-        for pdf_key in ['pdf_20', 'pdf_51']:
-            if pdf_key in tech_info and tech_info[pdf_key]:
-                pdf_data = tech_info[pdf_key]
-                file_type = "2.0" if "20" in pdf_key else "5.1"
-                
-                # LUFS
-                lufs = pdf_data.get('lufs')
-                if lufs is not None and abs(lufs - target_lufs) > lufs_tolerance:
-                    problems.append(
-                        f"Интегральная громкость (LUFS) фонограммы {file_type} "
-                        f"({lufs:.1f} LUFS) отклоняется от номинального значения ({target_lufs:.1f} LUFS)"
-                    )
-                
-                # TRUE PEAK
-                true_peak = pdf_data.get('true_peak')
-                if true_peak is not None and true_peak > target_peak:
-                    # Добавляем знак + для положительных значений
-                    sign = "+" if true_peak > 0 else ""
-                    target_sign = "+" if target_peak > 0 else ""
-                    problems.append(
-                        f"Максимальный пик (TRUE PEAK) фонограммы {file_type} "
-                        f"({sign}{true_peak:.1f} dBTP) превышает допустимое значение ({target_sign}{target_peak:.1f} dBTP)"
-                    )
-                
-                # LRA
-                lra = pdf_data.get('lra')
-                if lra is not None and lra > target_lra:
-                    problems.append(
-                        f"Динамический диапазон (LRA) фонограммы {file_type} "
-                        f"({lra:.1f} LU) превышает допустимое значение ({target_lra:.1f} LU)"
-                    )
-        
         # Формируем заключение
         if not problems:
-            return "По техническим характеристикам нареканий не выявлено"
+            return "По технической оценке нареканий не обнаружено"
         
         # Если включен LLM - генерируем через Ollama
         if self.use_llm:
@@ -156,7 +219,7 @@ class ConclusionGenerator:
             Текст субъективного заключения
         """
         if not issues:
-            return "По субъективной оценке нареканий не выявлено"
+            return "По субъективной оценке нареканий не обнаружено"
         
         # Если включен LLM - генерируем через Ollama
         if self.use_llm:
@@ -167,8 +230,12 @@ class ConclusionGenerator:
                 logger.info("Переключаемся на шаблонную генерацию")
                 # Продолжаем с шаблонным методом
         
-        # Группируем проблемы по типам
-        problem_groups = self._group_issues_by_type(issues)
+        # Разделяем блокеры и обычные проблемы
+        blockers = [issue for issue in issues if issue.blocker]
+        regular_issues = [issue for issue in issues if not issue.blocker]
+        
+        # Группируем обычные проблемы по типам
+        problem_groups = self._group_issues_by_type(regular_issues)
         
         # Убираем "другие проблемы" из основного списка
         other_problems = problem_groups.pop('другие проблемы', [])
@@ -176,6 +243,13 @@ class ConclusionGenerator:
         # Формируем список недочетов
         problem_list = []
         
+        # СНАЧАЛА ДОБАВЛЯЕМ ВСЕ БЛОКЕРЫ С ТАЙМКОДАМИ
+        for blocker in blockers:
+            problem_list.append(
+                f"На таймкоде {blocker.timecode_in}: {blocker.description}"
+            )
+        
+        # ЗАТЕМ ОБРАБАТЫВАЕМ ОБЫЧНЫЕ ПРОБЛЕМЫ
         # Обрабатываем каждую группу
         for problem_type, items in sorted(problem_groups.items(), key=lambda x: len(x[1]), reverse=True):
             # Специальная обработка для щелчков и слюны
@@ -210,27 +284,18 @@ class ConclusionGenerator:
                 # Повторяющаяся проблема - обобщаем БЕЗ количества
                 problem_list.append(f"В фонограмме присутствует {problem_type}")
         
-        # Обрабатываем "другие проблемы"
+        # Обрабатываем "другие проблемы" (НЕ блокеры)
         for issue in other_problems:
             # Каждую "другую проблему" показываем с таймкодом
             problem_list.append(
-                f"На таймкоде {issue.timecode_in}: {issue.description.lower()}"
+                f"На таймкоде {issue.timecode_in}: {issue.description}"
             )
-        
-        # Добавляем информацию о критичности
-        blockers = sum(1 for i in issues if i.blocker)
-        fix_required = sum(1 for i in issues if i.fix_required)
-        
-        if blockers > 0:
-            problem_list.append(f"Обнаружено {blockers} критических дефектов, требующих обязательного исправления")
-        elif fix_required > 5:
-            problem_list.append(f"Выявлено {fix_required} замечаний, требующих исправления")
         
         # Формируем финальное заключение
         conclusion = "По субъективной оценке выявлены следующие недочёты:\n"
         conclusion += "\n".join(f"- {problem}" for problem in problem_list)
         
-        logger.info(f"Субъективное заключение: {len(issues)} проблем")
+        logger.info(f"Субъективное заключение: {len(issues)} проблем (блокеров: {len(blockers)})")
         return conclusion
     
     def _generate_technical_with_llm(self, problems: list) -> str:
@@ -314,10 +379,19 @@ class ConclusionGenerator:
         try:
             import ollama
             
-            # Группируем проблемы для анализа
-            problem_groups = self._group_issues_by_type(issues)
+            # Разделяем блокеры и обычные проблемы
+            blockers = [issue for issue in issues if issue.blocker]
+            regular_issues = [issue for issue in issues if not issue.blocker]
             
-            # Формируем краткое описание проблем
+            # Группируем обычные проблемы для анализа
+            problem_groups = self._group_issues_by_type(regular_issues)
+            
+            # Формируем список блокеров
+            blocker_list = []
+            for blocker in blockers:
+                blocker_list.append(f"- {blocker.timecode_in}: {blocker.description}")
+            
+            # Формируем краткое описание обычных проблем
             problem_summary = []
             for problem_type, items in sorted(problem_groups.items(), key=lambda x: len(x[1]), reverse=True):
                 if problem_type != 'другие проблемы':
@@ -331,55 +405,57 @@ class ConclusionGenerator:
                 for item in problem_groups['другие проблемы'][:3]:
                     problem_summary.append(f"- {item.timecode_in}: {item.description}")
             
-            # Считаем критичность
-            blockers = sum(1 for i in issues if i.blocker)
-            fix_required = sum(1 for i in issues if i.fix_required)
-            
             prompt = f"""Ты - эксперт по аудио контролю качества. Составь субъективное заключение по выявленным проблемам в фонограмме.
 
 ВАЖНО: Начни заключение СТРОГО с фразы "По субъективной оценке выявлены следующие недочёты:"
 
-ВЫЯВЛЕННЫЕ ПРОБЛЕМЫ:
+БЛОКЕРЫ (критические проблемы - ОБЯЗАТЕЛЬНО указывай с таймкодами В НАЧАЛЕ):
+{chr(10).join(blocker_list) if blocker_list else "Нет критических проблем"}
+
+ОБЫЧНЫЕ ПРОБЛЕМЫ:
 {chr(10).join(problem_summary)}
 
 СТАТИСТИКА:
 - Всего проблем: {len(issues)}
-- Критических (блокеров): {blockers}
-- Требуют исправления: {fix_required}
+- Критических (блокеров): {len(blockers)}
+- Обычных проблем: {len(regular_issues)}
 
 ТРЕБОВАНИЯ К ЗАКЛЮЧЕНИЮ:
 1. Начни СТРОГО с "По субъективной оценке выявлены следующие недочёты:"
 2. После заголовка перейди на новую строку
 3. Каждую проблему начинай с "- " (дефис с пробелом)
-4. Используй простой, понятный язык без излишней технической терминологии
+4. СНАЧАЛА перечисли ВСЕ БЛОКЕРЫ с их таймкодами и описаниями (формат: "- На таймкоде XX:XX:XX:XX: описание")
+5. ЗАТЕМ перечисли обычные проблемы по правилам ниже
 
-ПРАВИЛА ФОРМУЛИРОВОК:
-• Если проблема встречается 1 раз - укажи таймкод в начале:
+ПРАВИЛА ДЛЯ ОБЫЧНЫХ ПРОБЛЕМ:
+• Если проблема встречается 1 раз - укажи таймкод:
   "- На таймкоде 01:23:45:12 присутствует [описание]"
   
 • Если проблема на 2-3 таймкодах - перечисли их через "и":
-  "- На таймкодах 01:23:45:12 и 01:45:23:08 [описание]"
+  "- На таймкодах 01:23:45:12 и 01:45:23:08 присутствует [описание]"
   
 • Если проблема повторяется много раз - обобщи БЕЗ указания количества:
   "- В фонограмме присутствуют посторонние щёлкающие звуки"
-  "- В фонограмме слишком высокое низкочастотное шипение на репликах актёров"
+  "- В фонограмме присутствует постороннее шипение на репликах актёров"
   
 • Для щелчков и слюны вместе:
   "- В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны"
 
+• Для единичных уникальных проблем:
+  "- На таймкоде XX:XX:XX:XX: [точное описание из маркера]"
+
 СТИЛЬ:
-- Простой, лаконичный, без технических терминов
-- Описательный: "слишком высокое", "прерывисто", "неоднородно"
+- Простой, лаконичный, без излишней терминологии
+- Описательный: "слишком высокое", "неоднородно", "прерывисто"
 - НЕ указывай количество случаев в скобках
 - НЕ добавляй выводы или рекомендации
 
-ПРИМЕРЫ ИЗ РЕАЛЬНОГО ОТЧЁТА:
+ПРИМЕРЫ ИЗ РЕАЛЬНЫХ ОТЧЁТОВ:
 - Отсутствует звук на заставках "Кинопоиск" и "Студия плюс"
 - Звуковая дорожка начинается на таймкоде 01:00:07:12
-- В фонограмме слишком высокое низкочастотное шипение на репликах актёров
-- В фонограмме присутствуют посторонние щёлкающие звуки
-- Некоторые реплики звучат прерывисто. Ощущение, что есть перегруз
-- На таймкодах 01:11:42:06 и 01:14:44:22 реплики актёра выглядят неоднородно с изображением
+- В фонограмме присутствует постороннее шипение на репликах актёров
+- В некоторых фрагментах реплики актеров выглядят несинхронными с изображением
+- На таймкодах 01:11:42:06 и 01:14:44:22 реплики актёра звучат неоднородно
 
 Сгенерируй заключение:"""
             
@@ -390,7 +466,7 @@ class ConclusionGenerator:
                 prompt=prompt,
                 options={
                     'temperature': 0.3,  # Низкая температура для большей предсказуемости
-                    'num_predict': 500   # Ограничение длины ответа
+                    'num_predict': 600   # Увеличил лимит для блокеров
                 }
             )
             
