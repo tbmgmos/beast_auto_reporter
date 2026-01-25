@@ -250,24 +250,40 @@ class ConclusionGenerator:
             )
         
         # ЗАТЕМ ОБРАБАТЫВАЕМ ОБЫЧНЫЕ ПРОБЛЕМЫ
+        # Сначала проверяем, нужно ли объединить щелчки и слюну
+        clicks = problem_groups.pop('щелчки', [])
+        saliva = problem_groups.pop('слюна', [])
+        
+        # Если И щелчки, И слюна встречаются больше 1 раза → объединяем
+        if len(clicks) > 1 and len(saliva) > 1:
+            problem_list.append("В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны")
+        else:
+            # Обрабатываем щелчки отдельно
+            if len(clicks) == 1:
+                issue = clicks[0]
+                problem_list.append(f"На таймкоде {issue.timecode_in} присутствуют посторонние щёлкающие звуки")
+            elif len(clicks) > 1:
+                problem_list.append("В фонограмме присутствуют посторонние щёлкающие звуки")
+            
+            # Обрабатываем слюну отдельно
+            if len(saliva) == 1:
+                issue = saliva[0]
+                problem_list.append(f"На таймкоде {issue.timecode_in} присутствуют яркие звуки слюны")
+            elif len(saliva) > 1:
+                problem_list.append("В фонограмме присутствуют яркие звуки слюны")
+        
+        # Обрабатываем остальные группы
         for problem_type, items in sorted(problem_groups.items(), key=lambda x: len(x[1]), reverse=True):
+            if problem_type == 'другие проблемы':
+                continue  # Обработаем позже
+            
             if len(items) == 1:
                 # ЕДИНИЧНАЯ проблема - указываем с таймкодом
                 issue = items[0]
-                # Для щелчков и слюны также используем красивое описание
-                if problem_type == 'щелчки_и_слюна':
-                    description = self._format_clicks_and_saliva(items)
-                    desc_single = description.replace("в фонограмме ", "")
-                    problem_list.append(f"На таймкоде {issue.timecode_in} {desc_single}")
-                else:
-                    problem_list.append(f"На таймкоде {issue.timecode_in} присутствует {problem_type}")
+                problem_list.append(f"На таймкоде {issue.timecode_in} присутствует {problem_type}")
             else:
                 # 2 И БОЛЕЕ раз - ОБОБЩАЕМ БЕЗ таймкодов и количества
-                if problem_type == 'щелчки_и_слюна':
-                    description = self._format_clicks_and_saliva(items)
-                    problem_list.append(f"{description.capitalize()}")
-                else:
-                    problem_list.append(f"В фонограмме присутствует {problem_type}")
+                problem_list.append(f"В фонограмме присутствует {problem_type}")
         
         # Обрабатываем "другие проблемы" (НЕ блокеры) - всегда с таймкодами, т.к. уникальные
         for issue in other_problems:
@@ -375,10 +391,30 @@ class ConclusionGenerator:
             for blocker in blockers:
                 blocker_list.append(f"- {blocker.timecode_in}: {blocker.description}")
             
+            # Проверяем количество щелчков и слюны для правильной обработки
+            clicks = problem_groups.get('щелчки', [])
+            saliva = problem_groups.get('слюна', [])
+            
             # Формируем краткое описание обычных проблем
             problem_summary = []
+            
+            # Добавляем информацию о щелчках и слюне
+            if clicks or saliva:
+                if len(clicks) > 1 and len(saliva) > 1:
+                    problem_summary.append(f"- щелчки и слюна: {len(clicks)} + {len(saliva)} случаев (ОБЪЕДИНИТЬ В ОДНУ ФРАЗУ)")
+                else:
+                    if clicks:
+                        problem_summary.append(f"- щелчки: {len(clicks)} {'случай' if len(clicks) == 1 else 'случаев'}")
+                        examples = [f"{item.timecode_in}" for item in clicks[:2]]
+                        problem_summary.append(f"  Примеры: {', '.join(examples)}")
+                    if saliva:
+                        problem_summary.append(f"- слюна: {len(saliva)} {'случай' if len(saliva) == 1 else 'случаев'}")
+                        examples = [f"{item.timecode_in}" for item in saliva[:2]]
+                        problem_summary.append(f"  Примеры: {', '.join(examples)}")
+            
+            # Добавляем остальные проблемы
             for problem_type, items in sorted(problem_groups.items(), key=lambda x: len(x[1]), reverse=True):
-                if problem_type != 'другие проблемы':
+                if problem_type not in ['другие проблемы', 'щелчки', 'слюна']:
                     problem_summary.append(f"- {problem_type}: {len(items)} случаев")
                     # Добавляем примеры таймкодов
                     examples = [f"{item.timecode_in}" for item in items[:2]]
@@ -420,8 +456,13 @@ class ConclusionGenerator:
   "- В фонограмме присутствует постороннее шипение на репликах актёров"
   "- В некоторых фрагментах реплики актеров выглядят несинхронными с изображением"
   
-• Для щелчков и слюны вместе (если встречаются 2+ раз):
-  "- В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны"
+• Для щелчков и слюны:
+  - Если И щелчки, И слюна встречаются 2+ раз КАЖДЫЙ → объединяй:
+    "- В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны"
+  - Если только щелчки 2+ раз: "- В фонограмме присутствуют посторонние щёлкающие звуки"
+  - Если только слюна 2+ раз: "- В фонограмме присутствуют яркие звуки слюны"
+  - Если щелчки 1 раз: "- На таймкоде XX:XX:XX:XX присутствуют посторонние щёлкающие звуки"
+  - Если слюна 1 раз: "- На таймкоде XX:XX:XX:XX присутствуют яркие звуки слюны"
 
 • Для единичных уникальных проблем:
   "- На таймкоде XX:XX:XX:XX: [точное описание из маркера]"
@@ -513,16 +554,17 @@ class ConclusionGenerator:
         """
         groups = {}
         
-        # Ключевые слова для категоризации
+        # Ключевые слова для категоризации (БЕЗ объединения щелчков и слюны)
         keywords = {
-            'щелчки_и_слюна': ['клик', 'щелч', 'щёлк', 'click', 'слюна', 'слюн'],
+            'щелчки': ['клик', 'щелч', 'щёлк', 'click', 'цокан'],
+            'слюна': ['слюна', 'слюн'],
             'шипение': ['шип', 'шипение'],
             'треск': ['треск'],
             'перегрузка': ['перегруз', 'клиппинг', 'clipping'],
             'несинхронность': ['синхрон', 'синхр', 'несинх'],
             'отсутствие звука': ['отсутств', 'нет звука', 'тишина'],
             'искажения': ['искажен', 'distortion'],
-            'шумы': ['шум', 'noise'],
+            'шумы': ['шум', 'noise', 'шуршан'],
             'стук': ['стук'],
             'артефакты': ['артефакт', 'artifact'],
         }
