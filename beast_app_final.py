@@ -443,6 +443,50 @@ class BeastAutoReporterFinalApp(QMainWindow):
         report_type_group.setLayout(report_type_layout)
         layout.addWidget(report_type_group)
         
+        # AI ГЕНЕРАЦИЯ (BETA)
+        ai_generation_group = QWidget()
+        ai_generation_group.setStyleSheet("""
+            QWidget {
+                background-color: #fff3cd;
+                border: 2px solid #ffc107;
+                border-radius: 8px;
+                padding: 15px;
+            }
+        """)
+        ai_generation_layout = QVBoxLayout()
+        ai_generation_layout.setContentsMargins(10, 10, 10, 10)
+        
+        ai_label = QLabel("🤖 AI Генерация заключений (BETA)")
+        ai_label.setFont(QFont("Arial", 13, QFont.Bold))
+        ai_label.setStyleSheet("background: transparent; border: none; color: #ff6b00;")
+        ai_generation_layout.addWidget(ai_label)
+        
+        self.ai_enabled_checkbox = QCheckBox("✨ Включить AI генерацию субъективной оценки (Ollama)")
+        self.ai_enabled_checkbox.setFont(QFont("Arial", 11))
+        self.ai_enabled_checkbox.setChecked(False)  # По умолчанию ВЫКЛЮЧЕНО
+        self.ai_enabled_checkbox.setStyleSheet("""
+            QCheckBox {
+                background: transparent;
+                border: none;
+                spacing: 8px;
+                color: #333;
+            }
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+            }
+        """)
+        self.ai_enabled_checkbox.stateChanged.connect(self.toggle_ai_generation)
+        ai_generation_layout.addWidget(self.ai_enabled_checkbox)
+        
+        ai_warning = QLabel("⚠️ BETA: Может давать неточные результаты. Рекомендуется проверка вручную.")
+        ai_warning.setFont(QFont("Arial", 9))
+        ai_warning.setStyleSheet("background: transparent; border: none; color: #856404; font-style: italic;")
+        ai_generation_layout.addWidget(ai_warning)
+        
+        ai_generation_group.setLayout(ai_generation_layout)
+        layout.addWidget(ai_generation_group)
+        
         # ОБЛАСТЬ ВЫБОРА ПАПКИ
         self.folder_label = QLabel("📂 Папка не выбрана")
         self.folder_label.setFont(QFont("Arial", 12))
@@ -560,6 +604,23 @@ class BeastAutoReporterFinalApp(QMainWindow):
             """)
             self.process_button.setEnabled(True)
             self.status_label.setText("Готово к обработке")
+    
+    def toggle_ai_generation(self, state):
+        """Переключение AI генерации"""
+        enabled = state == Qt.Checked
+        
+        if enabled:
+            # Включаем AI генерацию
+            self.conclusion_gen = ConclusionGenerator(use_llm=True)
+            logger.info("✨ AI генерация ВКЛЮЧЕНА (Ollama)")
+            self.status_label.setText("✨ AI генерация включена (BETA)")
+            self.status_label.setStyleSheet("color: #ff6b00; padding: 10px; font-weight: bold;")
+        else:
+            # Выключаем AI генерацию (заглушка)
+            self.conclusion_gen = ConclusionGenerator(use_llm=False)
+            logger.info("📝 AI генерация ВЫКЛЮЧЕНА (ручное заполнение)")
+            self.status_label.setText("📝 Субъективная оценка: ручное заполнение")
+            self.status_label.setStyleSheet("color: #666; padding: 10px;")
     
     def process_folder(self):
         """Запуск обработки"""
