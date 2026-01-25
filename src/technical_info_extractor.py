@@ -100,6 +100,18 @@ class TechnicalInfoExtractor:
             
             file_path_obj = Path(file_path)
             
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: существует ли файл?
+            if not file_path_obj.exists():
+                logger.error(f"❌ ФАЙЛ НЕ СУЩЕСТВУЕТ: {file_path}")
+                logger.error(f"   Полный путь: {file_path_obj.absolute()}")
+                return {}
+            
+            if not file_path_obj.is_file():
+                logger.error(f"❌ ЭТО НЕ ФАЙЛ: {file_path}")
+                return {}
+            
+            logger.info(f"✅ Файл существует: {file_path_obj.name} ({file_path_obj.stat().st_size} bytes)")
+            
             # Используем ffmpeg для получения информации
             import subprocess
             import json
