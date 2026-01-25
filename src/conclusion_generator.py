@@ -342,52 +342,69 @@ class ConclusionGenerator:
         Returns:
             Сгенерированное заключение
         """
-        try:
-            # Разделяем блокеры и обычные проблемы
-            blockers = [issue for issue in issues if issue.blocker]
-            regular_issues = [issue for issue in issues if not issue.blocker]
+        logger.info("=== ГИБРИДНАЯ генерация субъективного заключения ===")
+        
+        # Разделяем блокеры и обычные проблемы
+        blockers = [issue for issue in issues if issue.blocker]
+        regular_issues = [issue for issue in issues if not issue.blocker]
+        
+        logger.info(f"Всего проблем: {len(issues)} (блокеров: {len(blockers)}, обычных: {len(regular_issues)})")
+        
+        # Группируем обычные проблемы по типу
+        groups = self._smart_group_issues(regular_issues)
+        
+        logger.info(f"Сгруппировано в {len(groups)} групп:")
+        for group_type, items in groups.items():
+            logger.info(f"  - {group_type}: {len(items)} проблем")
+        
+        # Формируем заключение
+        conclusion_lines = ["По субъективной оценке выявлены следующие недочёты:", ""]
+        
+        # 1. БЛОКЕРЫ - всегда первыми с таймкодами
+        for blocker in blockers:
+            conclusion_lines.append(f"-    На таймкоде {blocker.timecode_in}: {blocker.description}")
+        
+        # 2. ОБЫЧНЫЕ ПРОБЛЕМЫ - применяем правила
+        for group_type, items in groups.items():
+            count = len(items)
             
-            # Группируем обычные проблемы по типу
-            groups = self._smart_group_issues(regular_issues)
+            # Специальная обработка для "другие_проблемы" - каждую отдельно
+            if group_type == 'другие_проблемы':
+                for item in items:
+                    line = f"-    На таймкоде {item.timecode_in}: {item.description}"
+                    conclusion_lines.append(line)
+                logger.info(f"  [другие_проблемы] {count} уникальных → каждая с таймкодом")
+                continue
             
-            # Формируем заключение
-            conclusion_lines = ["По субъективной оценке выявлены следующие недочёты:", ""]
+            if count == 1:
+                # Единичная проблема - с таймкодом
+                item = items[0]
+                line = f"-    На таймкоде {item.timecode_in} {self._format_single_issue(item.description)}"
+                conclusion_lines.append(line)
+                logger.info(f"  [{group_type}] 1 раз → с таймкодом")
             
-            # 1. БЛОКЕРЫ - всегда первыми с таймкодами
-            for blocker in blockers:
-                conclusion_lines.append(f"-    На таймкоде {blocker.timecode_in}: {blocker.description}")
-            
-            # 2. ОБЫЧНЫЕ ПРОБЛЕМЫ - применяем правила
-            for group_type, items in groups.items():
-                count = len(items)
-                
-                if count == 1:
-                    # Единичная проблема - с таймкодом
-                    item = items[0]
-                    conclusion_lines.append(f"-    На таймкоде {item.timecode_in} {self._format_single_issue(item.description)}")
-                
-                elif count in [2, 3] and self._is_important_type(group_type):
-                    # Важные проблемы 2-3 раза - перечисляем таймкоды
-                    timecodes = [item.timecode_in for item in items]
-                    if count == 2:
-                        tc_text = f"{timecodes[0]} и {timecodes[1]}"
-                    else:
-                        tc_text = f"{timecodes[0]}, {timecodes[1]} и {timecodes[2]}"
-                    conclusion_lines.append(f"-    На таймкодах {tc_text} {self._format_multiple_issue(group_type, items)}")
-                
+            elif count in [2, 3] and self._is_important_type(group_type):
+                # Важные проблемы 2-3 раза - перечисляем таймкоды
+                timecodes = [item.timecode_in for item in items]
+                if count == 2:
+                    tc_text = f"{timecodes[0]} и {timecodes[1]}"
                 else:
-                    # Массовые (4+) или неважные повторяющиеся - обобщаем БЕЗ таймкодов
-                    conclusion_lines.append(f"-    {self._format_generalized_issue(group_type, items)}")
+                    tc_text = f"{timecodes[0]}, {timecodes[1]} и {timecodes[2]}"
+                line = f"-    На таймкодах {tc_text} {self._format_multiple_issue(group_type, items)}"
+                conclusion_lines.append(line)
+                logger.info(f"  [{group_type}] {count} раза (важная) → перечисление таймкодов")
             
-            # Специальная обработка щелчков и слюны
-            conclusion_text = self._merge_clicks_and_saliva('\n'.join(conclusion_lines))
-            
-            logger.info(f"Субъективное заключение сформировано (блокеров: {len(blockers)}, групп: {len(groups)})")
-            return conclusion_text
-            
-        except Exception as e:
-            logger.error(f"Ошибка при генерации субъективного заключения: {e}")
-            raise
+            else:
+                # Массовые (4+) или неважные повторяющиеся - обобщаем БЕЗ таймкодов
+                line = f"-    {self._format_generalized_issue(group_type, items)}"
+                conclusion_lines.append(line)
+                logger.info(f"  [{group_type}] {count} раз → обобщение БЕЗ таймкодов")
+        
+        # Специальная обработка щелчков и слюны
+        conclusion_text = self._merge_clicks_and_saliva('\n'.join(conclusion_lines))
+        
+        logger.info(f"✅ Субъективное заключение сформировано ({len(conclusion_lines)} строк)")
+        return conclusion_text
     
     def _smart_group_issues(self, issues: List[Issue]) -> dict:
         """Умная группировка проблем по типам"""
@@ -419,8 +436,16 @@ class ConclusionGenerator:
                 group_type = 'маскировка'
             elif any(kw in desc for kw in ['исправлен', 'попытк']):
                 group_type = 'исправления'
+            elif any(kw in desc for kw in ['замена', 'видна замена']):
+                group_type = 'замена_текста'
+            elif any(kw in desc for kw in ['голос', 'реплик']):
+                group_type = 'проблемы_реплик'
+            elif any(kw in desc for kw in ['звук', 'атмосфер']):
+                group_type = 'атмосфера'
             else:
-                group_type = f'другое_{len(groups)}'  # Уникальные проблемы
+                # Уникальные проблемы - каждую в свою группу для сохранения
+                # Но НЕ создаем их бесконечно, а группируем в 'другие'
+                group_type = 'другие_проблемы'
             
             if group_type not in groups:
                 groups[group_type] = []
