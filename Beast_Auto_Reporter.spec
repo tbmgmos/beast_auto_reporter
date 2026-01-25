@@ -69,15 +69,16 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Beast Auto Reporter.app',
-    icon=None,
+    icon='app_icon.icns',
     bundle_identifier='com.beast.autoreporter',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': 'True',
         'CFBundleName': 'Beast Auto Reporter',
         'CFBundleDisplayName': 'Beast Auto Reporter',
-        'CFBundleVersion': '4.0.0',
-        'CFBundleShortVersionString': '4.0',
+        'CFBundleVersion': '5.2.0',
+        'CFBundleShortVersionString': '5.2',
         'NSHumanReadableCopyright': 'Copyright © 2026',
+        'CFBundleIconFile': 'app_icon.icns',
     },
 )

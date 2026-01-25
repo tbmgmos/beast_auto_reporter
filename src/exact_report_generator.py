@@ -466,6 +466,18 @@ class ExactReportGenerator:
     def _add_me_technical_table(self, doc: Document, tech_info: Dict,
                                 conclusion_tech: str, conclusion_subj: str) -> None:
         """Техническая таблица M&E (упрощенная версия)"""
+        logger.info("=== ГЕНЕРАЦИЯ M&E ТАБЛИЦЫ ===")
+        logger.info(f"tech_info keys: {list(tech_info.keys()) if tech_info else 'None'}")
+        if tech_info and 'video' in tech_info:
+            video_data = tech_info['video']
+            logger.info(f"VIDEO DATA: {video_data}")
+            logger.info(f"  - file_name: {video_data.get('file_name')}")
+            logger.info(f"  - duration: {video_data.get('duration')}")
+            logger.info(f"  - fps: {video_data.get('fps')}")
+            logger.info(f"  - format: {video_data.get('format')}")
+        else:
+            logger.warning("VIDEO НЕ НАЙДЕНО в tech_info!")
+        
         try:
             # Таблица: 9 строк x 5 столбцов (без LOUDNESS и LRA)
             table = doc.add_table(rows=9, cols=5)
