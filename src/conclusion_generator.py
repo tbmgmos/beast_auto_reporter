@@ -113,14 +113,15 @@ class ConclusionGenerator:
             problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограмме 5.1")
         
         # Проверяем порядок каналов для 5.1
-        for audio_key in ['audio_51_c', 'audio_51_uc']:
-            if audio_key in tech_info and tech_info[audio_key]:
-                data = tech_info[audio_key]
-                channel_order = data.get('channel_order', '')
-                # Проверяем, заполнен ли порядок каналов (если нет запятых, значит неполный)
-                if channel_order and ',' not in channel_order and 'Stereo' not in channel_order:
-                    problems.append("Некорректный порядок каналов в 5.1 дорожке")
-                    break
+        # ОТКЛЮЧЕНО: Порядок каналов берется из метаданных и считается корректным
+        # for audio_key in ['audio_51_c', 'audio_51_uc']:
+        #     if audio_key in tech_info and tech_info[audio_key]:
+        #         data = tech_info[audio_key]
+        #         channel_order = data.get('channel_order', '')
+        #         # Проверяем, заполнен ли порядок каналов (если нет запятых, значит неполный)
+        #         if channel_order and ',' not in channel_order and 'Stereo' not in channel_order:
+        #             problems.append("Некорректный порядок каналов в 5.1 дорожке")
+        #             break
         
         # Проверяем хронометраж
         durations = {}
@@ -169,37 +170,38 @@ class ConclusionGenerator:
             elif audio_mismatch:
                 problems.append("Звуковые файлы имеют разный хронометраж")
         
-        # Проверяем кратность кадру (24 или 25 fps)
-        if '_frame_issues' in tech_info and tech_info['_frame_issues']:
-            frame_issues = tech_info['_frame_issues']
-            fps = frame_issues[0].get('fps', 25)
-            frame_duration = 1.0 / fps
-            frame_duration_ms = frame_duration * 1000
-            
-            issue_files = [issue['file'] for issue in frame_issues]
-            if len(issue_files) == 1:
-                problems.append(
-                    f"Длительность файла {issue_files[0]} не кратна кадру "
-                    f"({fps} fps, длительность кадра {frame_duration_ms:.2f} мс)"
-                )
-            else:
-                problems.append(
-                    f"Длительность файлов {', '.join(issue_files)} не кратна кадру "
-                    f"({fps} fps, длительность кадра {frame_duration_ms:.2f} мс)"
-                )
+        # ОТКЛЮЧЕНО: Дополнительная информация о кратности кадру не нужна
+        # # Проверяем кратность кадру (24 или 25 fps)
+        # if '_frame_issues' in tech_info and tech_info['_frame_issues']:
+        #     frame_issues = tech_info['_frame_issues']
+        #     fps = frame_issues[0].get('fps', 25)
+        #     frame_duration = 1.0 / fps
+        #     frame_duration_ms = frame_duration * 1000
+        #     
+        #     issue_files = [issue['file'] for issue in frame_issues]
+        #     if len(issue_files) == 1:
+        #         problems.append(
+        #             f"Длительность файла {issue_files[0]} не кратна кадру "
+        #             f"({fps} fps, длительность кадра {frame_duration_ms:.2f} мс)"
+        #         )
+        #     else:
+        #         problems.append(
+        #             f"Длительность файлов {', '.join(issue_files)} не кратна кадру "
+        #             f"({fps} fps, длительность кадра {frame_duration_ms:.2f} мс)"
+        #         )
         
         # Формируем заключение
         if not problems:
             return "По технической оценке нареканий не обнаружено"
         
-        # Если включен LLM - генерируем через Ollama
-        if self.use_llm:
-            try:
-                return self._generate_technical_with_llm(problems)
-            except Exception as e:
-                logger.error(f"Ошибка генерации через Ollama: {e}")
-                logger.info("Переключаемся на шаблонную генерацию")
-                # Продолжаем с шаблонным методом
+        # ОТКЛЮЧЕНО: LLM для технического заключения (используем только шаблоны)
+        # if self.use_llm:
+        #     try:
+        #         return self._generate_technical_with_llm(problems)
+        #     except Exception as e:
+        #         logger.error(f"Ошибка генерации через Ollama: {e}")
+        #         logger.info("Переключаемся на шаблонную генерацию")
+        #         # Продолжаем с шаблонным методом
         
         # Шаблонная генерация
         conclusion = "По техническим характеристикам выявлены следующие недочёты:\n"
