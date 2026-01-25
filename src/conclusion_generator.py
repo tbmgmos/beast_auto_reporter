@@ -211,28 +211,20 @@ class ConclusionGenerator:
     def generate_subjective_conclusion(self, issues: List[Issue]) -> str:
         """
         Генерация субъективного заключения на основе списка проблем
+        ВРЕМЕННО ОТКЛЮЧЕНО - возвращаем заглушку для ручного заполнения
         
         Args:
             issues: Список проблем из CSV
             
         Returns:
-            Текст субъективного заключения
+            Текст субъективного заключения (заглушка)
         """
         if not issues:
             return "По субъективной оценке нареканий не обнаружено"
         
-        # Если включен LLM - генерируем через Ollama (ВСЕГДА приоритет)
-        if self.use_llm:
-            try:
-                return self._generate_subjective_with_llm(issues)
-            except Exception as e:
-                logger.error(f"Ошибка генерации через Ollama: {e}")
-                logger.warning("LLM недоступен, используем упрощенное заключение")
-                # Fallback - простое перечисление
-                return self._generate_simple_fallback(issues)
-        else:
-            # Без LLM - простое перечисление
-            return self._generate_simple_fallback(issues)
+        # ВРЕМЕННО: Заглушка для ручного заполнения
+        logger.info("Субъективная оценка ОТКЛЮЧЕНА - используется заглушка")
+        return "По субъективной оценке выявлены следующие недочёты:\n\n[ЗАПОЛНИТЬ ВРУЧНУЮ]"
     
     def _generate_simple_fallback(self, issues: List[Issue]) -> str:
         """
