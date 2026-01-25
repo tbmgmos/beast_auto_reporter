@@ -362,278 +362,319 @@ class BeastAutoReporterFinalApp(QMainWindow):
         self.init_ui()
     
     def init_ui(self):
-        """Инициализация интерфейса"""
-        self.setWindowTitle("Beast Auto Reporter - Final")
-        self.setGeometry(100, 100, 800, 600)
+        """Инициализация интерфейса в стиле Material You"""
+        self.setWindowTitle("Beast Auto Reporter")
+        self.setGeometry(100, 100, 700, 650)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
+        # Material You: компактный layout
         layout = QVBoxLayout()
-        layout.setSpacing(20)
-        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(16)
+        layout.setContentsMargins(24, 24, 24, 24)
         
-        # ЗАГОЛОВОК
-        title_label = QLabel("🎵 Beast Auto Reporter")
-        title_font = QFont("Arial", 28, QFont.Bold)
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("color: #1f77b4; padding: 20px;")
-        layout.addWidget(title_label)
-        
-        # SUBTITLE
-        subtitle_label = QLabel("Генерация отчетов на основе CSV файла")
-        subtitle_label.setFont(QFont("Arial", 12))
-        subtitle_label.setAlignment(Qt.AlignCenter)
-        subtitle_label.setStyleSheet("color: #666; padding: 5px;")
-        layout.addWidget(subtitle_label)
-        
-        # ИНСТРУКЦИИ
-        instructions = QLabel("📁 Выберите папку с файлами:\n• CSV файл с проблемами\n• Аудио/видео файлы\n• Параметры.txt")
-        instructions.setFont(QFont("Arial", 11))
-        instructions.setAlignment(Qt.AlignCenter)
-        instructions.setStyleSheet("color: #333; padding: 10px;")
-        layout.addWidget(instructions)
-        
-        # ВЫБОР ТИПА ОТЧЕТА
-        report_type_group = QWidget()
-        report_type_group.setStyleSheet("""
+        # === HEADER: компактный заголовок ===
+        header_widget = QWidget()
+        header_widget.setStyleSheet("""
             QWidget {
-                background-color: #f8f9fa;
-                border: 2px solid #dee2e6;
-                border-radius: 8px;
-                padding: 15px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #6200EE, stop:1 #3700B3);
+                border-radius: 16px;
+                padding: 16px;
             }
         """)
-        report_type_layout = QVBoxLayout()
-        report_type_layout.setContentsMargins(10, 10, 10, 10)
+        header_layout = QVBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
         
-        report_type_label = QLabel("📋 Выберите тип отчета:")
-        report_type_label.setFont(QFont("Arial", 13, QFont.Bold))
-        report_type_label.setStyleSheet("background: transparent; border: none; color: #1f77b4;")
-        report_type_layout.addWidget(report_type_label)
+        title_label = QLabel("🎵 Beast Auto Reporter")
+        title_label.setFont(QFont("SF Pro Display", 24, QFont.Bold))
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("color: white; background: transparent;")
+        header_layout.addWidget(title_label)
         
-        # Первый ряд радиокнопок (стандартные отчеты)
-        radio_layout_1 = QHBoxLayout()
-        radio_layout_1.setSpacing(20)
+        subtitle_label = QLabel("Автоматическая генерация отчетов")
+        subtitle_label.setFont(QFont("SF Pro Display", 11))
+        subtitle_label.setAlignment(Qt.AlignCenter)
+        subtitle_label.setStyleSheet("color: rgba(255, 255, 255, 0.8); background: transparent;")
+        header_layout.addWidget(subtitle_label)
         
-        self.report_type_main = QRadioButton("🎵 Основной (с LOUDNESS, TRUE PEAK, LRA)")
-        self.report_type_main.setFont(QFont("Arial", 10))
-        self.report_type_main.setChecked(True)  # По умолчанию
+        header_widget.setLayout(header_layout)
+        layout.addWidget(header_widget)
+        
+        # === КАРТОЧКА: Тип отчета (Material Card) ===
+        report_card = QWidget()
+        report_card.setStyleSheet("""
+            QWidget {
+                background-color: white;
+                border-radius: 12px;
+                border: 1px solid #E0E0E0;
+            }
+        """)
+        report_card_layout = QVBoxLayout()
+        report_card_layout.setContentsMargins(16, 12, 16, 12)
+        report_card_layout.setSpacing(8)
+        
+        card_title = QLabel("📋 Тип отчета")
+        card_title.setFont(QFont("SF Pro Display", 13, QFont.DemiBold))
+        card_title.setStyleSheet("color: #1C1B1F; background: transparent; border: none;")
+        report_card_layout.addWidget(card_title)
+        
+        # Компактные радиокнопки в 2 ряда
+        radio_row1 = QHBoxLayout()
+        radio_row1.setSpacing(12)
+        
+        self.report_type_main = QRadioButton("🎵 Основной")
+        self.report_type_main.setFont(QFont("SF Pro Text", 10))
+        self.report_type_main.setChecked(True)
         self.report_type_main.setStyleSheet("""
             QRadioButton {
                 background: transparent;
                 border: none;
-                spacing: 8px;
-                color: #333;
+                color: #49454F;
+                padding: 4px;
             }
             QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
+                width: 16px;
+                height: 16px;
+            }
+            QRadioButton::indicator::checked {
+                background-color: #6200EE;
+                border: 2px solid #6200EE;
+                border-radius: 8px;
             }
         """)
-        radio_layout_1.addWidget(self.report_type_main)
+        radio_row1.addWidget(self.report_type_main)
         
-        self.report_type_me = QRadioButton("🎼 M&E (только TRUE PEAK)")
-        self.report_type_me.setFont(QFont("Arial", 10))
+        self.report_type_me = QRadioButton("🎼 M&E")
+        self.report_type_me.setFont(QFont("SF Pro Text", 10))
         self.report_type_me.setStyleSheet("""
             QRadioButton {
                 background: transparent;
                 border: none;
-                spacing: 8px;
-                color: #333;
+                color: #49454F;
+                padding: 4px;
             }
             QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
+                width: 16px;
+                height: 16px;
             }
         """)
-        radio_layout_1.addWidget(self.report_type_me)
+        radio_row1.addWidget(self.report_type_me)
+        radio_row1.addStretch()
+        report_card_layout.addLayout(radio_row1)
         
-        radio_layout_1.addStretch()
-        report_type_layout.addLayout(radio_layout_1)
+        radio_row2 = QHBoxLayout()
+        radio_row2.setSpacing(12)
         
-        # Второй ряд радиокнопок (наши работы)
-        radio_layout_2 = QHBoxLayout()
-        radio_layout_2.setSpacing(20)
-        
-        self.report_type_me_ours = QRadioButton("✅ M&E (наши работы)")
-        self.report_type_me_ours.setFont(QFont("Arial", 10))
+        self.report_type_me_ours = QRadioButton("✅ M&E (наши)")
+        self.report_type_me_ours.setFont(QFont("SF Pro Text", 10))
         self.report_type_me_ours.setStyleSheet("""
             QRadioButton {
                 background: transparent;
                 border: none;
-                spacing: 8px;
-                color: #2e7d32;
-                font-weight: bold;
+                color: #1B5E20;
+                font-weight: 600;
+                padding: 4px;
             }
             QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
+                width: 16px;
+                height: 16px;
             }
         """)
-        radio_layout_2.addWidget(self.report_type_me_ours)
+        radio_row2.addWidget(self.report_type_me_ours)
         
-        self.report_type_tifflo = QRadioButton("🎬 TIFFLO (идеальный)")
-        self.report_type_tifflo.setFont(QFont("Arial", 10))
+        self.report_type_tifflo = QRadioButton("🎬 TIFFLO")
+        self.report_type_tifflo.setFont(QFont("SF Pro Text", 10))
         self.report_type_tifflo.setStyleSheet("""
             QRadioButton {
                 background: transparent;
                 border: none;
-                spacing: 8px;
-                color: #2e7d32;
-                font-weight: bold;
+                color: #1B5E20;
+                font-weight: 600;
+                padding: 4px;
             }
             QRadioButton::indicator {
-                width: 18px;
-                height: 18px;
+                width: 16px;
+                height: 16px;
             }
         """)
-        radio_layout_2.addWidget(self.report_type_tifflo)
+        radio_row2.addWidget(self.report_type_tifflo)
+        radio_row2.addStretch()
+        report_card_layout.addLayout(radio_row2)
         
-        radio_layout_2.addStretch()
-        report_type_layout.addLayout(radio_layout_2)
+        report_card.setLayout(report_card_layout)
+        layout.addWidget(report_card)
         
-        report_type_group.setLayout(report_type_layout)
-        layout.addWidget(report_type_group)
-        
-        # AI ГЕНЕРАЦИЯ (BETA)
-        ai_generation_group = QWidget()
-        ai_generation_group.setStyleSheet("""
+        # === КАРТОЧКА: AI генерация (компактная) ===
+        ai_card = QWidget()
+        ai_card.setStyleSheet("""
             QWidget {
-                background-color: #fff3cd;
-                border: 2px solid #ffc107;
-                border-radius: 8px;
-                padding: 15px;
+                background-color: #FFF8E1;
+                border-radius: 12px;
+                border: 1px solid #FFD54F;
             }
         """)
-        ai_generation_layout = QVBoxLayout()
-        ai_generation_layout.setContentsMargins(10, 10, 10, 10)
+        ai_card_layout = QHBoxLayout()
+        ai_card_layout.setContentsMargins(16, 10, 16, 10)
+        ai_card_layout.setSpacing(8)
         
-        ai_label = QLabel("🤖 AI Генерация заключений (BETA)")
-        ai_label.setFont(QFont("Arial", 13, QFont.Bold))
-        ai_label.setStyleSheet("background: transparent; border: none; color: #ff6b00;")
-        ai_generation_layout.addWidget(ai_label)
+        ai_icon = QLabel("🤖")
+        ai_icon.setFont(QFont("SF Pro Display", 18))
+        ai_icon.setStyleSheet("background: transparent; border: none;")
+        ai_card_layout.addWidget(ai_icon)
         
-        self.ai_enabled_checkbox = QCheckBox("✨ Включить AI генерацию субъективной оценки (Ollama)")
-        self.ai_enabled_checkbox.setFont(QFont("Arial", 11))
-        self.ai_enabled_checkbox.setChecked(False)  # По умолчанию ВЫКЛЮЧЕНО
+        ai_text_layout = QVBoxLayout()
+        ai_text_layout.setSpacing(2)
+        
+        self.ai_enabled_checkbox = QCheckBox("AI генерация (BETA)")
+        self.ai_enabled_checkbox.setFont(QFont("SF Pro Text", 11, QFont.DemiBold))
+        self.ai_enabled_checkbox.setChecked(False)
         self.ai_enabled_checkbox.setStyleSheet("""
             QCheckBox {
                 background: transparent;
                 border: none;
-                spacing: 8px;
-                color: #333;
+                color: #F57C00;
+                spacing: 6px;
             }
             QCheckBox::indicator {
-                width: 20px;
-                height: 20px;
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 2px solid #F57C00;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #F57C00;
             }
         """)
         self.ai_enabled_checkbox.stateChanged.connect(self.toggle_ai_generation)
-        ai_generation_layout.addWidget(self.ai_enabled_checkbox)
+        ai_text_layout.addWidget(self.ai_enabled_checkbox)
         
-        ai_warning = QLabel("⚠️ BETA: Может давать неточные результаты. Рекомендуется проверка вручную.")
-        ai_warning.setFont(QFont("Arial", 9))
-        ai_warning.setStyleSheet("background: transparent; border: none; color: #856404; font-style: italic;")
-        ai_generation_layout.addWidget(ai_warning)
+        ai_hint = QLabel("Автоматическая субъективная оценка")
+        ai_hint.setFont(QFont("SF Pro Text", 9))
+        ai_hint.setStyleSheet("background: transparent; border: none; color: #795548;")
+        ai_text_layout.addWidget(ai_hint)
         
-        ai_generation_group.setLayout(ai_generation_layout)
-        layout.addWidget(ai_generation_group)
+        ai_card_layout.addLayout(ai_text_layout)
+        ai_card_layout.addStretch()
         
-        # ОБЛАСТЬ ВЫБОРА ПАПКИ
-        self.folder_label = QLabel("📂 Папка не выбрана")
-        self.folder_label.setFont(QFont("Arial", 12))
-        self.folder_label.setAlignment(Qt.AlignCenter)
-        self.folder_label.setMinimumHeight(100)
-        self.folder_label.setStyleSheet("""
-            QLabel {
-                background-color: #f0f2f6;
-                border: 2px dashed #ccc;
-                border-radius: 10px;
-                padding: 20px;
-                color: #666;
+        ai_card.setLayout(ai_card_layout)
+        layout.addWidget(ai_card)
+        
+        # === КАРТОЧКА: Папка (компактная) ===
+        folder_card = QWidget()
+        folder_card.setStyleSheet("""
+            QWidget {
+                background-color: white;
+                border-radius: 12px;
+                border: 1px solid #E0E0E0;
             }
         """)
-        layout.addWidget(self.folder_label)
+        folder_card_layout = QVBoxLayout()
+        folder_card_layout.setContentsMargins(16, 16, 16, 16)
+        folder_card_layout.setSpacing(12)
         
-        # КНОПКА ВЫБОРА ПАПКИ
+        self.folder_label = QLabel("📂 Папка не выбрана")
+        self.folder_label.setFont(QFont("SF Pro Text", 11))
+        self.folder_label.setAlignment(Qt.AlignCenter)
+        self.folder_label.setStyleSheet("color: #79747E; background: transparent; border: none; padding: 12px;")
+        folder_card_layout.addWidget(self.folder_label)
+        
+        # Кнопка выбора папки (Material filled)
         self.select_button = QPushButton("📁 Выбрать папку")
-        self.select_button.setFont(QFont("Arial", 14, QFont.Bold))
-        self.select_button.setMinimumHeight(50)
+        self.select_button.setFont(QFont("SF Pro Text", 12, QFont.DemiBold))
+        self.select_button.setMinimumHeight(40)
+        self.select_button.setCursor(Qt.PointingHandCursor)
         self.select_button.setStyleSheet("""
             QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border-radius: 10px;
-                padding: 10px 30px;
+                background-color: #E8DEF8;
+                color: #21005D;
+                border: none;
+                border-radius: 20px;
+                padding: 0px 24px;
             }
             QPushButton:hover {
-                background-color: #45a049;
+                background-color: #D5C7E8;
+            }
+            QPushButton:pressed {
+                background-color: #C4B5D7;
             }
         """)
         self.select_button.clicked.connect(self.select_folder)
-        layout.addWidget(self.select_button)
+        folder_card_layout.addWidget(self.select_button)
         
-        # КНОПКА СОЗДАНИЯ ОТЧЕТА
+        folder_card.setLayout(folder_card_layout)
+        layout.addWidget(folder_card)
+        
+        # === FAB: СОЗДАТЬ ОТЧЕТ (Material Floating Action Button) ===
         self.process_button = QPushButton("🎯 СОЗДАТЬ ОТЧЕТ")
-        self.process_button.setFont(QFont("Arial", 16, QFont.Bold))
-        self.process_button.setMinimumHeight(60)
+        self.process_button.setFont(QFont("SF Pro Display", 14, QFont.Bold))
+        self.process_button.setMinimumHeight(56)
+        self.process_button.setCursor(Qt.PointingHandCursor)
         self.process_button.setStyleSheet("""
             QPushButton {
-                background-color: #2196F3;
+                background-color: #6200EE;
                 color: white;
-                border-radius: 10px;
-                padding: 15px 40px;
+                border: none;
+                border-radius: 28px;
+                padding: 0px 32px;
             }
             QPushButton:hover {
-                background-color: #1976D2;
+                background-color: #7F39FB;
+            }
+            QPushButton:pressed {
+                background-color: #5600D4;
             }
             QPushButton:disabled {
-                background-color: #ccc;
-                color: #666;
+                background-color: #E0E0E0;
+                color: #9E9E9E;
             }
         """)
         self.process_button.setEnabled(False)
         self.process_button.clicked.connect(self.process_folder)
         layout.addWidget(self.process_button)
         
-        # ПРОГРЕСС БАР
+        # === ПРОГРЕСС (Material Linear Progress) ===
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimumHeight(30)
+        self.progress_bar.setMinimumHeight(6)
+        self.progress_bar.setMaximumHeight(6)
+        self.progress_bar.setTextVisible(False)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                border: 2px solid #ccc;
-                border-radius: 10px;
-                text-align: center;
-                font-size: 14px;
+                background-color: #E8DEF8;
+                border: none;
+                border-radius: 3px;
             }
             QProgressBar::chunk {
-                background-color: #2196F3;
-                border-radius: 8px;
+                background-color: #6200EE;
+                border-radius: 3px;
             }
         """)
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
         
-        # СТАТУС
-        self.status_label = QLabel("Ожидание...")
-        self.status_label.setFont(QFont("Arial", 12))
+        # === СТАТУС (компактный) ===
+        self.status_label = QLabel("Готов к работе")
+        self.status_label.setFont(QFont("SF Pro Text", 11))
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("color: #666; padding: 10px;")
+        self.status_label.setStyleSheet("color: #49454F; padding: 8px; background: transparent;")
         layout.addWidget(self.status_label)
         
-        # FOOTER
-        footer_label = QLabel("Beast Auto Reporter Final | Импорт CSV + Генерация заключения")
-        footer_label.setFont(QFont("Arial", 9))
+        layout.addStretch()
+        
+        # === FOOTER (минималистичный) ===
+        footer_label = QLabel("v5.0 • Material Design")
+        footer_label.setFont(QFont("SF Pro Text", 9))
         footer_label.setAlignment(Qt.AlignCenter)
-        footer_label.setStyleSheet("color: #999; padding: 10px;")
+        footer_label.setStyleSheet("color: #79747E; background: transparent;")
         layout.addWidget(footer_label)
         
         central_widget.setLayout(layout)
         
+        # Material You: светлый фон
         palette = self.palette()
-        palette.setColor(QPalette.Window, QColor(255, 255, 255))
+        palette.setColor(QPalette.Window, QColor("#FDFBFF"))
         self.setPalette(palette)
     
     def select_folder(self):
@@ -646,18 +687,11 @@ class BeastAutoReporterFinalApp(QMainWindow):
         
         if folder:
             self.input_folder = Path(folder)
-            self.folder_label.setText(f"✓ Выбрана папка:\n{self.input_folder.name}")
-            self.folder_label.setStyleSheet("""
-                QLabel {
-                    background-color: #e8f5e9;
-                    border: 2px solid #4CAF50;
-                    border-radius: 10px;
-                    padding: 20px;
-                    color: #2e7d32;
-                }
-            """)
+            self.folder_label.setText(f"✓ {self.input_folder.name}")
+            self.folder_label.setStyleSheet("color: #1B5E20; background: transparent; border: none; padding: 12px; font-weight: 600;")
             self.process_button.setEnabled(True)
-            self.status_label.setText("Готово к обработке")
+            self.status_label.setText("✓ Готово к обработке")
+            self.status_label.setStyleSheet("color: #1B5E20; padding: 8px; background: transparent; font-weight: 600;")
     
     def toggle_ai_generation(self, state):
         """Переключение AI генерации"""
@@ -667,14 +701,14 @@ class BeastAutoReporterFinalApp(QMainWindow):
             # Включаем AI генерацию
             self.conclusion_gen = ConclusionGenerator(use_llm=True)
             logger.info("✨ AI генерация ВКЛЮЧЕНА (Ollama)")
-            self.status_label.setText("✨ AI генерация включена (BETA)")
-            self.status_label.setStyleSheet("color: #ff6b00; padding: 10px; font-weight: bold;")
+            self.status_label.setText("🤖 AI режим активирован")
+            self.status_label.setStyleSheet("color: #F57C00; padding: 8px; background: transparent; font-weight: 600;")
         else:
             # Выключаем AI генерацию (заглушка)
             self.conclusion_gen = ConclusionGenerator(use_llm=False)
             logger.info("📝 AI генерация ВЫКЛЮЧЕНА (ручное заполнение)")
-            self.status_label.setText("📝 Субъективная оценка: ручное заполнение")
-            self.status_label.setStyleSheet("color: #666; padding: 10px;")
+            self.status_label.setText("📝 Ручное заполнение")
+            self.status_label.setStyleSheet("color: #49454F; padding: 8px; background: transparent;")
     
     def process_folder(self):
         """Запуск обработки"""
