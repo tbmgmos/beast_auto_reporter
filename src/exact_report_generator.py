@@ -74,24 +74,31 @@ class ExactReportGenerator:
                         doc, tech_info, conclusion_technical, conclusion_subjective
                     )
             
-            # === PAGE BREAK (переход на страницу 2, как в РЫБА) ===
-            para_break = doc.add_paragraph()
-            run = para_break.add_run()
-            run.add_break(WD_BREAK.PAGE)  # Page break
-            
-            # === СТРАНИЦА 2: MARKER LIST ===
-            
-            # === 2. MARKER LIST (точно как в референсе) ===
-            self._add_marker_list_exact(doc, issues)
-            
-            # === 3. PDF КАК ИЗОБРАЖЕНИЯ ===
-            if pdf_20_path:
-                doc.add_paragraph()
-                self._add_pdf_image(doc, pdf_20_path)
-            
-            if pdf_51_path:
-                doc.add_paragraph()
-                self._add_pdf_image(doc, pdf_51_path)
+            # === МАРКЕР-ЛИСТ И PDF ТОЛЬКО ЕСЛИ ЕСТЬ ПРОБЛЕМЫ ===
+            if issues and len(issues) > 0:
+                logger.info(f"Добавление маркер-листа с {len(issues)} проблемами")
+                
+                # === PAGE BREAK (переход на страницу 2) ===
+                para_break = doc.add_paragraph()
+                run = para_break.add_run()
+                run.add_break(WD_BREAK.PAGE)  # Page break
+                
+                # === СТРАНИЦА 2: MARKER LIST ===
+                
+                # === 2. MARKER LIST (точно как в референсе) ===
+                self._add_marker_list_exact(doc, issues)
+                
+                # === 3. PDF КАК ИЗОБРАЖЕНИЯ ===
+                if pdf_20_path:
+                    doc.add_paragraph()
+                    self._add_pdf_image(doc, pdf_20_path)
+                
+                if pdf_51_path:
+                    doc.add_paragraph()
+                    self._add_pdf_image(doc, pdf_51_path)
+            else:
+                logger.info("⚠️  CSV пустой (нет проблем) - маркер-лист не добавляется")
+                logger.info("   Отчет содержит только техническую таблицу")
             
             doc.save(output_path)
             logger.info(f"Отчет создан: {output_path}")
