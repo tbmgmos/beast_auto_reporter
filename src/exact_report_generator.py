@@ -757,18 +757,21 @@ class ExactReportGenerator:
         """Проверка на некорректный тип фонограммы в названии файла
         
         Args:
-            description: Текст описания из маркера
+            description: Текст описания из маркера (БЕЗ расширения .wav)
             
         Returns:
             True если найдены некорректные типы (50, 21 вместо 51, 20)
         """
         import re
         # Ищем паттерны с неправильными типами фонограмм
+        # ВАЖНО: проверяем только если есть underscore перед числом (часть названия файла)
         incorrect_patterns = [
-            r'[_\s]50[_\s\.]',  # _50_ или .50.
-            r'[_\s]21[_\s\.]',  # _21_ или .21.
-            r'5\.0',             # 5.0 вместо 5.1
-            r'2\.1',             # 2.1 вместо 2.0
+            r'_50_',             # _50_ (должно быть _51_)
+            r'_21_',             # _21_ (должно быть _20_)
+            r'_5\.0_',           # _5.0_ (должно быть _5.1_)
+            r'_2\.1_',           # _2.1_ (должно быть _2.0_)
+            r'_50$',             # _50 в конце (без расширения)
+            r'_21$',             # _21 в конце
         ]
         
         for pattern in incorrect_patterns:
@@ -837,13 +840,18 @@ class ExactReportGenerator:
                 # Проверяем на "НОВЫЙ МАРКЕР" в комментариях
                 is_new_marker = issue.comments and "НОВЫЙ МАРКЕР" in issue.comments.upper()
                 
+                # Убираем расширение .wav из описания
+                description_clean = issue.description
+                if description_clean.lower().endswith('.wav'):
+                    description_clean = description_clean[:-4]
+                
                 # Проверяем на некорректный тип фонограммы в описании
-                has_incorrect_type = self._check_incorrect_audio_type(issue.description)
+                has_incorrect_type = self._check_incorrect_audio_type(description_clean)
                 
                 # Заполняем данные
                 row.cells[0].text = issue.timecode_in
                 row.cells[1].text = issue.timecode_out
-                row.cells[2].text = issue.description
+                row.cells[2].text = description_clean
                 row.cells[3].text = '*' if issue.audio_20_c else ''
                 row.cells[4].text = '*' if issue.audio_20_uc else ''
                 row.cells[5].text = '*' if issue.audio_51_c else ''
