@@ -90,13 +90,21 @@ class ExactReportGenerator:
             self._add_marker_list_exact(doc, issues)
             
             # === 3. PDF КАК ИЗОБРАЖЕНИЯ (всегда, если файлы существуют) ===
+            # PDF добавляются на отдельной странице (страница 3+)
+            if pdf_20_path or pdf_51_path:
+                # Page break перед PDF (переход на страницу 3)
+                para_break_pdf = doc.add_paragraph()
+                run_pdf = para_break_pdf.add_run()
+                run_pdf.add_break(WD_BREAK.PAGE)
+                logger.info("Page break перед PDF добавлен")
+            
             if pdf_20_path:
-                doc.add_paragraph()
                 self._add_pdf_image(doc, pdf_20_path)
-                logger.info(f"PDF 2.0 добавлен: {pdf_20_path}")
+                logger.info(f"PDF 2.0 добавлен на странице 3+: {pdf_20_path}")
             
             if pdf_51_path:
-                doc.add_paragraph()
+                if pdf_20_path:
+                    doc.add_paragraph()  # Отступ между PDF
                 self._add_pdf_image(doc, pdf_51_path)
                 logger.info(f"PDF 5.1 добавлен: {pdf_51_path}")
             
