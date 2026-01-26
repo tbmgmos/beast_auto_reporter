@@ -31,13 +31,14 @@ class ConclusionGenerator:
         self.use_llm = use_llm
         logger.info(f"ConclusionGenerator инициализирован (LLM: {use_llm})")
     
-    def generate_technical_conclusion(self, tech_info: dict, params: dict = None) -> str:
+    def generate_technical_conclusion(self, tech_info: dict, params: dict = None, report_type: str = "standard") -> str:
         """
         Генерация технического заключения на основе параметров
         
         Args:
             tech_info: Техническая информация из аудио/видео/PDF
             params: Номинальные параметры из Параметры.txt
+            report_type: Тип отчета (standard, me, me_ours, tifflo)
             
         Returns:
             Текст технического заключения
@@ -50,6 +51,9 @@ class ConclusionGenerator:
         target_peak = params.get('true_peak', -1.0) if params else -1.0
         target_lra = params.get('lra_max', 15.0) if params else 15.0
         lufs_tolerance = 0.5
+        
+        # Для M&E отчетов НЕ проверяем LUFS и LRA (только TRUE PEAK)
+        check_lufs_lra = (report_type != "me")
         
         # Проверяем LUFS, TRUE PEAK, LRA для PDF файлов
         lufs_issues_20 = []
@@ -64,15 +68,16 @@ class ConclusionGenerator:
                 pdf_data = tech_info[pdf_key]
                 is_20 = "20" in pdf_key
                 
-                # LUFS
-                lufs = pdf_data.get('lufs')
-                if lufs is not None and abs(lufs - target_lufs) > lufs_tolerance:
-                    if is_20:
-                        lufs_issues_20.append(lufs)
-                    else:
-                        lufs_issues_51.append(lufs)
+                # LUFS (пропускаем для M&E)
+                if check_lufs_lra:
+                    lufs = pdf_data.get('lufs')
+                    if lufs is not None and abs(lufs - target_lufs) > lufs_tolerance:
+                        if is_20:
+                            lufs_issues_20.append(lufs)
+                        else:
+                            lufs_issues_51.append(lufs)
                 
-                # TRUE PEAK
+                # TRUE PEAK (проверяем всегда)
                 true_peak = pdf_data.get('true_peak')
                 if true_peak is not None and true_peak > target_peak:
                     if is_20:
@@ -80,23 +85,25 @@ class ConclusionGenerator:
                     else:
                         peak_issues_51.append(true_peak)
                 
-                # LRA
-                lra = pdf_data.get('lra')
-                if lra is not None and lra > target_lra:
-                    if is_20:
-                        lra_issues_20.append(lra)
-                    else:
-                        lra_issues_51.append(lra)
+                # LRA (пропускаем для M&E)
+                if check_lufs_lra:
+                    lra = pdf_data.get('lra')
+                    if lra is not None and lra > target_lra:
+                        if is_20:
+                            lra_issues_20.append(lra)
+                        else:
+                            lra_issues_51.append(lra)
         
-        # Формируем проблемы по интегральной громкости
-        if lufs_issues_20 and lufs_issues_51:
-            problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограммах 2.0 и 5.1")
-        elif lufs_issues_20:
-            problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограмме 2.0")
-        elif lufs_issues_51:
-            problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограмме 5.1")
+        # Формируем проблемы по интегральной громкости (только если не M&E)
+        if check_lufs_lra:
+            if lufs_issues_20 and lufs_issues_51:
+                problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограммах 2.0 и 5.1")
+            elif lufs_issues_20:
+                problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограмме 2.0")
+            elif lufs_issues_51:
+                problems.append("Параметр «интегральная громкость» не соответствует допустимым значениям в фонограмме 5.1")
         
-        # Формируем проблемы по пиковым значениям
+        # Формируем проблемы по пиковым значениям (всегда)
         if peak_issues_20 and peak_issues_51:
             problems.append("Параметр «пиковые значения» превышает допустимое значение в фонограммах 2.0 и 5.1")
         elif peak_issues_20:
@@ -104,13 +111,14 @@ class ConclusionGenerator:
         elif peak_issues_51:
             problems.append("Параметр «пиковые значения» превышает допустимое значение в фонограмме 5.1")
         
-        # Формируем проблемы по диапазону громкости
-        if lra_issues_20 and lra_issues_51:
-            problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограммах 2.0 и 5.1")
-        elif lra_issues_20:
-            problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограмме 2.0")
-        elif lra_issues_51:
-            problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограмме 5.1")
+        # Формируем проблемы по диапазону громкости (только если не M&E)
+        if check_lufs_lra:
+            if lra_issues_20 and lra_issues_51:
+                problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограммах 2.0 и 5.1")
+            elif lra_issues_20:
+                problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограмме 2.0")
+            elif lra_issues_51:
+                problems.append("Параметр «диапазон громкости» превышает допустимое значение в фонограмме 5.1")
         
         # Проверяем порядок каналов для 5.1
         # ОТКЛЮЧЕНО: Порядок каналов берется из метаданных и считается корректным

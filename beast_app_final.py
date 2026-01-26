@@ -281,7 +281,7 @@ class ProcessingThread(QThread):
                 # Стандартная генерация для основного и M&E отчетов
                 # Техническая оценка (на основе технических параметров и PDF)
                 params = tech_info.get('params', {}) if tech_info else {}
-                technical_conclusion = self.app.conclusion_gen.generate_technical_conclusion(tech_info, params)
+                technical_conclusion = self.app.conclusion_gen.generate_technical_conclusion(tech_info, params, self.report_type)
                 
                 # Субъективная оценка (на основе проблем из CSV)
                 subjective_conclusion = self.app.conclusion_gen.generate_subjective_conclusion(issues)
