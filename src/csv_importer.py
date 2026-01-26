@@ -35,9 +35,20 @@ class CSVImporter:
     def __init__(self):
         logger.info("CSVImporter инициализирован")
     
+    def _get_column_value(self, row: Dict, *column_names: str) -> str:
+        """
+        Получить значение колонки по нескольким возможным названиям
+        Пробует каждое название по порядку, возвращает первое найденное
+        """
+        for name in column_names:
+            if name in row and row[name]:
+                return row[name].strip()
+        return ''
+    
     def import_issues(self, csv_path: str) -> List[Issue]:
         """
         Импорт проблем из CSV файла
+        Поддерживает английские и русские названия колонок
         
         Args:
             csv_path: Путь к CSV файлу
@@ -56,34 +67,61 @@ class CSVImporter:
                 f.seek(0)
                 
                 delimiter = '\t' if '\t' in first_line else ','
+                logger.info(f"Разделитель CSV: {'табуляция' if delimiter == chr(9) else 'запятая'}")
                 
                 reader = csv.DictReader(f, delimiter=delimiter)
                 
+                # Логируем найденные колонки
+                if reader.fieldnames:
+                    logger.info(f"Найдено колонок: {len(reader.fieldnames)}")
+                    logger.info(f"Названия колонок: {reader.fieldnames}")
+                
+                row_count = 0
                 for row in reader:
+                    row_count += 1
+                    
+                    # Получаем таймкод (пробуем английский и русский варианты)
+                    timecode_in = self._get_column_value(row, 'Timecode In', 'TC IN', 'TC_IN')
+                    
                     # Пропускаем пустые строки
-                    if not row.get('Timecode In', '').strip():
+                    if not timecode_in:
+                        logger.debug(f"Строка {row_count}: пропущена (нет таймкода)")
                         continue
                     
                     issue = Issue(
-                        timecode_in=row.get('Timecode In', '').strip(),
-                        timecode_out=row.get('Timecode Out', '').strip(),
-                        description=row.get('Description', '').strip(),
-                        audio_20_c=row.get('2.0 C', '').strip() == '*',
-                        audio_20_uc=row.get('2.0 UC', '').strip() == '*',
-                        audio_51_c=row.get('5.1 C', '').strip() == '*',
-                        audio_51_uc=row.get('5.1 UC', '').strip() == '*',
-                        blocker=row.get('БЛОКЕР', '').strip() == '*',
-                        fix_required=row.get('ТРЕБУЕТ ИСПРАВЛЕНИЯ', '').strip() == '*',
-                        comment_required=row.get('ТРЕБУЕТ КОММЕНТАРИЯ', '').strip() == '*',
-                        comments=row.get('КОММЕНТАРИИ', '').strip() if 'КОММЕНТАРИИ' in row else ''
+                        timecode_in=timecode_in,
+                        timecode_out=self._get_column_value(row, 'Timecode Out', 'TC OUT', 'TC_OUT'),
+                        description=self._get_column_value(row, 'Description', 'ОПИСАНИЕ ПРОБЛЕМЫ', 'ОПИСАНИЕ'),
+                        audio_20_c=self._get_column_value(row, '2.0 C') == '*',
+                        audio_20_uc=self._get_column_value(row, '2.0 UC') == '*',
+                        audio_51_c=self._get_column_value(row, '5.1 C') == '*',
+                        audio_51_uc=self._get_column_value(row, '5.1 UC') == '*',
+                        blocker=self._get_column_value(row, 'БЛОКЕР', 'BLOCKER') == '*',
+                        fix_required=self._get_column_value(row, 'ТРЕБУЕТ ИСПРАВЛЕНИЯ', 'FIX REQUIRED') == '*',
+                        comment_required=self._get_column_value(row, 'ТРЕБУЕТ КОММЕНТАРИЯ', 'COMMENT REQUIRED') == '*',
+                        comments=self._get_column_value(row, 'КОММЕНТАРИИ', 'COMMENTS')
                     )
                     
                     issues.append(issue)
+                    logger.debug(f"Строка {row_count}: {timecode_in} - {issue.description[:30]}...")
             
-            logger.info(f"Импортировано {len(issues)} проблем из CSV")
+            logger.info(f"✅ Импортировано {len(issues)} проблем из {row_count} строк CSV")
             
+            if len(issues) == 0:
+                logger.warning("⚠️  CSV файл пустой или не содержит корректных данных!")
+                logger.warning("   Проверьте:")
+                logger.warning("   1. Есть ли данные в строках?")
+                logger.warning("   2. Правильная ли кодировка (UTF-8)?")
+                logger.warning("   3. Есть ли колонка 'Timecode In' или 'TC IN'?")
+            
+        except UnicodeDecodeError as e:
+            logger.error(f"❌ Ошибка кодировки CSV файла: {e}")
+            logger.error("   Попробуйте сохранить CSV в кодировке UTF-8")
+            raise
         except Exception as e:
-            logger.error(f"Ошибка импорта CSV: {e}")
+            logger.error(f"❌ Ошибка импорта CSV: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
         
         return issues
