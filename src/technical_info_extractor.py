@@ -16,6 +16,8 @@ from typing import Dict, Optional
 import re
 import subprocess
 import shutil
+import sys
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +30,34 @@ class TechnicalInfoExtractor:
         self.ffprobe_path = self._find_ffprobe()
     
     def _find_ffprobe(self) -> str:
-        """Поиск ffprobe в системе"""
-        # Сначала проверяем через shutil.which (проверяет PATH)
+        """Поиск ffprobe в системе (сначала в bundle, потом в PATH)"""
+        # ПРИОРИТЕТ 1: Проверяем bundled ffprobe (PyInstaller)
+        if getattr(sys, 'frozen', False):
+            # Приложение запущено как bundle (PyInstaller)
+            bundle_dir = sys._MEIPASS
+            
+            # Путь 1: Проверяем в _MEIPASS/ffmpeg/ (обычное расположение)
+            bundled_ffprobe = os.path.join(bundle_dir, 'ffmpeg', 'ffprobe')
+            if os.path.exists(bundled_ffprobe) and os.access(bundled_ffprobe, os.X_OK):
+                logger.info(f"✅ ffprobe найден в bundle: {bundled_ffprobe}")
+                return bundled_ffprobe
+            
+            # Путь 2: Проверяем в ../Frameworks/ffmpeg/ (macOS .app структура)
+            frameworks_ffprobe = os.path.join(bundle_dir, '..', 'Frameworks', 'ffmpeg', 'ffprobe')
+            frameworks_ffprobe = os.path.abspath(frameworks_ffprobe)
+            if os.path.exists(frameworks_ffprobe) and os.access(frameworks_ffprobe, os.X_OK):
+                logger.info(f"✅ ffprobe найден в Frameworks: {frameworks_ffprobe}")
+                return frameworks_ffprobe
+            
+            logger.warning(f"⚠️  Bundled ffprobe не найден в: {bundled_ffprobe} или {frameworks_ffprobe}")
+        
+        # ПРИОРИТЕТ 2: Проверяем через shutil.which (проверяет PATH)
         ffprobe = shutil.which('ffprobe')
         if ffprobe:
             logger.info(f"✅ ffprobe найден в PATH: {ffprobe}")
             return ffprobe
         
-        # Если не нашли в PATH, проверяем стандартные места установки (Homebrew)
+        # ПРИОРИТЕТ 3: Проверяем стандартные места установки (Homebrew)
         common_paths = [
             '/opt/homebrew/bin/ffprobe',  # Apple Silicon Homebrew
             '/usr/local/bin/ffprobe',      # Intel Homebrew

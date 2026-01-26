@@ -5,7 +5,9 @@ block_cipher = None
 a = Analysis(
     ['beast_app_dragdrop.py'],
     pathex=[],
-    binaries=[],
+    binaries=[
+        ('/opt/homebrew/bin/ffprobe', 'ffmpeg'),
+    ],
     datas=[
         ('src', 'src'),
     ],
@@ -60,13 +62,13 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Beast Auto Reporter.app',
-    icon=None,
+    icon='app_icon.icns',
     bundle_identifier='com.beastautoreporter.dragdrop',
     info_plist={
         'CFBundleName': 'Beast Auto Reporter',
         'CFBundleDisplayName': 'Beast Auto Reporter',
-        'CFBundleVersion': '5.12.1',
-        'CFBundleShortVersionString': '5.12.1',
+        'CFBundleVersion': '5.13.0',
+        'CFBundleShortVersionString': '5.13.0',
         'CFBundleIdentifier': 'com.beastautoreporter.dragdrop',
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '10.13.0',

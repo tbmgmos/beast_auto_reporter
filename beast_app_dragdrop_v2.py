@@ -171,13 +171,7 @@ class ProcessingThread(QThread):
             copied_count = 0
             for file_path in files_to_copy:
                 try:
-                    # CSV переименовываем как base_name_rus.csv (без слова "отчет")
-                    if file_path == files['csv']:
-                        dest = output_folder / f"{base_name}_rus.csv"
-                        logger.info(f"✅ CSV переименован: {file_path.name} → {base_name}_rus.csv")
-                    else:
-                        dest = output_folder / file_path.name
-                    
+                    dest = output_folder / file_path.name
                     shutil.copy2(file_path, dest)
                     logger.info(f"✅ Скопирован: {file_path.name}")
                     copied_count += 1
@@ -292,13 +286,7 @@ class ProcessingThread(QThread):
                 # Субъективная оценка (на основе проблем из CSV)
                 subjective_conclusion = self.app.conclusion_gen.generate_subjective_conclusion(issues)
             
-            # ЛОГИРОВАНИЕ ЗАКЛЮЧЕНИЙ
-            logger.info("=== ЗАКЛЮЧЕНИЯ СГЕНЕРИРОВАНЫ ===")
-            logger.info(f"Техническое заключение ({len(technical_conclusion)} символов):")
-            logger.info(f"  >>> {technical_conclusion[:200]}...")
-            logger.info(f"Субъективное заключение ({len(subjective_conclusion)} символов):")
-            logger.info(f"  >>> {subjective_conclusion[:200]}...")
-            logger.info("=== КОНЕЦ ЗАКЛЮЧЕНИЙ ===")
+            logger.info("Заключения сгенерированы")
             
             # === ШАГ 8: Генерация отчета ===
             self.status_update.emit("📄 Генерация итогового отчета...")
@@ -344,9 +332,6 @@ class ProcessingThread(QThread):
             elif files.get('pdf_51'):
                 pdf_51_path = str(files['pdf_51'])
             
-            # Получаем имя подготовившего отчет (если есть)
-            prepared_by = getattr(self.app, 'prepared_by', '')
-            
             self.app.report_gen.create_exact_report(
                 issues=issues,
                 output_path=str(report_path),
@@ -355,8 +340,7 @@ class ProcessingThread(QThread):
                 pdf_51_path=pdf_51_path,
                 conclusion_technical=technical_conclusion,
                 conclusion_subjective=subjective_conclusion,
-                report_type=self.report_type,
-                prepared_by=prepared_by
+                report_type=self.report_type
             )
             
             # === ЗАВЕРШЕНО ===
@@ -409,7 +393,6 @@ class BeastAutoReporterFinalApp(QMainWindow):
         
         self.input_folder = None
         self.processing_thread = None
-        self.prepared_by = ""  # Имя подготовившего отчет
         
         # Инициализация компонентов
         self.csv_importer = CSVImporter()

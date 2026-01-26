@@ -416,6 +416,14 @@ class ExactReportGenerator:
                 elif has_pdf and key.startswith('audio'):
                     pdf_data = tech_info[pdf_key]
                     
+                    # Название файла (оставляем пустым, т.к. аудиофайла нет)
+                    row.cells[1].text = ""
+                    self._format_cell(row.cells[1], align="left")
+                    
+                    # Хронометраж (оставляем пустым, т.к. аудиофайла нет)
+                    row.cells[2].text = ""
+                    self._format_cell(row.cells[2], align="center")
+                    
                     # LUFS
                     lufs = pdf_data.get('lufs')
                     if lufs is not None:
@@ -455,8 +463,8 @@ class ExactReportGenerator:
             for col in range(1, 4):
                 cell_merged.merge(row.cells[col])
             
-            # Форматируем объединенную ячейку
-            self._format_cell(cell_merged, bg="FFFFFF", align="center")
+            # Форматируем объединенную ячейку БЕЗ фона (убираем белую полосу)
+            self._format_cell(cell_merged, align="center")
             
             # Индикаторы в последних 3 ячейках
             self._format_cell(row.cells[4], bg="00FA02")  # Зеленый - норма
@@ -476,6 +484,12 @@ class ExactReportGenerator:
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
+            
+            # ЛОГИРОВАНИЕ ЗАКЛЮЧЕНИЙ В ГЕНЕРАТОРЕ
+            logger.info("=== ЗАКЛЮЧЕНИЯ В ГЕНЕРАТОРЕ ОТЧЕТА (STANDARD) ===")
+            logger.info(f"conclusion_tech: '{conclusion_tech}' (длина: {len(conclusion_tech)})")
+            logger.info(f"conclusion_subj: '{conclusion_subj}' (длина: {len(conclusion_subj)})")
+            logger.info("=" * 50)
             
             # Добавляем оба заключения в одну ячейку (заголовки уже в тексте заключений)
             para = cell.paragraphs[0]
@@ -533,6 +547,8 @@ class ExactReportGenerator:
         
         try:
             # Таблица: 9 строк x 5 столбцов (без LOUDNESS и LRA)
+            # Строки: 0=заголовок+дата+имя, 1=пустая, 2=колонки, 3-5=данные (2.0 ME, 5.1 ME, VIDEO),
+            #         6=индикаторы, 7=ЗАКЛЮЧЕНИЕ, 8=текст заключения
             table = doc.add_table(rows=9, cols=5)
             table.style = 'Table Grid'
             
@@ -675,13 +691,44 @@ class ExactReportGenerator:
                 self._format_cell(row.cells[0], align="left")
                 
                 has_data = tech_info and key in tech_info and tech_info[key]
+                has_pdf_only = not has_data and pdf_key and pdf_key in tech_info
                 
-                if not has_data:
+                if not has_data and not has_pdf_only:
                     logger.warning(f"M&E: Нет данных для {label} (key={key})")
                     # Оставляем ячейки пустыми
                     for col in range(1, 5):
                         row.cells[col].text = ""
                         self._format_cell(row.cells[col], bg="FFFFFF", align="center")
+                    continue
+                
+                # Если есть только PDF без аудио (для M&E)
+                if has_pdf_only and key.startswith('audio'):
+                    logger.info(f"M&E: Обработка {label} только с PDF (нет аудиофайла)")
+                    pdf_data = tech_info[pdf_key]
+                    
+                    # Название файла (пустое)
+                    row.cells[1].text = ""
+                    self._format_cell(row.cells[1], align="left")
+                    
+                    # Хронометраж (пустой)
+                    row.cells[2].text = ""
+                    self._format_cell(row.cells[2], align="center")
+                    
+                    # TRUE PEAK из PDF
+                    true_peak = pdf_data.get('true_peak')
+                    if true_peak is not None:
+                        sign = "+" if true_peak > 0 else ""
+                        row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
+                        peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
+                        self._format_cell(row.cells[3], bg=peak_bg, align="center")
+                    else:
+                        row.cells[3].text = ""
+                        self._format_cell(row.cells[3], bg="FFFFFF", align="center")
+                    
+                    # Формат файла (пустой)
+                    row.cells[4].text = ""
+                    self._format_cell(row.cells[4], bg="FFFFFF", align="left")
+                    
                     continue
                 
                 if has_data:
@@ -770,30 +817,36 @@ class ExactReportGenerator:
                         row.cells[4].text = format_text
                         self._format_cell(row.cells[4], bg="00FA02", align="left")
             
-            # Строка 7: Цветовые индикаторы
-            row = table.rows[7]
+            # Строка 6: Цветовые индикаторы
+            row = table.rows[6]
             cell_merged = row.cells[0]
             for col in range(1, 2):
                 cell_merged.merge(row.cells[col])
-            # Форматируем объединенную ячейку
-            self._format_cell(cell_merged, bg="FFFFFF", align="center")
+            # Форматируем объединенную ячейку БЕЗ фона (убираем белую полосу)
+            self._format_cell(cell_merged, align="center")
             self._format_cell(row.cells[2], bg="00FA02")
             self._format_cell(row.cells[3], bg="E83121")
             self._format_cell(row.cells[4], bg="FBBA18")
             
-            # Строка 8: Заголовок "ЗАКЛЮЧЕНИЕ:"
-            row = table.rows[8]
+            # Строка 7: Заголовок "ЗАКЛЮЧЕНИЕ:"
+            row = table.rows[7]
             cell = row.cells[0]
             for col in range(1, 5):
                 cell.merge(row.cells[col])
             cell.text = "ЗАКЛЮЧЕНИЕ:"
             self._format_cell(cell, bold=True, font_size=10, align="left")
             
-            # Строка 9: Текст заключения (заголовки уже в тексте заключений)
-            row = table.rows[9]
+            # Строка 8: Текст заключения (заголовки уже в тексте заключений)
+            row = table.rows[8]
             cell = row.cells[0]
             for col in range(1, 5):
                 cell.merge(row.cells[col])
+            
+            # ЛОГИРОВАНИЕ ЗАКЛЮЧЕНИЙ В ГЕНЕРАТОРЕ
+            logger.info("=== ЗАКЛЮЧЕНИЯ В ГЕНЕРАТОРЕ ОТЧЕТА (M&E) ===")
+            logger.info(f"conclusion_tech: '{conclusion_tech}' (длина: {len(conclusion_tech)})")
+            logger.info(f"conclusion_subj: '{conclusion_subj}' (длина: {len(conclusion_subj)})")
+            logger.info("=" * 50)
             
             # Объединяем заключения (заголовки уже внутри)
             conclusion_parts = []
