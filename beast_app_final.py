@@ -171,7 +171,13 @@ class ProcessingThread(QThread):
             copied_count = 0
             for file_path in files_to_copy:
                 try:
-                    dest = output_folder / file_path.name
+                    # CSV переименовываем как base_name_rus.csv (без слова "отчет")
+                    if file_path == files['csv']:
+                        dest = output_folder / f"{base_name}_rus.csv"
+                        logger.info(f"✅ CSV переименован: {file_path.name} → {base_name}_rus.csv")
+                    else:
+                        dest = output_folder / file_path.name
+                    
                     shutil.copy2(file_path, dest)
                     logger.info(f"✅ Скопирован: {file_path.name}")
                     copied_count += 1
