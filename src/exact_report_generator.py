@@ -89,15 +89,16 @@ class ExactReportGenerator:
             # === 2. MARKER LIST (точно как в референсе) ===
             self._add_marker_list_exact(doc, issues)
             
-            # === 3. PDF КАК ИЗОБРАЖЕНИЯ (только если есть проблемы) ===
-            if issues and len(issues) > 0:
-                if pdf_20_path:
-                    doc.add_paragraph()
-                    self._add_pdf_image(doc, pdf_20_path)
-                
-                if pdf_51_path:
-                    doc.add_paragraph()
-                    self._add_pdf_image(doc, pdf_51_path)
+            # === 3. PDF КАК ИЗОБРАЖЕНИЯ (всегда, если файлы существуют) ===
+            if pdf_20_path:
+                doc.add_paragraph()
+                self._add_pdf_image(doc, pdf_20_path)
+                logger.info(f"PDF 2.0 добавлен: {pdf_20_path}")
+            
+            if pdf_51_path:
+                doc.add_paragraph()
+                self._add_pdf_image(doc, pdf_51_path)
+                logger.info(f"PDF 5.1 добавлен: {pdf_51_path}")
             
             doc.save(output_path)
             logger.info(f"Отчет создан: {output_path}")
@@ -770,6 +771,17 @@ class ExactReportGenerator:
     def _add_marker_list_exact(self, doc: Document, issues: List[Issue]) -> None:
         """MARKER LIST - точно как в референсе"""
         try:
+            # Добавляем заголовок "MARKER LIST"
+            header_para = doc.add_paragraph()
+            header_run = header_para.add_run("MARKER LIST")
+            header_run.font.name = "Helvetica Neue"
+            header_run.font.size = Pt(14)
+            header_run.font.bold = True
+            header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            # Отступ после заголовка
+            doc.add_paragraph()
+            
             # Создаем таблицу БЕЗ заголовочной строки с повторяющимся текстом
             table = doc.add_table(rows=1 + len(issues), cols=11)
             table.style = 'Table Grid'
