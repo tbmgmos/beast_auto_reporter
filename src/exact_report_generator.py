@@ -38,7 +38,8 @@ class ExactReportGenerator:
                            pdf_51_path: str = None,
                            conclusion_technical: str = "",
                            conclusion_subjective: str = "",
-                           report_type: str = "main") -> None:
+                           report_type: str = "main",
+                           prepared_by: str = "") -> None:
         """Создание точного отчета
         
         Args:
@@ -67,11 +68,11 @@ class ExactReportGenerator:
                 if report_type == "me" or report_type == "me_ours":
                     # Используем M&E таблицу для обычных M&E и наших работ
                     self._add_me_technical_table(
-                        doc, tech_info, conclusion_technical, conclusion_subjective
+                        doc, tech_info, conclusion_technical, conclusion_subjective, prepared_by
                     )
                 else:
                     self._add_technical_table_with_conclusion(
-                        doc, tech_info, conclusion_technical, conclusion_subjective
+                        doc, tech_info, conclusion_technical, conclusion_subjective, prepared_by
                     )
             
             # === PAGE BREAK (переход на страницу 2) ===
@@ -116,11 +117,16 @@ class ExactReportGenerator:
             raise
     
     def _add_technical_table_with_conclusion(self, doc: Document, tech_info: Dict, 
-                                             conclusion_tech: str, conclusion_subj: str) -> None:
+                                             conclusion_tech: str, conclusion_subj: str, prepared_by: str = "") -> None:
         """Техническая таблица с заключением (точно по скриншоту)"""
         try:
+            # Импорты для работы с форматированием
+            from docx.shared import Pt, Cm, Inches
+            from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+            from datetime import datetime
+            
             # Таблица: 11 строк x 7 столбцов
-            # Строки: 0=заголовок+дата (объединенная), 1=пустая, 2=колонки, 
+            # Строки: 0=заголовок+дата+имя, 1=пустая, 2=колонки, 
             #         3-7=данные (2.0 cens, 2.0 uncens, 5.1 cens, 5.1 uncens, VIDEO), 
             #         8=индикаторы, 9=ЗАКЛЮЧЕНИЕ, 10=текст заключения
             table = doc.add_table(rows=11, cols=7)
@@ -157,7 +163,7 @@ class ExactReportGenerator:
                     if idx < len(widths_cm):
                         gridCol.set(qn('w:w'), str(int(widths_cm[idx] * 567)))  # cm to twips
             
-            # Строка 0: Заголовок + Дата (разделенная)
+            # Строка 0: Заголовок + Дата
             row0 = table.rows[0]
             
             # Левая часть: "ОБЪЕКТИВНАЯ ОЦЕНКА КАЧЕСТВА ЗВУЧАНИЯ ФОНОГРАММЫ" (объединяем первые 5 колонок)
@@ -167,12 +173,38 @@ class ExactReportGenerator:
             cell_left.text = "ОБЪЕКТИВНАЯ ОЦЕНКА КАЧЕСТВА ЗВУЧАНИЯ ФОНОГРАММЫ"
             self._format_cell(cell_left, bg="E7E6E6", bold=True, align="center", font_size=11, vertical_align="center")
             
-            # Правая часть: "ДАТА ОТЧЕТА:" (объединяем последние 2 колонки)
-            from datetime import datetime
+            # Правая часть: "ДАТА ОТЧЕТА:" + "ОТЧЁТ ПОДГОТОВИЛ:" (объединяем последние 2 колонки)
             cell_right = row0.cells[5]
             cell_right.merge(row0.cells[6])
-            cell_right.text = f"ДАТА ОТЧЕТА:\n{datetime.now().strftime('%d.%m.%Y')}"
-            self._format_cell(cell_right, bg="E7E6E6", bold=True, align="center", font_size=10, vertical_align="center")
+            
+            # Убираем левую границу для слитности
+            tc_pr_right = cell_right._element.get_or_add_tcPr()
+            tc_borders_right = OxmlElement('w:tcBorders')
+            left_border = OxmlElement('w:left')
+            left_border.set(qn('w:val'), 'none')
+            tc_borders_right.append(left_border)
+            tc_pr_right.append(tc_borders_right)
+            
+            # Устанавливаем фон
+            shading_right = OxmlElement('w:shd')
+            shading_right.set(qn('w:fill'), 'E7E6E6')
+            tc_pr_right.append(shading_right)
+            
+            # Вертикальное выравнивание
+            v_align_right = OxmlElement('w:vAlign')
+            v_align_right.set(qn('w:val'), 'center')
+            tc_pr_right.append(v_align_right)
+            
+            # Добавляем текст
+            cell_right.text = f"ДАТА ОТЧЕТА:\n{datetime.now().strftime('%d.%m.%Y')}\n\nОТЧЁТ ПОДГОТОВИЛ:\n{prepared_by or 'Не указано'}"
+            
+            # Форматируем параграфы
+            for para in cell_right.paragraphs:
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in para.runs:
+                    run.font.bold = True
+                    run.font.size = Pt(10)
+                    run.font.name = 'Arial'
             
             # Строка 1: Пустая
             # (оставляем пустой)
@@ -185,7 +217,7 @@ class ExactReportGenerator:
                 cell.text = header
                 self._format_cell(cell, bg="D9D9D9", bold=True, align="center", font_size=9, vertical_align="center")
             
-            # Строки 3-7: Данные с цветовой индикацией
+            # Строки 4-8: Данные с цветовой индикацией
             rows_data = [
                 ("2.0 cens", "audio_20_c", "pdf_20_c"),
                 ("2.0 uncens", "audio_20_uc", "pdf_20_uc"),
@@ -253,9 +285,10 @@ class ExactReportGenerator:
                 if has_audio:
                     data = tech_info[key]
                     
-                    # Имя файла с проверкой на некорректный тип
+                    # Имя файла с проверкой на некорректный тип (убираем расширение)
                     file_name = data.get('file_name', '')
-                    row.cells[1].text = file_name
+                    file_name_without_ext = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
+                    row.cells[1].text = file_name_without_ext
                     
                     # Проверяем на некорректный тип фонограммы в названии
                     has_incorrect_type = self._check_incorrect_audio_type(file_name)
@@ -479,8 +512,13 @@ class ExactReportGenerator:
             logger.error(f"Ошибка добавления технической таблицы: {e}")
     
     def _add_me_technical_table(self, doc: Document, tech_info: Dict,
-                                conclusion_tech: str, conclusion_subj: str) -> None:
+                                conclusion_tech: str, conclusion_subj: str, prepared_by: str = "") -> None:
         """Техническая таблица M&E (упрощенная версия)"""
+        # Импорты для работы с форматированием
+        from docx.shared import Pt, Cm, Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+        from datetime import datetime
+        
         logger.info("=== ГЕНЕРАЦИЯ M&E ТАБЛИЦЫ ===")
         logger.info(f"tech_info keys: {list(tech_info.keys()) if tech_info else 'None'}")
         if tech_info and 'video' in tech_info:
@@ -534,11 +572,37 @@ class ExactReportGenerator:
             cell_left.text = "ОБЪЕКТИВНАЯ ОЦЕНКА КАЧЕСТВА ЗВУЧАНИЯ ФОНОГРАММЫ"
             self._format_cell(cell_left, bg="E7E6E6", bold=True, align="center", font_size=11, vertical_align="center")
             
-            from datetime import datetime
             cell_right = row0.cells[3]
             cell_right.merge(row0.cells[4])
-            cell_right.text = f"ДАТА ОТЧЕТА:\n{datetime.now().strftime('%d.%m.%Y')}"
-            self._format_cell(cell_right, bg="E7E6E6", bold=True, align="center", font_size=10, vertical_align="center")
+            
+            # Убираем левую границу для слитности
+            tc_pr_right = cell_right._element.get_or_add_tcPr()
+            tc_borders_right = OxmlElement('w:tcBorders')
+            left_border = OxmlElement('w:left')
+            left_border.set(qn('w:val'), 'none')
+            tc_borders_right.append(left_border)
+            tc_pr_right.append(tc_borders_right)
+            
+            # Устанавливаем фон
+            shading_right = OxmlElement('w:shd')
+            shading_right.set(qn('w:fill'), 'E7E6E6')
+            tc_pr_right.append(shading_right)
+            
+            # Вертикальное выравнивание
+            v_align_right = OxmlElement('w:vAlign')
+            v_align_right.set(qn('w:val'), 'center')
+            tc_pr_right.append(v_align_right)
+            
+            # Добавляем текст
+            cell_right.text = f"ДАТА ОТЧЕТА:\n{datetime.now().strftime('%d.%m.%Y')}\n\nОТЧЁТ ПОДГОТОВИЛ:\n{prepared_by or 'Не указано'}"
+            
+            # Форматируем параграфы
+            for para in cell_right.paragraphs:
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in para.runs:
+                    run.font.bold = True
+                    run.font.size = Pt(10)
+                    run.font.name = 'Arial'
             
             # Строка 1: Пустая
             
@@ -623,9 +687,10 @@ class ExactReportGenerator:
                 if has_data:
                     data = tech_info[key]
                     
-                    # Имя файла с проверкой на некорректный тип
+                    # Имя файла с проверкой на некорректный тип (убираем расширение)
                     file_name = data.get('file_name', '')
-                    row.cells[1].text = file_name
+                    file_name_without_ext = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
+                    row.cells[1].text = file_name_without_ext
                     
                     # Проверяем на некорректный тип фонограммы в названии
                     has_incorrect_type = self._check_incorrect_audio_type(file_name)
@@ -705,8 +770,8 @@ class ExactReportGenerator:
                         row.cells[4].text = format_text
                         self._format_cell(row.cells[4], bg="00FA02", align="left")
             
-            # Строка 6: Цветовые индикаторы
-            row = table.rows[6]
+            # Строка 7: Цветовые индикаторы
+            row = table.rows[7]
             cell_merged = row.cells[0]
             for col in range(1, 2):
                 cell_merged.merge(row.cells[col])
@@ -716,16 +781,16 @@ class ExactReportGenerator:
             self._format_cell(row.cells[3], bg="E83121")
             self._format_cell(row.cells[4], bg="FBBA18")
             
-            # Строка 7: Заголовок "ЗАКЛЮЧЕНИЕ:"
-            row = table.rows[7]
+            # Строка 8: Заголовок "ЗАКЛЮЧЕНИЕ:"
+            row = table.rows[8]
             cell = row.cells[0]
             for col in range(1, 5):
                 cell.merge(row.cells[col])
             cell.text = "ЗАКЛЮЧЕНИЕ:"
             self._format_cell(cell, bold=True, font_size=10, align="left")
             
-            # Строка 8: Текст заключения (заголовки уже в тексте заключений)
-            row = table.rows[8]
+            # Строка 9: Текст заключения (заголовки уже в тексте заключений)
+            row = table.rows[9]
             cell = row.cells[0]
             for col in range(1, 5):
                 cell.merge(row.cells[col])

@@ -338,6 +338,9 @@ class ProcessingThread(QThread):
             elif files.get('pdf_51'):
                 pdf_51_path = str(files['pdf_51'])
             
+            # Получаем имя подготовившего отчет (если есть)
+            prepared_by = getattr(self.app, 'prepared_by', '')
+            
             self.app.report_gen.create_exact_report(
                 issues=issues,
                 output_path=str(report_path),
@@ -346,7 +349,8 @@ class ProcessingThread(QThread):
                 pdf_51_path=pdf_51_path,
                 conclusion_technical=technical_conclusion,
                 conclusion_subjective=subjective_conclusion,
-                report_type=self.report_type
+                report_type=self.report_type,
+                prepared_by=prepared_by
             )
             
             # === ЗАВЕРШЕНО ===
@@ -399,6 +403,7 @@ class BeastAutoReporterFinalApp(QMainWindow):
         
         self.input_folder = None
         self.processing_thread = None
+        self.prepared_by = ""  # Имя подготовившего отчет
         
         # Инициализация компонентов
         self.csv_importer = CSVImporter()

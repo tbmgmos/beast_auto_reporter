@@ -562,6 +562,10 @@ class BeastApp(QMainWindow):
         ai_card = self.create_ai_card()
         layout.addWidget(ai_card)
         
+        # Поле для имени подготовившего отчет
+        name_card = self.create_name_card()
+        layout.addWidget(name_card)
+        
         # Drag & Drop зона
         self.drop_zone = DropZone()
         self.drop_zone.files_dropped.connect(self.handle_dropped_files)
@@ -770,6 +774,72 @@ class BeastApp(QMainWindow):
         card.setLayout(card_layout)
         return card
     
+    def create_name_card(self):
+        """Создание карточки для ввода имени"""
+        from PyQt5.QtWidgets import QLineEdit
+        
+        card = QWidget()
+        card.setStyleSheet("""
+            QWidget {
+                background-color: white;
+                border-radius: 12px;
+                border: 1px solid #E0E0E0;
+            }
+        """)
+        card_layout = QHBoxLayout()
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setSpacing(12)
+        
+        label = QLabel("👤 Отчёт подготовил:")
+        label.setFont(QFont("SF Pro Text", 11, QFont.DemiBold))
+        label.setStyleSheet("background: transparent; border: none; color: #1C1B1F;")
+        card_layout.addWidget(label)
+        
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Введите ваше имя")
+        self.name_input.setFont(QFont("SF Pro Text", 10))
+        self.name_input.setStyleSheet("""
+            QLineEdit {
+                background: transparent;
+                border: none;
+                border-bottom: 2px solid #E0E0E0;
+                padding: 4px;
+                color: #1C1B1F;
+            }
+            QLineEdit:focus {
+                border-bottom: 2px solid #6200EE;
+            }
+        """)
+        self.name_input.setMaximumWidth(300)
+        
+        # Загружаем сохраненное имя
+        self.load_saved_name()
+        self.name_input.textChanged.connect(self.save_name)
+        
+        card_layout.addWidget(self.name_input)
+        card_layout.addStretch()
+        
+        card.setLayout(card_layout)
+        return card
+    
+    def load_saved_name(self):
+        """Загрузка сохраненного имени"""
+        config_file = Path.home() / ".beast_auto_reporter_config.txt"
+        if config_file.exists():
+            try:
+                name = config_file.read_text().strip()
+                self.name_input.setText(name)
+            except:
+                pass
+    
+    def save_name(self):
+        """Сохранение имени"""
+        config_file = Path.home() / ".beast_auto_reporter_config.txt"
+        try:
+            config_file.write_text(self.name_input.text())
+        except:
+            pass
+    
     def handle_dropped_files(self, files):
         """Обработка перетащенных файлов"""
         logger.info(f"Получено файлов: {len(files)}")
@@ -887,6 +957,10 @@ class BeastApp(QMainWindow):
         self.generate_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        
+        # Сохраняем имя подготовившего отчет
+        self.prepared_by = self.name_input.text().strip() or "Не указано"
+        logger.info(f"Отчёт подготовил: {self.prepared_by}")
         
         # Импортируем ProcessingThread из рабочей версии
         import sys
