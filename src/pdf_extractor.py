@@ -7,7 +7,10 @@ PDF Extractor Module
 import PyPDF2
 import fitz  # PyMuPDF - fallback для проблемных PDF
 import re
+import json
 from typing import Dict, List
+from pathlib import Path
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -79,6 +82,14 @@ class PDFExtractor:
         """
         text = self.extract_text_from_pdf(pdf_path)
         
+        # Debug: log text length and sample
+        if text:
+            logger.debug(f"  Extracted {len(text)} chars from PDF")
+            logger.debug(f"  First 500 chars: {text[:500]}")
+            logger.debug(f"  Last 500 chars: {text[-500:]}")
+        else:
+            logger.warning(f"  ⚠️ No text extracted from PDF!")
+        
         info = {
             'lufs': None,
             'true_peak': None,
@@ -98,11 +109,13 @@ class PDFExtractor:
                 r'LUFS[:\s]+(-?\d+\.?\d*)',
                 r'Integrated[:\s]+(-?\d+\.?\d*)',
                 r'Loudness[:\s]+(-?\d+\.?\d*)',
+                r'[-]?\d+\.?\d*\s+LUFS',  # Fallback: number before LUFS
             ]
             for pattern in lufs_patterns:
                 lufs_match = re.search(pattern, text, re.IGNORECASE)
                 if lufs_match:
                     info['lufs'] = float(lufs_match.group(1))
+                    logger.debug(f"  -> LUFS matched pattern: {pattern}")
                     break
             
             # TRUE PEAK - число ПЕРЕД словами TRUE PEAK MAX
@@ -111,12 +124,15 @@ class PDFExtractor:
                 r'(-?\d+\.?\d*)\s*\n?\s*TRUE\s*PEAK\s*MAX',  # Число перед TRUE PEAK MAX (с возможным переносом)
                 r'TRUE\s*PEAK\s*MAX\s*:\s*(-?\d+\.?\d*)',
                 r'TRUE\s*PEAK[:\s]+(-?\d+\.?\d*)',
-                r'Peak[:\s]+(-?\d+\.?\d*)'
+                r'Peak[:\s]+(-?\d+\.?\d*)',
+                r'[-+]?\d+\.?\d*\s*dBTP?',  # Fallback: number before dBTP
+                r'[-+]?\d+\.?\d*\s*dB',  # Fallback: number before dB
             ]
             for pattern in tp_patterns:
                 tp_match = re.search(pattern, text, re.IGNORECASE)
                 if tp_match:
                     info['true_peak'] = float(tp_match.group(1))
+                    logger.debug(f"  -> TRUE PEAK matched pattern: {pattern}")
                     break
             
             # LRA (LOUDNESS RANGE в Youlean) - число ПЕРЕД словами LOUDNESS RANGE
@@ -124,12 +140,15 @@ class PDFExtractor:
             lra_patterns = [
                 r'(-?\d+\.?\d*)\s*\n?\s*LOUDNESS\s*RANGE',  # Число перед LOUDNESS RANGE (с возможным переносом)
                 r'LRA[:\s]+(-?\d+\.?\d*)',
-                r'Loudness\s*Range[:\s]+(-?\d+\.?\d*)'
+                r'Loudness\s*Range[:\s]+(-?\d+\.?\d*)',
+                r'[-]?\d+\.?\d*\s+LU\s*LRA',  # Fallback: number before LU LRA
+                r'[-]?\d+\.?\d*\s+LU',  # Fallback: number before LU
             ]
             for pattern in lra_patterns:
                 lra_match = re.search(pattern, text, re.IGNORECASE)
                 if lra_match:
                     info['lra'] = float(lra_match.group(1))
+                    logger.debug(f"  -> LRA matched pattern: {pattern}")
                     break
             
             # Sample Rate
@@ -153,6 +172,14 @@ class PDFExtractor:
                 info['channels'] = channels_match.group(1)
             
             logger.info(f"Техническая информация извлечена: {info}")
+            
+            # Debug: verify extracted values
+            if info['lufs'] is None:
+                logger.warning(f"  ⚠️ LUFS not found in PDF text!")
+            if info['true_peak'] is None:
+                logger.warning(f"  ⚠️ TRUE PEAK not found in PDF text!")
+            if info['lra'] is None:
+                logger.warning(f"  ⚠️ LRA not found in PDF text!")
             
         except Exception as e:
             logger.error(f"Ошибка парсинга технической информации: {e}")
@@ -183,6 +210,89 @@ class PDFExtractor:
                 logger.error(f"Ошибка обработки {pdf_path}: {e}")
         
         return results
+    
+    def save_tech_info_to_json(self, tech_info: Dict, json_path: str) -> None:
+        """
+        Сохранение технической информации в JSON файл
+        
+        Args:
+            tech_info: Словарь с технической информацией PDF
+            json_path: Путь к JSON файлу
+        """
+        try:
+            # Добавляем метаданные о сохранении
+            output_data = {
+                '_metadata': {
+                    'created_at': str(datetime.now()),
+                    'version': '1.0'
+                },
+                '_data': tech_info
+            }
+            
+            logger.info(f"📄 Saving to JSON: {json_path}")
+            logger.info(f"   tech_info keys: {list(tech_info.keys())}")
+            
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"✅ PDF данные сохранены в JSON: {json_path}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения JSON: {e}")
+    
+    def load_tech_info_from_json(self, json_path: str) -> Dict:
+        """
+        Загрузка технической информации из JSON файла
+        
+        Args:
+            json_path: Путь к JSON файлу
+            
+        Returns:
+            Словарь с технической информацией
+        """
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            logger.info(f"📄 JSON loaded from: {json_path}")
+            logger.info(f"   Root keys: {list(data.keys())}")
+            
+            # Извлекаем data из metadata wrapper
+            # Проверяем разные форматы JSON
+            if '_data' in data and isinstance(data['_data'], dict):
+                tech_info = data['_data']
+                logger.info(f"✅ Found '_data' wrapper")
+            elif isinstance(data, dict):
+                # JSON без wrapper - используем данные напрямую
+                tech_info = data
+                logger.info(f"✅ Using JSON directly (no wrapper)")
+            else:
+                logger.warning(f"⚠️ Unexpected JSON format")
+                tech_info = {}
+            
+            logger.info(f"✅ PDF данные загружены из JSON: {json_path}")
+            logger.info(f"   Загружено ключей: {list(tech_info.keys())}")
+            
+            return tech_info
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки JSON: {e}")
+            return {}
+    
+    def extract_and_save_to_json(self, pdf_path: str, json_path: str) -> Dict:
+        """
+        Извлечение данных из PDF и сохранение в JSON
+        
+        Args:
+            pdf_path: Путь к PDF файлу
+            json_path: Путь к JSON файлу
+            
+        Returns:
+            Словарь с технической информацией
+        """
+        info = self.extract_technical_info(pdf_path)
+        self.save_tech_info_to_json({Path(pdf_path).stem: info}, json_path)
+        return info
 
 
 if __name__ == "__main__":

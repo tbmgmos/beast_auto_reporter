@@ -12,7 +12,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QRadioButton, QTextEdit, QProgressBar,
-    QCheckBox, QListWidget, QListWidgetItem, QFrame
+    QCheckBox, QListWidget, QListWidgetItem, QFrame, QMessageBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData
 from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor
@@ -25,6 +25,7 @@ from src.technical_info_extractor import TechnicalInfoExtractor
 from src.csv_importer import CSVImporter
 from src.pdf_extractor import PDFExtractor
 from src.conclusion_generator import ConclusionGenerator
+from src.parameter_exporter import ParameterExporter
 
 # Настройка логирования
 logging.basicConfig(
@@ -223,27 +224,56 @@ class ProcessingThread(QThread):
     progress_update = pyqtSignal(int)
     finished = pyqtSignal(bool, str)
     
-    def __init__(self, app, files_data, report_type, output_folder):
+    def __init__(self, app, files_data, report_type, output_folder, pyloudnorm_enabled=False):
         super().__init__()
         self.app = app
         self.files_data = files_data
         self.report_type = report_type
         self.output_folder = output_folder
+        self.pyloudnorm_enabled = pyloudnorm_enabled
     
     def run(self):
         """Запуск обработки"""
+        logger.debug("=== ProcessingThread.run() STARTED ===")
         try:
             import shutil
+            from pathlib import Path
             
             logger.info(f"=== НАЧАЛО ОБРАБОТКИ ===")
             logger.info(f"Тип отчета: {self.report_type}")
+            logger.info(f"PyLoudNorm включен: {self.pyloudnorm_enabled}")
             logger.info(f"Файлов: {sum(len(v) for v in self.files_data.values())}")
+            logger.info(f"Output folder: {self.output_folder}")
+            logger.debug(f"files_data keys = {list(self.files_data.keys())}")
             
             # Определяем имя файла из аудио или видео
             audio_files = self.files_data.get('audio', [])
             video_files = self.files_data.get('video', [])
+            logger.debug(f"audio_files = {audio_files}")
+            logger.debug(f"video_files = {video_files}")
+            
+            # Также проверяем специфичные ключи для 5.1
+            audio_51_c = self.files_data.get('audio_51_c', [])
+            audio_51_uc = self.files_data.get('audio_51_uc', [])
+            audio_20_c = self.files_data.get('audio_20_c', [])
+            audio_20_uc = self.files_data.get('audio_20_uc', [])
+            logger.debug(f"audio_51_c = {audio_51_c}")
+            logger.debug(f"audio_51_uc = {audio_51_uc}")
             csv_files = self.files_data.get('csv', [])
             pdf_files = self.files_data.get('pdf', [])
+            
+            logger.info(f"Audio files found: {len(audio_files)}")
+            logger.info(f"Video files found: {len(video_files)}")
+            logger.info(f"CSV files found: {len(csv_files)}")
+            logger.info(f"PDF files found: {len(pdf_files)}")
+            
+            # Объединяем все аудио файлы для pyloudnorm анализа
+            all_audio_files = list(audio_files)
+            all_audio_files.extend(audio_51_c)
+            all_audio_files.extend(audio_51_uc)
+            all_audio_files.extend(audio_20_c)
+            all_audio_files.extend(audio_20_uc)
+            logger.debug(f"all_audio_files for analysis = {all_audio_files}")
             
             base_name = "отчет"
             if audio_files:
@@ -251,16 +281,12 @@ class ProcessingThread(QThread):
             elif video_files:
                 base_name = Path(video_files[0]).stem
             
-            # Создаем папку для отчета
-            self.status_update.emit("📂 Создание папки отчета...")
-            self.progress_update.emit(5)
-            
-            output_dir = Path(self.output_folder) / f"отчет_{base_name}"
-            output_dir.mkdir(parents=True, exist_ok=True)
+            # Папка уже создана в start_processing через create_output_folder()
+            output_dir = Path(self.output_folder)
             logger.info(f"Выходная папка: {output_dir}")
             
             # Копируем PDF файлы в выходную папку и разделяем по типам
-            self.status_update.emit("📋 Копирование PDF файлов...")
+            self.status_update.emit("📋 Копирование файлов...")
             self.progress_update.emit(10)
             
             # Словари для хранения путей к разным типам PDF
@@ -387,8 +413,12 @@ class ProcessingThread(QThread):
             
             self.progress_update.emit(50)
             
-            # Обработка PDF файлов - извлекаем технические данные
+            # === ШАГ: Извлекаем данные из PDF и сохраняем в JSON ===
+            # Данные из PDF сначала накапливаются в словаре, затем сохраняются в JSON
             self.status_update.emit("📊 Извлечение данных из PDF...")
+            
+            # Словарь для накопления PDF данных
+            pdf_data_all = {}
             
             for pdf_file in pdf_files:
                 logger.info(f"Обработка PDF: {pdf_file}")
@@ -411,43 +441,225 @@ class ProcessingThread(QThread):
                 # Определяем тип PDF
                 if has_51_marker and is_cens:
                     key = 'pdf_51_c'
+                    logger.info(f"  -> Detected PDF 5.1 CENS, key = '{key}'")
                 elif has_51_marker and is_uncens:
                     key = 'pdf_51_uc'
+                    logger.info(f"  -> Detected PDF 5.1 UNCENS, key = '{key}'")
                 elif has_51_marker:
                     key = 'pdf_51'
+                    logger.info(f"  -> Detected PDF 5.1 (generic), key = '{key}'")
                 elif has_20_marker and is_cens:
                     key = 'pdf_20_c'
+                    logger.info(f"  -> Detected PDF 2.0 CENS, key = '{key}'")
                 elif has_20_marker and is_uncens:
                     key = 'pdf_20_uc'
+                    logger.info(f"  -> Detected PDF 2.0 UNCENS, key = '{key}'")
                 elif has_20_marker:
                     key = 'pdf_20'
+                    logger.info(f"  -> Detected PDF 2.0 (generic), key = '{key}'")
                 else:
                     # Если нет явного маркера, пробуем извлечь из PDF и определить по количеству каналов
+                    logger.info(f"  -> No explicit marker, extracting from PDF content...")
                     pdf_data = self.app.pdf_extractor.extract_technical_info(pdf_file)
-                    if pdf_data and 'channels' in pdf_data:
+                    if pdf_data:
+                        logger.info(f"  -> PDF extracted: lufs={pdf_data.get('lufs')}, channels={pdf_data.get('channels')}")
+                    else:
+                        logger.warning(f"  -> PDF extraction returned EMPTY for {filename}")
+                    
+                    if pdf_data and pdf_data.get('channels'):
                         channels_str = pdf_data.get('channels', '').lower()
                         if '5.1' in channels_str or '6' in channels_str:
                             key = 'pdf_51_c' if is_cens else ('pdf_51_uc' if is_uncens else 'pdf_51')
-                            logger.info(f"ℹ️  Определен тип по каналам в PDF: {key}")
+                            logger.info(f"  -> Detected from channels: 5.1, key = '{key}'")
                         elif '2.0' in channels_str or '2' in channels_str:
                             key = 'pdf_20_c' if is_cens else ('pdf_20_uc' if is_uncens else 'pdf_20')
-                            logger.info(f"ℹ️  Определен тип по каналам в PDF: {key}")
+                            logger.info(f"  -> Detected from channels: 2.0, key = '{key}'")
                         else:
-                            logger.warning(f"⚠️  Не удалось определить тип PDF: {filename}")
+                            logger.warning(f"  -> Unknown channel format: {channels_str}")
                             continue
                     else:
-                        logger.warning(f"⚠️  Не удалось определить тип PDF: {filename}")
+                        logger.warning(f"  -> No channels info in PDF")
                         continue
-                    tech_info[key] = pdf_data
-                    logger.info(f"✅ {key}: LUFS={pdf_data.get('lufs')}, Peak={pdf_data.get('true_peak')}, LRA={pdf_data.get('lra')}")
+                    
+                    # Сохраняем в словарь для JSON (а не напрямую в tech_info)
+                    pdf_data_all[key] = pdf_data
+                    logger.info(f"  -> ADDED to pdf_data_all['{key}']: LUFS={pdf_data.get('lufs')}, Peak={pdf_data.get('true_peak')}, LRA={pdf_data.get('lra')}")
                     continue
                 
+                # Извлекаем данные из PDF
                 pdf_data = self.app.pdf_extractor.extract_technical_info(pdf_file)
+                
+                # Сохраняем в словарь для JSON (а не напрямую в tech_info)
+                pdf_data_all[key] = pdf_data
+                
                 if pdf_data:
-                    tech_info[key] = pdf_data
-                    logger.info(f"✅ {key}: LUFS={pdf_data.get('lufs')}, Peak={pdf_data.get('true_peak')}, LRA={pdf_data.get('lra')}")
+                    logger.info(f"  -> ADDED to pdf_data_all['{key}']: LUFS={pdf_data.get('lufs')}, Peak={pdf_data.get('true_peak')}, LRA={pdf_data.get('lra')}")
+                else:
+                    logger.warning(f"  -> PDF extraction returned EMPTY for {filename}")
             
-            self.progress_update.emit(60)
+            # === ШАГ: Сохраняем все PDF данные в JSON файл ===
+            json_path = output_dir / "pdf_data.json"
+            
+            if pdf_data_all:
+                try:
+                    self.app.pdf_extractor.save_tech_info_to_json(pdf_data_all, str(json_path))
+                    logger.info(f"✅ PDF данные сохранены в JSON: {json_path}")
+                    
+                    # Логируем сохраненные данные
+                    logger.info("=== PDF данные в JSON ===")
+                    for k, v in pdf_data_all.items():
+                        if isinstance(v, dict):
+                            logger.info(f"  {k}: lufs={v.get('lufs')}, peak={v.get('true_peak')}, lra={v.get('lra')}")
+                    logger.info("=== END PDF данные ===")
+                    
+                    # ДОБАВЛЯЕМ данные из pdf_data_all напрямую в tech_info (для гарантии)
+                    # Это обеспечивает PDF → JSON → таблица поток
+                    for key, value in pdf_data_all.items():
+                        if isinstance(key, str) and key.startswith('pdf_'):
+                            tech_info[key] = value
+                            logger.info(f"  -> tech_info['{key}'] updated from pdf_data_all")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка сохранения JSON: {e}")
+            else:
+                logger.warning("⚠️ Нет PDF данных для сохранения")
+            
+            self.progress_update.emit(52)
+            
+            # === ШАГ: Загружаем PDF данные из JSON ===
+            # Параметры берутся из JSON файла, в который были сохранены данные из PDF
+            self.status_update.emit("💾 Загрузка PDF данных из JSON...")
+            
+            # Если JSON файл существует, загружаем данные из него
+            # ДАННЫЕ УЖЕ ДОБАВЛЕНЫ В tech_info ПРИ СОХРАНЕНИИ (см. выше)
+            # Эта загрузка служит как резерв/проверка
+            if json_path.exists():
+                logger.info(f"📄 JSON файл найден: {json_path}")
+                try:
+                    # Загружаем техническую информацию из JSON
+                    json_data = self.app.pdf_extractor.load_tech_info_from_json(str(json_path))
+                    
+                    logger.info(f"📄 Загружено из JSON: {list(json_data.keys()) if json_data else 'ПУСТО'}")
+                    
+                    # Логируем ВСЕ ключи из json_data для диагностики
+                    logger.info("=== json_data contents ===")
+                    for k, v in json_data.items():
+                        if isinstance(v, dict):
+                            logger.info(f"  {k}: lufs={v.get('lufs')}, peak={v.get('true_peak')}, lra={v.get('lra')}")
+                        else:
+                            logger.info(f"  {k}: {v}")
+                    logger.info("=== end json_data ===")
+                    
+                    if json_data:
+                        # Обновляем tech_info данными из JSON (дублируем для надежности)
+                        # Это гарантирует, что параметры в таблицу вставляются из JSON
+                        updated_count = 0
+                        for key, value in json_data.items():
+                            if isinstance(key, str) and key.startswith('pdf_'):
+                                tech_info[key] = value
+                                updated_count += 1
+                                logger.info(f"  -> tech_info['{key}'] = {value}")
+                        logger.info(f"  📊 Обновлено {updated_count} ключей из JSON")
+                    else:
+                        logger.warning("⚠️ JSON файл пуст или поврежден")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка чтения JSON: {e}")
+            else:
+                logger.warning(f"⚠️ JSON файл НЕ найден: {json_path}")
+            
+            # Диагностика: что в tech_info перед генерацией
+            logger.info(f"📊 tech_info перед генерацией: {list(tech_info.keys())}")
+            for k in ['pdf_20', 'pdf_51', 'pdf_20_c', 'pdf_51_c', 'pdf_20_uc', 'pdf_51_uc']:
+                if k in tech_info:
+                    v = tech_info[k]
+                    if isinstance(v, dict):
+                        logger.info(f"  -> {k}: lufs={v.get('lufs')}, peak={v.get('true_peak')}, lra={v.get('lra')}")
+                    else:
+                        logger.info(f"  -> {k}: {v}")
+            
+            # Логируем PDF данные для диагностики
+            logger.info("=== PDF данные для таблицы ===")
+            for k in tech_info:
+                if isinstance(k, str) and k.startswith('pdf_') and isinstance(tech_info[k], dict):
+                    v = tech_info[k]
+                    logger.info(f"  {k}: lufs={v.get('lufs')}, true_peak={v.get('true_peak')}, lra={v.get('lra')}")
+            logger.info("=== END ===")
+            
+            logger.info("✅ Параметры из JSON готовы для вставки в таблицу")
+            
+            self.progress_update.emit(55)
+            
+            # === ШАГ 6б: Аудио анализ и экспорт в CSV/HTML ===
+            if self.pyloudnorm_enabled:
+                self.status_update.emit("📊 PyLoudNorm анализ...")
+                
+                logger.debug(f"audio_files = {audio_files}")
+                
+                try:
+                    logger.debug(f"Entering try block")
+                    if all_audio_files:
+                        logger.debug(f"all_audio_files is not empty, length = {len(all_audio_files)}")
+                        logger.info(f"🎵 Анализ {len(all_audio_files)} аудиофайлов...")
+                        
+                        # Создаем экспортер
+                        exporter = ParameterExporter({
+                            'audio': {
+                                'target_lufs': -23.0,
+                                'lufs_tolerance': 0.5,
+                                'true_peak': -2.0,
+                                'lra_max': 18.0,
+                                'sample_rate': 48000
+                            },
+                            'export': {
+                                'csv': {
+                                    'delimiter': ',',
+                                    'encoding': 'utf-8'
+                                },
+                                'html': {
+                                    'include_css': True,
+                                    'include_timestamp': True
+                                }
+                            }
+                        })
+                        
+                        logger.debug(f"output_dir = {output_dir}")
+                        
+                        # Экспортируем в CSV, HTML и TXT
+                        export_results = exporter.analyze_and_export(
+                            audio_files=all_audio_files,
+                            output_dir=str(output_dir),
+                            formats=['csv', 'html', 'txt'],
+                            report_name="audio_analysis"
+                        )
+                        
+                        logger.debug(f"export_results = {export_results}")
+                        logger.info(f"✅ Аудио анализ экспортирован: {export_results}")
+                        
+                        # Сохраняем пути к файлам
+                        tech_info['audio_analysis_csv'] = export_results.get('csv')
+                        tech_info['audio_analysis_html'] = export_results.get('html')
+                        tech_info['audio_analysis_txt'] = export_results.get('txt')
+                    else:
+                        logger.debug(f"all_audio_files is EMPTY")
+                        logger.warning("⚠️ Аудиофайлы не найдены для анализа")
+                        # Попробуем добавить видео файлы для анализа (они содержат аудио дорожки)
+                        if video_files:
+                            logger.debug(f"Trying video files for audio analysis: {video_files}")
+                            logger.info(f"🎵 Видео файлы будут использованы для аудио анализа: {len(video_files)}")
+                            # Добавляем видео файлы в анализ
+                            all_audio_files = video_files
+                        
+                except Exception as e:
+                    import traceback
+                    logger.debug(f"Exception occurred: {e}")
+                    logger.debug(f"Traceback: {traceback.format_exc()}")
+                    logger.error(f"❌ Ошибка аудио анализа: {e}")
+                    logger.error(f"❌ Traceback: {traceback.format_exc()}")
+                
+                logger.debug(f"Finished audio analysis step")
+            else:
+                logger.debug("PyLoudNorm analysis SKIPPED (checkbox not checked)")
+                logger.info("PyLoudNorm анализ пропущен (галочка не установлена)")
             
             # Импорт проблем из CSV
             self.status_update.emit("📊 Импорт проблем из CSV...")
@@ -490,7 +702,22 @@ class ProcessingThread(QThread):
             logger.info(f"PDF 2.0: {copied_pdf_20}")
             logger.info(f"PDF 5.1: {copied_pdf_51}")
             
+            # Логируем tech_info для диагностики
+            logger.info("=== TECH_INFO CONTENTS ===")
+            if tech_info:
+                for key, value in tech_info.items():
+                    if isinstance(value, dict):
+                        logger.info(f"  {key}: dict with keys = {list(value.keys())}")
+                        if 'lufs' in value:
+                            logger.info(f"    -> LUFS: {value['lufs']}, Peak: {value.get('true_peak')}, LRA: {value.get('lra')}")
+                    else:
+                        logger.info(f"  {key}: {type(value).__name__} = {value}")
+            else:
+                logger.info("  tech_info is EMPTY!")
+            logger.info("=== END TECH_INFO ===")
+            
             # Генерируем отчет через единый генератор
+            prepared_by = getattr(self.app, 'prepared_by', '')
             self.app.report_gen.create_exact_report(
                 issues=issues,
                 output_path=str(report_path),
@@ -499,13 +726,22 @@ class ProcessingThread(QThread):
                 pdf_51_path=copied_pdf_51,
                 conclusion_technical=technical_conclusion,
                 conclusion_subjective=subjective_conclusion,
-                report_type=self.report_type
+                report_type=self.report_type,
+                prepared_by=prepared_by
             )
             
             self.progress_update.emit(100)
             self.status_update.emit("✅ Готово!")
             
-            success_msg = f"Отчет создан:\n{report_path}"
+            logger.info(f"✅ Отчет успешно создан: {report_path}")
+            
+            # Показываем информацию о созданных файлах
+            files_in_output = list(output_dir.glob('*'))
+            logger.info(f"Файлы в папке отчета ({len(files_in_output)}):")
+            for f in files_in_output:
+                logger.info(f"  - {f.name}")
+            
+            success_msg = f"✅ Отчет создан!\n📁 Папка: {output_dir.name}\n📄 Файлов: {len(files_in_output)}"
             self.finished.emit(True, success_msg)
             
             logger.info(f"=== ЗАВЕРШЕНО УСПЕШНО ===")
@@ -561,6 +797,10 @@ class BeastApp(QMainWindow):
         # AI опция
         ai_card = self.create_ai_card()
         layout.addWidget(ai_card)
+        
+        # PyLoudNorm анализ опция
+        pyloudnorm_card = self.create_pyloudnorm_card()
+        layout.addWidget(pyloudnorm_card)
         
         # Поле для имени подготовившего отчет
         name_card = self.create_name_card()
@@ -774,6 +1014,30 @@ class BeastApp(QMainWindow):
         card.setLayout(card_layout)
         return card
     
+    def create_pyloudnorm_card(self):
+        """Создание карточки PyLoudNorm опций"""
+        card = QWidget()
+        card.setStyleSheet("""
+            QWidget {
+                background-color: #E3F2FD;
+                border-radius: 12px;
+                border: 1px solid #2196F3;
+            }
+        """)
+        card_layout = QHBoxLayout()
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        
+        self.pyloudnorm_checkbox = QCheckBox("🎵 PyLoudNorm анализ (CSV + HTML + TXT)")
+        self.pyloudnorm_checkbox.setFont(QFont("SF Pro Text", 10, QFont.DemiBold))
+        self.pyloudnorm_checkbox.setStyleSheet("background: transparent; border: none; color: #1565C0;")
+        self.pyloudnorm_checkbox.setChecked(False)
+        card_layout.addWidget(self.pyloudnorm_checkbox)
+        
+        card_layout.addStretch()
+        
+        card.setLayout(card_layout)
+        return card
+    
     def create_name_card(self):
         """Создание карточки для ввода имени"""
         from PyQt5.QtWidgets import QLineEdit
@@ -850,7 +1114,7 @@ class BeastApp(QMainWindow):
             filename_lower = Path(file_path).stem.lower()
             
             # Определяем тип файла
-            if file_ext in ['.wav', '.mp3', '.flac', '.aac']:
+            if file_ext in ['.wav', '.mp3', '.flac', '.aac', '.mxf', '.caf', '.aiff', '.aif']:
                 self.files_data['audio'].append(file_path)
                 # Определяем тип аудио для отображения
                 if '20' in filename_lower and 'cens' in filename_lower and 'uncens' not in filename_lower:
@@ -863,7 +1127,7 @@ class BeastApp(QMainWindow):
                     icon = "🎵 [5.1 UC]"
                 else:
                     icon = "🎵"
-            elif file_ext in ['.mp4', '.mov', '.avi', '.mkv', '.mxf']:
+            elif file_ext in ['.mp4', '.mov', '.avi', '.mkv', '.m4v', '.webm']:
                 self.files_data['video'].append(file_path)
                 icon = "🎬"
             elif file_ext == '.csv':
@@ -940,40 +1204,42 @@ class BeastApp(QMainWindow):
         """Запуск обработки файлов"""
         logger.info("=== ЗАПУСК ОБРАБОТКИ ===")
         
-        import tempfile
+        # Получаем базовое имя для папки
+        audio_files = self.files_data.get('audio', [])
+        video_files = self.files_data.get('video', [])
+        csv_files = self.files_data.get('csv', [])
         
-        # Создаем временную папку для drag & drop файлов
-        temp_dir = Path(tempfile.mkdtemp(prefix="beast_dragdrop_"))
-        logger.info(f"Временная папка: {temp_dir}")
+        base_name = "отчет"
+        if audio_files:
+            base_name = Path(audio_files[0]).stem.replace('_20_', '_').replace('_51_', '_').replace('_cens', '').replace('_uncens', '')
+        elif video_files:
+            base_name = Path(video_files[0]).stem
+        elif csv_files:
+            base_name = Path(csv_files[0]).stem.replace('_rus', '')
         
-        # Копируем файлы во временную папку
-        for file_list in self.files_data.values():
-            for file_path in file_list:
-                dest = temp_dir / Path(file_path).name
-                shutil.copy2(file_path, dest)
-                logger.info(f"Скопирован во временную папку: {Path(file_path).name}")
+        # Создаем папку на Рабочем столе (как в v5.11)
+        output_folder = self.create_output_folder(base_name)
+        logger.info(f"Папка отчета на Desktop: {output_folder}")
         
         # Отключаем кнопки
         self.generate_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         
-        # Сохраняем имя подготовившего отчет
+        # Сохраняем имя
         self.prepared_by = self.name_input.text().strip() or "Не указано"
-        logger.info(f"Отчёт подготовил: {self.prepared_by}")
         
-        # Импортируем ProcessingThread из рабочей версии
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent))
-        from beast_app_final import ProcessingThread as WorkingProcessingThread
-        
-        # Запускаем поток обработки с рабочей логикой v5.11
+        # Запускаем поток с Desktop папкой
         report_type = self.get_report_type()
-        self.thread = WorkingProcessingThread(self, temp_dir, report_type)
+        pyloudnorm_enabled = self.pyloudnorm_checkbox.isChecked()
+        logger.info(f"PyLoudNorm: {pyloudnorm_enabled}, Report type: {report_type}")
+        
+        self.thread = ProcessingThread(self, self.files_data, report_type, str(output_folder), pyloudnorm_enabled)
         self.thread.status_update.connect(self.status_label.setText)
         self.thread.progress_update.connect(self.progress_bar.setValue)
-        self.thread.finished.connect(lambda msg, success: self.processing_finished_with_cleanup(msg, success, temp_dir))
+        self.thread.finished.connect(self.processing_finished)
         self.thread.start()
+        logger.info("Thread started")
     
     def processing_finished_with_cleanup(self, message, success, temp_dir):
         """Завершение обработки с очисткой временной папки"""
@@ -993,11 +1259,18 @@ class BeastApp(QMainWindow):
         self.generate_btn.setEnabled(True)
         
         if success:
-            self.status_label.setText("✅ Отчет успешно создан!")
+            self.status_label.setText("✅ Готово!")
+            logger.info(f"=== SUCCESS ===")
+            logger.info(f"{message}")
+            QMessageBox.information(self, "Готово!", "Отчет успешно создан!")
             # Очищаем файлы после успешной генерации
             self.clear_files()
         else:
-            self.status_label.setText(f"❌ Ошибка: {message}")
+            error_text = message if isinstance(message, str) else "Неизвестная ошибка"
+            self.status_label.setText(f"❌ Ошибка: {error_text[:50]}...")
+            logger.error(f"=== ERROR ===")
+            logger.error(f"{error_text}")
+            QMessageBox.critical(self, "Ошибка", error_text)
     
     def extract_base_name(self, filename: str) -> str:
         """Извлечение базового названия из имени файла (из v5.11)"""

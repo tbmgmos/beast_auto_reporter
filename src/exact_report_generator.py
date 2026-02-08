@@ -217,7 +217,7 @@ class ExactReportGenerator:
                 cell.text = header
                 self._format_cell(cell, bg="D9D9D9", bold=True, align="center", font_size=9, vertical_align="center")
             
-            # Строки 4-8: Данные с цветовой индикацией
+            # Строки 3-7: Данные с цветовой индикацией
             rows_data = [
                 ("2.0 cens", "audio_20_c", "pdf_20_c"),
                 ("2.0 uncens", "audio_20_uc", "pdf_20_uc"),
@@ -226,12 +226,58 @@ class ExactReportGenerator:
                 ("VIDEO", "video", None)
             ]
             
+            # Fallback маппинг: если точный ключ не найден, пробуем альтернативы
+            pdf_key_fallbacks = {
+                'pdf_20_c': ['pdf_20_c', 'pdf_20'],
+                'pdf_20_uc': ['pdf_20_uc', 'pdf_20'],
+                'pdf_51_c': ['pdf_51_c', 'pdf_51'],
+                'pdf_51_uc': ['pdf_51_uc', 'pdf_51'],
+                'pdf_20': ['pdf_20'],
+                'pdf_51': ['pdf_51']
+            }
+            
+            logger.info(f"rows_data: {rows_data}")
+            logger.info(f"pdf_key_fallbacks: {pdf_key_fallbacks}")
+            logger.info(f"Total table rows: {len(table.rows)}")
+            logger.info(f"Row indices for data: {[3 + i for i in range(len(rows_data))]}")
+            
             # Номинальные значения (берем из tech_info['params'] если есть)
             params = tech_info.get('params', {}) if tech_info else {}
             target_lufs = params.get('target_lufs', -23.0)
             lufs_tolerance = params.get('lufs_tolerance', 0.5)
             target_peak = params.get('true_peak', -2.0)
             target_lra = params.get('lra_max', 18.0)
+            
+            # Debug: Log what PDF data is available
+            logger.info("=== PDF DATA AVAILABILITY CHECK ===")
+            logger.info(f"tech_info type: {type(tech_info)}")
+            logger.info(f"tech_info keys: {list(tech_info.keys()) if tech_info else 'None'}")
+            
+            # Логируем ВСЕ ключи начинающиеся с pdf_
+            logger.info("=== ALL pdf_ keys in tech_info ===")
+            for k, v in tech_info.items():
+                if isinstance(k, str) and k.startswith('pdf_'):
+                    logger.info(f"  {k}: {v}")
+            logger.info("=== END pdf_ keys ===")
+            
+            # Check each pdf key explicitly
+            for label, key, pdf_key in rows_data:
+                has_audio = tech_info and key in tech_info and tech_info.get(key) is not None
+                has_pdf = pdf_key and tech_info and pdf_key in tech_info
+                pdf_data = tech_info.get(pdf_key) if has_pdf else None
+                
+                logger.info(f"  {label}:")
+                logger.info(f"    - audio_key={key}, has_audio={has_audio}")
+                logger.info(f"    - pdf_key={pdf_key}, has_pdf={has_pdf}")
+                
+                if has_pdf and pdf_data:
+                    logger.info(f"    - PDF DATA FOUND: {pdf_data}")
+                    logger.info(f"    - lufs={pdf_data.get('lufs')}, peak={pdf_data.get('true_peak')}, lra={pdf_data.get('lra')}")
+                elif has_pdf:
+                    logger.warning(f"    - WARNING: pdf_key '{pdf_key}' exists but pdf_data is None or empty!")
+                else:
+                    logger.info(f"    - NO PDF DATA")
+            logger.info("=== END PDF DATA CHECK ===")
             
             # Собираем длительности всех файлов для сравнения
             durations = {}
@@ -273,22 +319,49 @@ class ExactReportGenerator:
             logger.info(f"Используется FPS: {fps} для проверки кратности кадру")
             
             for idx, (label, key, pdf_key) in enumerate(rows_data):
+                logger.info(f"\n=== ОБРАБОТКА СТРОКИ {idx}: {label} ===")
+                logger.info(f"  key={key}, pdf_key={pdf_key}")
+                
                 row = table.rows[3 + idx]
+                logger.info(f"  Row index in table: {3 + idx}")
+                
+                # Установить label в первую ячейку
                 row.cells[0].text = label
+                logger.info(f"  ✓ Set cell[0] = '{label}'")
                 self._format_cell(row.cells[0], align="left")
                 
                 # Проверяем наличие аудио файла
-                has_audio = tech_info and key in tech_info and tech_info[key]
+                has_audio = tech_info and key in tech_info and tech_info.get(key) is not None
                 # Проверяем наличие PDF файла
-                has_pdf = pdf_key and pdf_key in tech_info
+                has_pdf = pdf_key and pdf_key in tech_info and tech_info.get(pdf_key) is not None
+                
+                logger.info(f"  has_audio={has_audio}, has_pdf={has_pdf}")
+                
+                # ДИАГНОСТИКА: показываем что есть в tech_info для этого pdf_key
+                if pdf_key:
+                    if pdf_key in tech_info:
+                        pdf_data = tech_info[pdf_key]
+                        logger.info(f"  ✓ pdf_key '{pdf_key}' FOUND in tech_info")
+                        logger.info(f"     pdf_data type: {type(pdf_data)}")
+                        if isinstance(pdf_data, dict):
+                            logger.info(f"     lufs={pdf_data.get('lufs')}, peak={pdf_data.get('true_peak')}, lra={pdf_data.get('lra')}")
+                        else:
+                            logger.info(f"     pdf_data value: {pdf_data}")
+                    else:
+                        logger.warning(f"  ⚠️ pdf_key '{pdf_key}' NOT FOUND in tech_info!")
+                        # Показываем какие ключи начинаются с pdf_
+                        pdf_keys = [k for k in tech_info.keys() if isinstance(k, str) and k.startswith('pdf_')]
+                        logger.warning(f"     Available pdf_ keys: {pdf_keys}")
                 
                 if has_audio:
                     data = tech_info[key]
+                    logger.info(f"  Audio data found: {data.get('file_name')}")
                     
                     # Имя файла с проверкой на некорректный тип (убираем расширение)
                     file_name = data.get('file_name', '')
                     file_name_without_ext = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
                     row.cells[1].text = file_name_without_ext
+                    logger.info(f"  ✓ Set cell[1] = '{file_name_without_ext}'")
                     
                     # Проверяем на некорректный тип фонограммы в названии
                     has_incorrect_type = self._check_incorrect_audio_type(file_name)
@@ -333,64 +406,135 @@ class ExactReportGenerator:
                     
                     self._format_cell(row.cells[2], bg=chrono_bg, align="center")
                     
-                    # Технические параметры (только для аудио с PDF)
-                    if key.startswith('audio') and pdf_key and pdf_key in tech_info:
-                        pdf_data = tech_info[pdf_key]
-                        
+                    # Технические параметры (для аудио с PDF или только PDF)
+                    # Используем fallback ключи если точный ключ не найден
+                    pdf_data = None
+                    used_pdf_key = None
+                    if pdf_key:
+                        fallback_keys = pdf_key_fallbacks.get(pdf_key, [pdf_key])
+                        for fallback_key in fallback_keys:
+                            if fallback_key in tech_info and tech_info.get(fallback_key) is not None:
+                                pdf_data = tech_info[fallback_key]
+                                used_pdf_key = fallback_key
+                                logger.info(f"  ✓ Found PDF data using key '{fallback_key}' (wanted: '{pdf_key}')")
+                                break
+                        if pdf_data is None:
+                            logger.warning(f"  ⚠️ PDF data not found for {pdf_key} (tried: {fallback_keys})")
+                    
+                    if pdf_data is not None:
                         # LUFS с цветовой индикацией
-                        lufs = pdf_data.get('lufs')
-                        if lufs is not None:
-                            row.cells[3].text = f"{lufs:.1f} LUFS"
-                            # Проверка нормы
-                            if abs(lufs - target_lufs) <= lufs_tolerance:
-                                lufs_bg = "00FA02"  # Зеленый - норма
+                        if pdf_data.get('lufs') is not None:
+                            row.cells[3].text = f"{pdf_data['lufs']:.1f} LUFS"
+                            if abs(pdf_data['lufs'] - target_lufs) <= lufs_tolerance:
+                                lufs_bg = "00FA02"
                             else:
-                                lufs_bg = "E83121"  # Красный - превышение
+                                lufs_bg = "E83121"
                             self._format_cell(row.cells[3], bg=lufs_bg, align="center")
+                            logger.info(f"  LUFS added to cell: {pdf_data['lufs']:.1f}")
                         else:
-                            row.cells[3].text = ""
+                            logger.warning(f"  ⚠️ LUFS is None in pdf_data for {used_pdf_key or pdf_key}")
                         
-                        # TRUE PEAK с цветовой индикацией
-                        true_peak = pdf_data.get('true_peak')
-                        if true_peak is not None:
-                            # Добавляем знак + для положительных значений
-                            sign = "+" if true_peak > 0 else ""
-                            row.cells[4].text = f"{sign}{true_peak:.1f} dBTP"
-                            # Проверка нормы (должен быть МЕНЬШЕ target_peak)
-                            if true_peak <= target_peak:
-                                peak_bg = "00FA02"  # Зеленый - норма
-                            else:
-                                peak_bg = "E83121"  # Красный - превышение
+                        # TRUE PEAK
+                        if pdf_data.get('true_peak') is not None:
+                            sign = "+" if pdf_data['true_peak'] > 0 else ""
+                            row.cells[4].text = f"{sign}{pdf_data['true_peak']:.1f} dBTP"
+                            peak_bg = "00FA02" if pdf_data['true_peak'] <= target_peak else "E83121"
                             self._format_cell(row.cells[4], bg=peak_bg, align="center")
+                            logger.info(f"  TRUE PEAK added to cell: {sign}{pdf_data['true_peak']:.1f}")
                         else:
-                            row.cells[4].text = ""
+                            logger.warning(f"  ⚠️ TRUE PEAK is None in pdf_data for {used_pdf_key or pdf_key}")
                         
-                        # LRA с цветовой индикацией
-                        lra = pdf_data.get('lra')
-                        if lra is not None:
-                            row.cells[5].text = f"{lra:.1f} LU"
-                            # Проверка нормы (должен быть МЕНЬШЕ target_lra)
-                            if lra <= target_lra:
-                                lra_bg = "00FA02"  # Зеленый - норма
-                            else:
-                                lra_bg = "E83121"  # Красный - превышение
+                        # LRA
+                        if pdf_data.get('lra') is not None:
+                            row.cells[5].text = f"{pdf_data['lra']:.1f} LU"
+                            lra_bg = "00FA02" if pdf_data['lra'] <= target_lra else "E83121"
                             self._format_cell(row.cells[5], bg=lra_bg, align="center")
+                            logger.info(f"  LRA added to cell: {pdf_data['lra']:.1f}")
                         else:
-                            row.cells[5].text = ""
+                            logger.warning(f"  ⚠️ LRA is None in pdf_data for {used_pdf_key or pdf_key}")
                         
-                        # Формат файла с проверкой полноты информации
-                        sr = data.get('sample_rate', 48000) // 1000
-                        bd = str(data.get('bit_depth', 'PCM_24')).replace('PCM_', '')
-                        co = data.get('channel_order', '')
-                        format_text = f"PCM {sr}kHz {bd} bit {co}"
-                        row.cells[6].text = format_text
+                        logger.info(f"  PDF data processed for {label}: LUFS={pdf_data.get('lufs')}, Peak={pdf_data.get('true_peak')}, LRA={pdf_data.get('lra')}")
                         
-                        # Проверка полноты информации о каналах
-                        # Если channel_order содержит только "X channels" или цифры - желтый
-                        is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
-                        format_bg = "00FA02" if is_complete else "FBBA18"  # Зеленый или оранжевый
-                        self._format_cell(row.cells[6], bg=format_bg, align="left")
+                        # ДОБАВЛЯЕМ формат файла из audio data (mediainfo)
+                        if key in tech_info and isinstance(tech_info[key], dict):
+                            audio_data = tech_info[key]
+                            sr = audio_data.get('sample_rate', 48000) // 1000
+                            bd = str(audio_data.get('bit_depth', 'PCM_24')).replace('PCM_', '')
+                            co = audio_data.get('channel_order', '')
+                            format_text = f"PCM {sr}kHz {bd} bit {co}"
+                            row.cells[6].text = format_text
+                            
+                            # Проверка полноты информации
+                            is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
+                            format_bg = "00FA02" if is_complete else "FBBA18"
+                            self._format_cell(row.cells[6], bg=format_bg, align="left")
+                            logger.info(f"  Format added from audio: {format_text}")
+                    
+                    # Обработка случая когда есть только PDF, но нет аудио (с fallback логикой)
+                    elif not has_audio and pdf_key:
+                        # Пробуем fallback ключи
+                        pdf_data = None
+                        used_pdf_key = None
+                        fallback_keys = pdf_key_fallbacks.get(pdf_key, [pdf_key])
+                        for fallback_key in fallback_keys:
+                            if fallback_key in tech_info and tech_info.get(fallback_key) is not None:
+                                pdf_data = tech_info[fallback_key]
+                                used_pdf_key = fallback_key
+                                logger.info(f"  ✓ PDF-ONLY: Found data using key '{fallback_key}' (wanted: '{pdf_key}')")
+                                break
                         
+                        if pdf_data:
+                            logger.info(f"  === PDF-ONLY BLOCK ENTERED for {label} ===")
+                            logger.info(f"  pdf_key={pdf_key}, used_key={used_pdf_key}, has_audio={has_audio}")
+                            logger.info(f"  pdf_data={pdf_data}")
+                            
+                            # LUFS
+                            if pdf_data.get('lufs') is not None:
+                                value = pdf_data['lufs']
+                                row.cells[3].text = f"{value:.1f} LUFS"
+                                logger.info(f"  ✓ SET cell[3] to '{value:.1f} LUFS'")
+                                if abs(value - target_lufs) <= lufs_tolerance:
+                                    lufs_bg = "00FA02"
+                                else:
+                                    lufs_bg = "E83121"
+                                self._format_cell(row.cells[3], bg=lufs_bg, align="center")
+                            else:
+                                logger.warning(f"  ✗ lufs is None, cell[3] not set")
+                            
+                            # TRUE PEAK
+                            if pdf_data.get('true_peak') is not None:
+                                value = pdf_data['true_peak']
+                                sign = "+" if value > 0 else ""
+                                row.cells[4].text = f"{sign}{value:.1f} dBTP"
+                                logger.info(f"  ✓ SET cell[4] to '{sign}{value:.1f} dBTP'")
+                                peak_bg = "00FA02" if value <= target_peak else "E83121"
+                                self._format_cell(row.cells[4], bg=peak_bg, align="center")
+                            else:
+                                logger.warning(f"  ✗ true_peak is None, cell[4] not set")
+                            
+                            # LRA
+                            if pdf_data.get('lra') is not None:
+                                value = pdf_data['lra']
+                                row.cells[5].text = f"{value:.1f} LU"
+                                logger.info(f"  ✓ SET cell[5] to '{value:.1f} LU'")
+                                lra_bg = "00FA02" if value <= target_lra else "E83121"
+                                self._format_cell(row.cells[5], bg=lra_bg, align="center")
+                            else:
+                                logger.warning(f"  ✗ lra is None, cell[5] not set")
+                        else:
+                            logger.warning(f"  ⚠️ PDF-ONLY: No data found for {pdf_key} (tried: {fallback_keys})")
+                    
+                    # Для VIDEO показываем формат
+                    elif key == 'video':
+                        if key in tech_info and isinstance(tech_info[key], dict):
+                            video_data = tech_info[key]
+                            video_format = video_data.get('format', 'MOV')
+                            fps_video = video_data.get('fps', 25)
+                            format_text = f"{video_format} {fps_video}fps"
+                            row.cells[6].text = format_text
+                            self._format_cell(row.cells[6], bg="00FA02", align="left")
+                            logger.info(f"  VIDEO format added: {format_text}")
+                    
                     elif key.startswith('audio'):
                         # Для uncens - только формат
                         sr = data.get('sample_rate', 48000) // 1000
@@ -411,51 +555,17 @@ class ExactReportGenerator:
                         format_text = f"{video_format} {fps_video}fps"
                         row.cells[6].text = format_text
                         self._format_cell(row.cells[6], bg="00FA02", align="left")
-                
-                # Если НЕТ аудио, но ЕСТЬ PDF - показываем данные из PDF
-                elif has_pdf and key.startswith('audio'):
-                    pdf_data = tech_info[pdf_key]
                     
-                    # Название файла (оставляем пустым, т.к. аудиофайла нет)
-                    row.cells[1].text = ""
-                    self._format_cell(row.cells[1], align="left")
-                    
-                    # Хронометраж (оставляем пустым, т.к. аудиофайла нет)
-                    row.cells[2].text = ""
-                    self._format_cell(row.cells[2], align="center")
-                    
-                    # LUFS
-                    lufs = pdf_data.get('lufs')
-                    if lufs is not None:
-                        row.cells[3].text = f"{lufs:.1f} LUFS"
-                        if abs(lufs - target_lufs) <= lufs_tolerance:
-                            lufs_bg = "00FA02"
-                        else:
-                            lufs_bg = "E83121"
-                        self._format_cell(row.cells[3], bg=lufs_bg, align="center")
-                    
-                    # TRUE PEAK
-                    true_peak = pdf_data.get('true_peak')
-                    if true_peak is not None:
-                        # Добавляем знак + для положительных значений
-                        sign = "+" if true_peak > 0 else ""
-                        row.cells[4].text = f"{sign}{true_peak:.1f} dBTP"
-                        if true_peak <= target_peak:
-                            peak_bg = "00FA02"
-                        else:
-                            peak_bg = "E83121"
-                        self._format_cell(row.cells[4], bg=peak_bg, align="center")
-                    
-                    # LRA
-                    lra = pdf_data.get('lra')
-                    if lra is not None:
-                        row.cells[5].text = f"{lra:.1f} LU"
-                        if lra <= target_lra:
-                            lra_bg = "00FA02"
-                        else:
-                            lra_bg = "E83121"
-                        self._format_cell(row.cells[5], bg=lra_bg, align="center")
-                # else: нет ни аудио, ни PDF - оставляем ячейки пустыми
+                    # Summary of what was set
+                    logger.info(f"  === SUMMARY for {label} ===")
+                    logger.info(f"    cell[0] (label): '{row.cells[0].text}'")
+                    logger.info(f"    cell[1] (file): '{row.cells[1].text}'")
+                    logger.info(f"    cell[2] (duration): '{row.cells[2].text}'")
+                    logger.info(f"    cell[3] (lufs): '{row.cells[3].text}'")
+                    logger.info(f"    cell[4] (peak): '{row.cells[4].text}'")
+                    logger.info(f"    cell[5] (lra): '{row.cells[5].text}'")
+                    logger.info(f"    cell[6] (format): '{row.cells[6].text}'")
+                    logger.info(f"  === END SUMMARY ===\n")
             
             # Строка 8: Цветовые индикаторы (объединяем первые 4 колонки, последние 3 - индикаторы)
             row = table.rows[8]
