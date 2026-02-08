@@ -645,6 +645,19 @@ class ExactReportGenerator:
         
         logger.info("=== ГЕНЕРАЦИЯ M&E ТАБЛИЦЫ ===")
         logger.info(f"tech_info keys: {list(tech_info.keys()) if tech_info else 'None'}")
+        
+        # Логируем доступные pdf_ ключи
+        logger.info("=== M&E: Доступные pdf_ ключи ===")
+        if tech_info:
+            for k in tech_info:
+                if isinstance(k, str) and k.startswith('pdf_'):
+                    v = tech_info[k]
+                    if isinstance(v, dict):
+                        logger.info(f"  {k}: lufs={v.get('lufs')}, true_peak={v.get('true_peak')}, lra={v.get('lra')}")
+                    else:
+                        logger.info(f"  {k}: {v}")
+        logger.info("=== END ===")
+        
         if tech_info and 'video' in tech_info:
             video_data = tech_info['video']
             logger.info(f"VIDEO DATA: {video_data}")
@@ -765,6 +778,16 @@ class ExactReportGenerator:
                 ("VIDEO", "video", None)
             ]
             
+            # Fallback маппинг для M&E (как в основной таблице)
+            pdf_key_fallbacks = {
+                'pdf_20_c': ['pdf_20_c', 'pdf_20'],
+                'pdf_20_uc': ['pdf_20_uc', 'pdf_20'],
+                'pdf_51_c': ['pdf_51_c', 'pdf_51'],
+                'pdf_51_uc': ['pdf_51_uc', 'pdf_51'],
+                'pdf_20': ['pdf_20'],
+                'pdf_51': ['pdf_51']
+            }
+            
             # Параметры
             params = tech_info.get('params', {}) if tech_info else {}
             target_peak = params.get('true_peak', -2.0)
@@ -811,33 +834,48 @@ class ExactReportGenerator:
                         self._format_cell(row.cells[col], bg="FFFFFF", align="center")
                     continue
                 
-                # Если есть только PDF без аудио (для M&E)
+                # Если есть только PDF без аудио (для M&E) - с fallback
                 if has_pdf_only and key.startswith('audio'):
                     logger.info(f"M&E: Обработка {label} только с PDF (нет аудиофайла)")
-                    pdf_data = tech_info[pdf_key]
                     
-                    # Название файла (пустое)
-                    row.cells[1].text = ""
-                    self._format_cell(row.cells[1], align="left")
+                    # Пробуем fallback ключи
+                    pdf_data = None
+                    used_pdf_key = None
+                    if pdf_key:
+                        fallback_keys = pdf_key_fallbacks.get(pdf_key, [pdf_key])
+                        for fb_key in fallback_keys:
+                            if fb_key in tech_info and tech_info.get(fb_key) is not None:
+                                pdf_data = tech_info[fb_key]
+                                used_pdf_key = fb_key
+                                logger.info(f"  Found PDF data using key '{fb_key}'")
+                                break
                     
-                    # Хронометраж (пустой)
-                    row.cells[2].text = ""
-                    self._format_cell(row.cells[2], align="center")
-                    
-                    # TRUE PEAK из PDF
-                    true_peak = pdf_data.get('true_peak')
-                    if true_peak is not None:
-                        sign = "+" if true_peak > 0 else ""
-                        row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
-                        peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
-                        self._format_cell(row.cells[3], bg=peak_bg, align="center")
+                    if pdf_data:
+                        # Название файла (пустое)
+                        row.cells[1].text = ""
+                        self._format_cell(row.cells[1], align="left")
+                        
+                        # Хронометраж (пустой)
+                        row.cells[2].text = ""
+                        self._format_cell(row.cells[2], align="center")
+                        
+                        # TRUE PEAK из PDF
+                        true_peak = pdf_data.get('true_peak')
+                        if true_peak is not None:
+                            sign = "+" if true_peak > 0 else ""
+                            row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
+                            peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
+                            self._format_cell(row.cells[3], bg=peak_bg, align="center")
+                            logger.info(f"  TRUE PEAK: {sign}{true_peak:.1f} dBTP")
+                        else:
+                            row.cells[3].text = ""
+                            self._format_cell(row.cells[3], bg="FFFFFF", align="center")
+                        
+                        # Формат файла (пустой)
+                        row.cells[4].text = ""
+                        self._format_cell(row.cells[4], bg="FFFFFF", align="left")
                     else:
-                        row.cells[3].text = ""
-                        self._format_cell(row.cells[3], bg="FFFFFF", align="center")
-                    
-                    # Формат файла (пустой)
-                    row.cells[4].text = ""
-                    self._format_cell(row.cells[4], bg="FFFFFF", align="left")
+                        logger.warning(f"  No PDF data found for {label}")
                     
                     continue
                 
@@ -888,22 +926,36 @@ class ExactReportGenerator:
                     
                     self._format_cell(row.cells[2], bg=chrono_bg, align="center")
                     
-                    # TRUE PEAK (только для аудио с PDF)
-                    if key.startswith('audio') and pdf_key and pdf_key in tech_info:
-                        pdf_data = tech_info[pdf_key]
-                        true_peak = pdf_data.get('true_peak')
-                        if true_peak is not None:
-                            # Добавляем знак + для положительных значений
-                            sign = "+" if true_peak > 0 else ""
-                            row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
-                            peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
-                            self._format_cell(row.cells[3], bg=peak_bg, align="center")
-                            logger.info(f"M&E: {label} TRUE PEAK форматирован ({sign}{true_peak:.1f} dBTP)")
+                    # TRUE PEAK (только для аудио с PDF) - с fallback
+                    if key.startswith('audio') and pdf_key:
+                        # Пробуем fallback ключи
+                        pdf_data = None
+                        used_pdf_key = None
+                        fallback_keys = pdf_key_fallbacks.get(pdf_key, [pdf_key])
+                        for fb_key in fallback_keys:
+                            if fb_key in tech_info and tech_info.get(fb_key) is not None:
+                                pdf_data = tech_info[fb_key]
+                                used_pdf_key = fb_key
+                                logger.info(f"M&E: {label} Found PDF data using key '{fb_key}' (wanted: '{pdf_key}')")
+                                break
+                        
+                        if pdf_data:
+                            true_peak = pdf_data.get('true_peak')
+                            if true_peak is not None:
+                                # Добавляем знак + для положительных значений
+                                sign = "+" if true_peak > 0 else ""
+                                row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
+                                peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
+                                self._format_cell(row.cells[3], bg=peak_bg, align="center")
+                                logger.info(f"M&E: {label} TRUE PEAK форматирован ({sign}{true_peak:.1f} dBTP)")
+                            else:
+                                row.cells[3].text = ""
+                                self._format_cell(row.cells[3], bg="FFFFFF", align="center")
+                                logger.info(f"M&E: {label} TRUE PEAK пустой (нет данных)")
                         else:
-                            # Если нет данных TRUE PEAK для аудио
                             row.cells[3].text = ""
                             self._format_cell(row.cells[3], bg="FFFFFF", align="center")
-                            logger.info(f"M&E: {label} TRUE PEAK пустой (нет данных)")
+                            logger.warning(f"M&E: {label} PDF data not found (tried: {fallback_keys})")
                     elif key == 'video':
                         # Для VIDEO ячейка TRUE PEAK пустая с белым фоном
                         row.cells[3].text = ""
