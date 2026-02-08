@@ -441,16 +441,20 @@ class ProcessingThread(QThread):
                 filename = Path(pdf_file).stem.lower()
                 logger.info(f"  filename (lower): {filename}")
                 
-                # Гибкая проверка разных форматов: _5.1_, _51_, - 5.1 -, и т.д.
+                # Гибкая проверка разных форматов: _5.1_, _51_, - 5.1 -, _cens_51, и т.д.
                 has_51_marker = ('_51_' in filename or '_5.1_' in filename or 
                                  ' 51 ' in filename or ' 5.1 ' in filename or
                                  '-51-' in filename or '-5.1-' in filename or
-                                 '- 51 -' in filename or '- 5.1 -' in filename)
+                                 '- 51 -' in filename or '- 5.1 -' in filename or
+                                 filename.endswith('_51') or filename.endswith('_5.1') or
+                                 '_cens_51' in filename or '_cens_5.1' in filename)
                 
                 has_20_marker = ('_20_' in filename or '_2.0_' in filename or 
                                  ' 20 ' in filename or ' 2.0 ' in filename or
                                  '-20-' in filename or '-2.0-' in filename or
-                                 '- 20 -' in filename or '- 2.0 -' in filename)
+                                 '- 20 -' in filename or '- 2.0 -' in filename or
+                                 filename.endswith('_20') or filename.endswith('_2.0') or
+                                 '_cens_20' in filename or '_cens_2.0' in filename)
                 
                 is_cens = 'cens' in filename and 'uncens' not in filename
                 is_uncens = 'uncens' in filename
