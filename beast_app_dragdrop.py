@@ -267,6 +267,18 @@ class ProcessingThread(QThread):
             logger.info(f"CSV files found: {len(csv_files)}")
             logger.info(f"PDF files found: {len(pdf_files)}")
             
+            # ДИАГНОСТИКА: ЛОГИРУЕМ PDF ФАЙЛЫ
+            if pdf_files:
+                logger.info("=== PDF FILES DETAILS ===")
+                for i, pdf in enumerate(pdf_files):
+                    logger.info(f"  [{i}] {pdf}")
+                logger.info("=== END PDF FILES ===")
+            else:
+                logger.warning("⚠️ NO PDF FILES LOADED!")
+            
+            # Логируем report_type для диагностики
+            logger.info(f"Report type: {self.report_type}")
+            
             # Объединяем все аудио файлы для pyloudnorm анализа
             all_audio_files = list(audio_files)
             all_audio_files.extend(audio_51_c)
