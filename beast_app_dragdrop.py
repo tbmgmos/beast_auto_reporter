@@ -417,12 +417,17 @@ class ProcessingThread(QThread):
             # Данные из PDF сначала накапливаются в словаре, затем сохраняются в JSON
             self.status_update.emit("📊 Извлечение данных из PDF...")
             
+            logger.info("=== PDF FILES PROCESSING START ===")
+            logger.info(f"pdf_files count: {len(pdf_files)}")
+            logger.info(f"pdf_files: {pdf_files}")
+            
             # Словарь для накопления PDF данных
             pdf_data_all = {}
             
             for pdf_file in pdf_files:
-                logger.info(f"Обработка PDF: {pdf_file}")
+                logger.info(f"\n--- Обработка PDF: {pdf_file} ---")
                 filename = Path(pdf_file).stem.lower()
+                logger.info(f"  filename (lower): {filename}")
                 
                 # Гибкая проверка разных форматов: _5.1_, _51_, - 5.1 -, и т.д.
                 has_51_marker = ('_51_' in filename or '_5.1_' in filename or 
@@ -497,8 +502,15 @@ class ProcessingThread(QThread):
                 else:
                     logger.warning(f"  -> PDF extraction returned EMPTY for {filename}")
             
+            logger.info(f"=== PDF FILES PROCESSING END ===")
+            logger.info(f"pdf_data_all keys: {list(pdf_data_all.keys())}")
+            logger.info(f"pdf_data_all is empty: {len(pdf_data_all) == 0}")
+            
             # === ШАГ: Сохраняем все PDF данные в JSON файл ===
             json_path = output_dir / "pdf_data.json"
+            
+            logger.info(f"=== JSON SAVE CHECK ===")
+            logger.info(f"pdf_data_all is empty: {len(pdf_data_all) == 0}")
             
             if pdf_data_all:
                 try:
