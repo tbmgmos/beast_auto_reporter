@@ -6,6 +6,7 @@ Conclusion Generator Module
 """
 
 import logging
+import csv
 import sys
 from pathlib import Path
 from typing import List
@@ -48,8 +49,10 @@ class ConclusionGenerator:
         
         # Параметры по умолчанию
         target_lufs = params.get('target_lufs', -23.0) if params else -23.0
-        target_peak = params.get('true_peak', -1.0) if params else -1.0
-        target_lra = params.get('lra_max', 15.0) if params else 15.0
+        # Дефолт True Peak должен совпадать с остальными модулями (-2.0)
+        target_peak = params.get('true_peak', -2.0) if params else -2.0
+        # Дефолт LRA должен совпадать с остальными модулями (18.0)
+        target_lra = params.get('lra_max', 18.0) if params else 18.0
         lufs_tolerance = 0.5
         
         # Для M&E отчетов НЕ проверяем LUFS и LRA (только TRUE PEAK)
@@ -62,6 +65,14 @@ class ConclusionGenerator:
         peak_issues_51 = []
         lra_issues_20 = []
         lra_issues_51 = []
+
+        # Сохраняем значения, чтобы понять, когда нужно fallback на PyLoudNorm
+        lufs_values_20 = []
+        lufs_values_51 = []
+        peak_values_20 = []
+        peak_values_51 = []
+        lra_values_20 = []
+        lra_values_51 = []
         
         for pdf_key in ['pdf_20_c', 'pdf_20_uc', 'pdf_20', 'pdf_51_c', 'pdf_51_uc', 'pdf_51']:
             if pdf_key in tech_info and tech_info[pdf_key]:
@@ -71,28 +82,86 @@ class ConclusionGenerator:
                 # LUFS (пропускаем для M&E)
                 if check_lufs_lra:
                     lufs = pdf_data.get('lufs')
-                    if lufs is not None and abs(lufs - target_lufs) > lufs_tolerance:
+                    if lufs is not None:
                         if is_20:
-                            lufs_issues_20.append(lufs)
+                            lufs_values_20.append(lufs)
                         else:
-                            lufs_issues_51.append(lufs)
+                            lufs_values_51.append(lufs)
+                        if abs(lufs - target_lufs) > lufs_tolerance:
+                            if is_20:
+                                lufs_issues_20.append(lufs)
+                            else:
+                                lufs_issues_51.append(lufs)
                 
                 # TRUE PEAK (проверяем всегда)
                 true_peak = pdf_data.get('true_peak')
-                if true_peak is not None and true_peak > target_peak:
+                if true_peak is not None:
                     if is_20:
-                        peak_issues_20.append(true_peak)
+                        peak_values_20.append(true_peak)
                     else:
-                        peak_issues_51.append(true_peak)
+                        peak_values_51.append(true_peak)
+                    if true_peak > target_peak:
+                        if is_20:
+                            peak_issues_20.append(true_peak)
+                        else:
+                            peak_issues_51.append(true_peak)
                 
                 # LRA (пропускаем для M&E)
                 if check_lufs_lra:
                     lra = pdf_data.get('lra')
-                    if lra is not None and lra > target_lra:
+                    if lra is not None:
                         if is_20:
-                            lra_issues_20.append(lra)
+                            lra_values_20.append(lra)
                         else:
+                            lra_values_51.append(lra)
+                        if lra > target_lra:
+                            if is_20:
+                                lra_issues_20.append(lra)
+                            else:
+                                lra_issues_51.append(lra)
+
+        # Fallback: если нет данных PDF по конкретной метрике, берем из PyLoudNorm CSV
+        fallback = self._load_pyloudnorm_fallback(tech_info)
+        if fallback:
+            if check_lufs_lra:
+                if not lufs_values_20 and fallback.get('20'):
+                    for row in fallback['20']:
+                        lufs = row.get('lufs')
+                        if lufs is not None and abs(lufs - target_lufs) > lufs_tolerance:
+                            lufs_issues_20.append(lufs)
+                    logger.info("Fallback LUFS 2.0: данные из PyLoudNorm")
+                if not lufs_values_51 and fallback.get('51'):
+                    for row in fallback['51']:
+                        lufs = row.get('lufs')
+                        if lufs is not None and abs(lufs - target_lufs) > lufs_tolerance:
+                            lufs_issues_51.append(lufs)
+                    logger.info("Fallback LUFS 5.1: данные из PyLoudNorm")
+
+                if not lra_values_20 and fallback.get('20'):
+                    for row in fallback['20']:
+                        lra = row.get('lra')
+                        if lra is not None and lra > target_lra:
+                            lra_issues_20.append(lra)
+                    logger.info("Fallback LRA 2.0: данные из PyLoudNorm")
+                if not lra_values_51 and fallback.get('51'):
+                    for row in fallback['51']:
+                        lra = row.get('lra')
+                        if lra is not None and lra > target_lra:
                             lra_issues_51.append(lra)
+                    logger.info("Fallback LRA 5.1: данные из PyLoudNorm")
+
+            if not peak_values_20 and fallback.get('20'):
+                for row in fallback['20']:
+                    true_peak = row.get('true_peak')
+                    if true_peak is not None and true_peak > target_peak:
+                        peak_issues_20.append(true_peak)
+                logger.info("Fallback True Peak 2.0: данные из PyLoudNorm")
+            if not peak_values_51 and fallback.get('51'):
+                for row in fallback['51']:
+                    true_peak = row.get('true_peak')
+                    if true_peak is not None and true_peak > target_peak:
+                        peak_issues_51.append(true_peak)
+                logger.info("Fallback True Peak 5.1: данные из PyLoudNorm")
         
         # Формируем проблемы по интегральной громкости (только если не M&E)
         if check_lufs_lra:
@@ -217,6 +286,65 @@ class ConclusionGenerator:
         
         logger.info(f"Техническое заключение: {len(problems)} проблем")
         return conclusion
+
+    def _load_pyloudnorm_fallback(self, tech_info: dict) -> dict:
+        """
+        Fallback: читаем CSV PyLoudNorm и возвращаем значения по каналам 2.0 / 5.1
+        Возвращает: {'20': [{'lufs':..., 'true_peak':..., 'lra':...}, ...],
+                     '51': [{'lufs':..., 'true_peak':..., 'lra':...}, ...]}
+        """
+        csv_path = tech_info.get('audio_analysis_csv') if tech_info else None
+        if not csv_path:
+            return {}
+
+        path = Path(csv_path)
+        if not path.exists():
+            logger.warning(f"PyLoudNorm CSV не найден: {csv_path}")
+            return {}
+
+        def parse_float(value):
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            value = str(value).strip()
+            if value == "":
+                return None
+            try:
+                return float(value)
+            except ValueError:
+                return None
+
+        def detect_channel(name: str) -> str:
+            n = (name or "").lower()
+            if any(x in n for x in ["5.1", "5_1", "5-1", "_51", " 51 ", "51_", "51.", "5.0", "surround", "6ch", "6 ch"]):
+                return "51"
+            if any(x in n for x in ["2.0", "2_0", "2-0", "_20", " 20 ", "20_", "20.", "stereo"]):
+                return "20"
+            return ""
+
+        result = {"20": [], "51": []}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    file_name = row.get("file_name", "")
+                    channel = detect_channel(file_name) or detect_channel(row.get("channel_layout", ""))
+                    if channel not in ("20", "51"):
+                        continue
+
+                    entry = {
+                        "lufs": parse_float(row.get("integrated_lufs")),
+                        "true_peak": parse_float(row.get("true_peak_dbtp")),
+                        "lra": parse_float(row.get("lra")),
+                        "file_name": file_name
+                    }
+                    result[channel].append(entry)
+        except Exception as e:
+            logger.error(f"Ошибка чтения PyLoudNorm CSV: {e}")
+            return {}
+
+        return result
     
     def generate_subjective_conclusion(self, issues: List[Issue]) -> str:
         """
@@ -783,4 +911,3 @@ if __name__ == "__main__":
     print("\n=== ЗАКЛЮЧЕНИЕ ===\n")
     print(conclusion)
     print("\n" + "="*50 + "\n")
-

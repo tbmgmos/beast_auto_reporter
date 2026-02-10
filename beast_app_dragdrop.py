@@ -9,10 +9,16 @@ import logging
 import shutil
 from pathlib import Path
 from datetime import datetime
+import re
+import io
+import fitz
+from docx import Document
+from docx.shared import Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QRadioButton, QTextEdit, QProgressBar,
-    QCheckBox, QListWidget, QListWidgetItem, QFrame, QMessageBox
+    QCheckBox, QListWidget, QListWidgetItem, QFrame, QMessageBox, QFileDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData
 from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor
@@ -119,6 +125,40 @@ class DropZone(QFrame):
         
         if files:
             self.files_dropped.emit(files)
+
+
+class PdfOnlyDocxBuilder:
+    """Создает простой DOCX из первых страниц PDF (по одному PDF на страницу)."""
+
+    @staticmethod
+    def build(output_path: Path, pdf_paths: list) -> None:
+        doc = Document()
+
+        # A3 landscape как в основном отчете
+        section = doc.sections[0]
+        section.page_width = Cm(42.02)
+        section.page_height = Cm(29.70)
+        section.left_margin = Cm(2.0)
+        section.right_margin = Cm(2.0)
+        section.top_margin = Cm(2.0)
+        section.bottom_margin = Cm(2.0)
+        section.orientation = 1  # Landscape
+
+        for idx, pdf_path in enumerate(pdf_paths):
+            if idx > 0:
+                para = doc.add_paragraph()
+                run = para.add_run()
+                run.add_break(WD_BREAK.PAGE)
+
+            pdf_doc = fitz.open(str(pdf_path))
+            page = pdf_doc[0]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img_stream = io.BytesIO(pix.tobytes("png"))
+            doc.add_picture(img_stream, width=Cm(38.0))
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            pdf_doc.close()
+
+        doc.save(str(output_path))
         
         event.acceptProposedAction()
 
@@ -296,6 +336,33 @@ class ProcessingThread(QThread):
             # Папка уже создана в start_processing через create_output_folder()
             output_dir = Path(self.output_folder)
             logger.info(f"Выходная папка: {output_dir}")
+
+            # === PDF-only режим: вставка PDF в DOCX в самом начале ===
+            if pdf_files and not audio_files and not video_files and not csv_files:
+                self.status_update.emit("📄 Вставка PDF в DOCX...")
+                self.progress_update.emit(10)
+                
+                copied_pdfs = []
+                for pdf_file in pdf_files:
+                    dest = output_dir / Path(pdf_file).name
+                    shutil.copy2(pdf_file, dest)
+                    copied_pdfs.append(dest)
+                
+                simple_docx_path = output_dir / f"pdf_{base_name}.docx"
+                PdfOnlyDocxBuilder.build(simple_docx_path, copied_pdfs[:2])
+                
+                self.progress_update.emit(100)
+                self.status_update.emit("✅ Готово!")
+                
+                files_in_output = list(output_dir.glob('*'))
+                success_msg = (
+                    f"✅ PDF вставлены в DOCX!\n"
+                    f"📁 Папка: {output_dir.name}\n"
+                    f"📄 Файлов: {len(files_in_output)}"
+                )
+                self.finished.emit(True, success_msg)
+                logger.info(f"✅ PDF-only DOCX создан: {simple_docx_path}")
+                return
             
             # Копируем PDF файлы в выходную папку и разделяем по типам
             self.status_update.emit("📋 Копирование файлов...")
@@ -310,37 +377,58 @@ class ProcessingThread(QThread):
                 '51_uc': None,
                 '51': None
             }
+            copied_pdfs = []
             
             for pdf_file in pdf_files:
                 dest = output_dir / Path(pdf_file).name
                 shutil.copy2(pdf_file, dest)
+                copied_pdfs.append(dest)
                 logger.info(f"✅ Скопирован PDF: {Path(pdf_file).name}")
                 
                 filename = Path(pdf_file).stem.lower()
                 
-                # Определяем тип PDF с приоритетом
-                if ('_20_' in filename or '_2.0_' in filename) and 'cens' in filename and 'uncens' not in filename:
+                # Определяем тип PDF с приоритетом (regex, чтобы ловить cens_20 / cens51 и т.п.)
+                is_20 = re.search(r'(^|[^0-9])(2\.0|20)([^0-9]|$)', filename) is not None
+                is_51 = re.search(r'(^|[^0-9])(5\.1|51)([^0-9]|$)', filename) is not None
+                
+                if is_20 and 'cens' in filename and 'uncens' not in filename:
                     pdf_paths['20_c'] = str(dest)
                     logger.info(f"📄 PDF 2.0 CENS: {Path(pdf_file).name}")
-                elif ('_20_' in filename or '_2.0_' in filename) and 'uncens' in filename:
+                elif is_20 and 'uncens' in filename:
                     pdf_paths['20_uc'] = str(dest)
                     logger.info(f"📄 PDF 2.0 UNCENS: {Path(pdf_file).name}")
-                elif '_20_' in filename or '_2.0_' in filename:
+                elif is_20:
                     pdf_paths['20'] = str(dest)
                     logger.info(f"📄 PDF 2.0: {Path(pdf_file).name}")
-                elif ('_51_' in filename or '_5.1_' in filename) and 'cens' in filename and 'uncens' not in filename:
+                elif is_51 and 'cens' in filename and 'uncens' not in filename:
                     pdf_paths['51_c'] = str(dest)
                     logger.info(f"📄 PDF 5.1 CENS: {Path(pdf_file).name}")
-                elif ('_51_' in filename or '_5.1_' in filename) and 'uncens' in filename:
+                elif is_51 and 'uncens' in filename:
                     pdf_paths['51_uc'] = str(dest)
                     logger.info(f"📄 PDF 5.1 UNCENS: {Path(pdf_file).name}")
-                elif '_51_' in filename or '_5.1_' in filename:
+                elif is_51:
                     pdf_paths['51'] = str(dest)
                     logger.info(f"📄 PDF 5.1: {Path(pdf_file).name}")
             
             # Выбираем PDF для вставки в отчет (приоритет: cens > uncens > общий)
             copied_pdf_20 = pdf_paths['20_c'] or pdf_paths['20_uc'] or pdf_paths['20']
             copied_pdf_51 = pdf_paths['51_c'] or pdf_paths['51_uc'] or pdf_paths['51']
+
+            # Фолбэк: если тип не определился, пробуем по имени среди всех PDF
+            if not copied_pdf_20 or not copied_pdf_51:
+                for p in copied_pdfs:
+                    name = p.stem.lower()
+                    if not copied_pdf_20 and re.search(r'(^|[^0-9])(2\\.0|20)([^0-9]|$)', name):
+                        copied_pdf_20 = str(p)
+                    if not copied_pdf_51 and re.search(r'(^|[^0-9])(5\\.1|51)([^0-9]|$)', name):
+                        copied_pdf_51 = str(p)
+
+            # Последний фолбэк: берем первые два PDF в списке
+            if copied_pdfs:
+                if not copied_pdf_20:
+                    copied_pdf_20 = str(copied_pdfs[0])
+                if not copied_pdf_51 and len(copied_pdfs) > 1:
+                    copied_pdf_51 = str(copied_pdfs[1])
             
             logger.info(f"Выбран PDF 2.0 для отчета: {copied_pdf_20}")
             logger.info(f"Выбран PDF 5.1 для отчета: {copied_pdf_51}")
@@ -833,6 +921,10 @@ class BeastApp(QMainWindow):
         # Поле для имени подготовившего отчет
         name_card = self.create_name_card()
         layout.addWidget(name_card)
+
+        # Выбор папки сохранения
+        output_card = self.create_output_folder_card()
+        layout.addWidget(output_card)
         
         # Drag & Drop зона
         self.drop_zone = DropZone()
@@ -1107,6 +1199,7 @@ class BeastApp(QMainWindow):
         # Загружаем сохраненное имя
         self.load_saved_name()
         self.name_input.textChanged.connect(self.save_name)
+        self.output_folder_path = None
         
         card_layout.addWidget(self.name_input)
         card_layout.addStretch()
@@ -1129,8 +1222,76 @@ class BeastApp(QMainWindow):
         config_file = Path.home() / ".beast_auto_reporter_config.txt"
         try:
             config_file.write_text(self.name_input.text())
-        except:
+        except Exception:
             pass
+
+    def create_output_folder_card(self):
+        """Карточка выбора папки сохранения"""
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #E0E0E0;
+                border-radius: 12px;
+                padding: 12px;
+            }
+        """)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(12, 8, 12, 8)
+
+        label = QLabel("📁 Папка отчета:")
+        label.setFont(QFont("SF Pro Text", 11))
+
+        self.output_folder_label = QLabel("Рабочий стол (по умолчанию)")
+        self.output_folder_label.setFont(QFont("SF Pro Text", 10))
+        self.output_folder_label.setStyleSheet("color: #616161;")
+
+        pick_btn = QPushButton("Выбрать…")
+        pick_btn.setFont(QFont("SF Pro Text", 10))
+        pick_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #F5F5F5;
+                border: 1px solid #E0E0E0;
+                border-radius: 8px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover { background-color: #EEEEEE; }
+        """)
+        pick_btn.clicked.connect(self.select_output_folder)
+
+        clear_btn = QPushButton("Сбросить")
+        clear_btn.setFont(QFont("SF Pro Text", 10))
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FFFFFF;
+                border: 1px solid #E0E0E0;
+                border-radius: 8px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover { background-color: #F5F5F5; }
+        """)
+        clear_btn.clicked.connect(self.clear_output_folder)
+
+        layout.addWidget(label)
+        layout.addWidget(self.output_folder_label, 1)
+        layout.addWidget(pick_btn)
+        layout.addWidget(clear_btn)
+        card.setLayout(layout)
+        return card
+
+    def select_output_folder(self):
+        """Выбор папки сохранения отчета"""
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для отчета")
+        if folder:
+            self.output_folder_path = Path(folder)
+            self.output_folder_label.setText(str(self.output_folder_path))
+            logger.info(f"Output folder selected: {self.output_folder_path}")
+
+    def clear_output_folder(self):
+        """Сброс выбора папки"""
+        self.output_folder_path = None
+        self.output_folder_label.setText("Рабочий стол (по умолчанию)")
+        logger.info("Output folder reset to Desktop")
     
     def handle_dropped_files(self, files):
         """Обработка перетащенных файлов"""
@@ -1245,9 +1406,13 @@ class BeastApp(QMainWindow):
         elif csv_files:
             base_name = Path(csv_files[0]).stem.replace('_rus', '')
         
-        # Создаем папку на Рабочем столе (как в v5.11)
-        output_folder = self.create_output_folder(base_name)
-        logger.info(f"Папка отчета на Desktop: {output_folder}")
+        # Папка вывода: выбранная пользователем или Рабочий стол
+        if self.output_folder_path:
+            output_folder = self.create_output_folder(base_name, base_dir=Path(self.output_folder_path))
+            logger.info(f"Папка отчета: {output_folder}")
+        else:
+            output_folder = self.create_output_folder(base_name)
+            logger.info(f"Папка отчета на Desktop: {output_folder}")
         
         # Отключаем кнопки
         self.generate_btn.setEnabled(False)
@@ -1463,16 +1628,17 @@ class BeastApp(QMainWindow):
         
         return files
     
-    def create_output_folder(self, base_name: str) -> Path:
+    def create_output_folder(self, base_name: str, base_dir: Path = None) -> Path:
         """Создание выходной папки (из v5.11)"""
-        folder_name = f"отчет_{base_name}_rus"
+        folder_name = f"отчет_{base_name}"
         
         desktop = Path.home() / "Desktop"
-        output_folder = desktop / folder_name
+        root_dir = base_dir or desktop
+        output_folder = root_dir / folder_name
         
         counter = 1
         while output_folder.exists():
-            output_folder = desktop / f"{folder_name}_{counter}"
+            output_folder = root_dir / f"{folder_name}_{counter}"
             counter += 1
         
         output_folder.mkdir(parents=True, exist_ok=True)

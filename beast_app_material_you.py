@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 import re
 import io
+import csv
 import importlib.util
 
 # Добавляем корневую директорию в путь (нужно для локальных модулей src при запуске из любого cwd)
@@ -505,11 +506,13 @@ class ProcessingThread(QThread):
             logger.debug(f"audio_51_uc = {audio_51_uc}")
             csv_files = self.files_data.get('csv', [])
             pdf_files = self.files_data.get('pdf', [])
+            params_files = self.files_data.get('params', [])
             
             logger.info(f"Audio files found: {len(audio_files)}")
             logger.info(f"Video files found: {len(video_files)}")
             logger.info(f"CSV files found: {len(csv_files)}")
             logger.info(f"PDF files found: {len(pdf_files)}")
+            logger.info(f"Params files found: {len(params_files)}")
             
             # ДИАГНОСТИКА: ЛОГИРУЕМ PDF ФАЙЛЫ
             if pdf_files:
@@ -648,6 +651,12 @@ class ProcessingThread(QThread):
                 dest = output_dir / Path(csv_files[0]).name
                 shutil.copy2(csv_files[0], dest)
                 logger.info(f"✅ Скопирован CSV: {Path(csv_files[0]).name}")
+
+            # Копируем Параметры.txt если есть
+            if params_files:
+                dest = output_dir / Path(params_files[0]).name
+                shutil.copy2(params_files[0], dest)
+                logger.info(f"✅ Скопирован файл параметров: {Path(params_files[0]).name}")
             
             # Извлечение технической информации
             self.status_update.emit("🔍 Анализ файлов...")
@@ -656,6 +665,14 @@ class ProcessingThread(QThread):
             tech_extractor = TechnicalInfoExtractor()
             tech_info = {}
             audio_key_by_stem = {}
+
+            # Параметры из файла (если есть)
+            if params_files:
+                try:
+                    tech_info['params'] = tech_extractor.read_params_file(params_files[0])
+                    logger.info("✅ Параметры загружены из файла")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка чтения файла параметров: {e}")
             
             # Обработка аудио файлов
             for audio_file in audio_files:
@@ -1062,6 +1079,67 @@ class ProcessingThread(QThread):
                         tech_info['audio_analysis_csv'] = export_results.get('csv')
                         tech_info['audio_analysis_html'] = export_results.get('html')
                         tech_info['audio_analysis_txt'] = export_results.get('txt')
+
+                        # Если PDF отсутствуют, заполняем pdf_* из PyLoudNorm CSV
+                        if (not pdf_files) or (not any(k.startswith('pdf_') for k in tech_info.keys())):
+                            csv_path = tech_info.get('audio_analysis_csv')
+                            if csv_path and Path(csv_path).exists():
+                                logger.info("📌 PDF не найден — используем PyLoudNorm как источник параметров для таблицы")
+
+                                def _parse_float(value):
+                                    if value is None:
+                                        return None
+                                    if isinstance(value, (int, float)):
+                                        return float(value)
+                                    value = str(value).strip()
+                                    if value == "":
+                                        return None
+                                    try:
+                                        return float(value)
+                                    except ValueError:
+                                        return None
+
+                                # Маппинг audio_* -> pdf_* для подстановки
+                                audio_to_pdf = {
+                                    'audio_20_c': 'pdf_20_c',
+                                    'audio_20_uc': 'pdf_20_uc',
+                                    'audio_51_c': 'pdf_51_c',
+                                    'audio_51_uc': 'pdf_51_uc'
+                                }
+
+                                # Строим индекс по нормализованному имени файла
+                                audio_key_by_norm = {}
+                                for audio_key, pdf_key in audio_to_pdf.items():
+                                    audio_data = tech_info.get(audio_key)
+                                    if isinstance(audio_data, dict):
+                                        name = audio_data.get('file_name', '')
+                                        if name:
+                                            audio_key_by_norm[normalize_stem(name)] = pdf_key
+
+                                injected = 0
+                                with open(csv_path, 'r', encoding='utf-8') as f:
+                                    reader = csv.DictReader(f)
+                                    for row in reader:
+                                        file_name = row.get('file_name', '')
+                                        norm = normalize_stem(file_name) if file_name else ''
+                                        pdf_key = audio_key_by_norm.get(norm)
+                                        if not pdf_key:
+                                            continue
+                                        if pdf_key in tech_info and tech_info.get(pdf_key):
+                                            continue
+
+                                        pdf_like = {
+                                            'lufs': _parse_float(row.get('integrated_lufs')),
+                                            'true_peak': _parse_float(row.get('true_peak_dbtp')),
+                                            'lra': _parse_float(row.get('lra')),
+                                            'source_pdf': None
+                                        }
+                                        tech_info[pdf_key] = pdf_like
+                                        injected += 1
+
+                                logger.info(f"✅ PyLoudNorm -> pdf_* заполнено: {injected} строк")
+                            else:
+                                logger.warning("⚠️ PyLoudNorm CSV не найден, заполнение таблицы невозможно")
                     else:
                         logger.debug(f"all_audio_files is EMPTY")
                         logger.warning("⚠️ Аудиофайлы не найдены для анализа")
@@ -1192,7 +1270,8 @@ class BeastApp(QMainWindow):
             'audio': [],
             'video': [],
             'csv': [],
-            'pdf': []
+            'pdf': [],
+            'params': []
         }
         
         self.init_ui()
@@ -1623,6 +1702,9 @@ class BeastApp(QMainWindow):
             elif file_ext == '.csv':
                 self.files_data['csv'].append(file_path)
                 icon = "📈"
+            elif file_ext == '.txt' and ('параметры' in filename_lower or 'parametry' in filename_lower):
+                self.files_data['params'].append(file_path)
+                icon = "⚙️"
             elif file_ext == '.pdf':
                 self.files_data['pdf'].append(file_path)
                 # Определяем тип PDF для отображения
@@ -1658,6 +1740,8 @@ class BeastApp(QMainWindow):
             stats.append(f"📈 {len(self.files_data['csv'])}")
         if self.files_data['pdf']:
             stats.append(f"📑 {len(self.files_data['pdf'])}")
+        if self.files_data['params']:
+            stats.append(f"⚙️ {len(self.files_data['params'])}")
         
         self.status_label.setText(" | ".join(stats) if stats else "Нет файлов")
     
@@ -1667,7 +1751,8 @@ class BeastApp(QMainWindow):
             'audio': [],
             'video': [],
             'csv': [],
-            'pdf': []
+            'pdf': [],
+            'params': []
         }
         self.files_list.clear()
         self.generate_btn.setEnabled(False)
