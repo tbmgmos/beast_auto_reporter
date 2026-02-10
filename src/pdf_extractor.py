@@ -167,9 +167,14 @@ class PDFExtractor:
                 info['format'] = format_match.group(1).upper()
             
             # Channels (2.0, 5.1, etc.)
-            channels_match = re.search(r'(2\.0|5\.1|7\.1)', text)
+            channels_match = re.search(r'(2\.0|5\.1|7\.1)', text, re.IGNORECASE)
             if channels_match:
                 info['channels'] = channels_match.group(1)
+            else:
+                if re.search(r'(stereo|2\s*ch|2\s*channel)', text, re.IGNORECASE):
+                    info['channels'] = '2.0'
+                elif re.search(r'(5\.0|surround|6\s*ch|6\s*channel)', text, re.IGNORECASE):
+                    info['channels'] = '5.1'
             
             logger.info(f"Техническая информация извлечена: {info}")
             
@@ -301,4 +306,3 @@ if __name__ == "__main__":
     
     extractor = PDFExtractor()
     print("PDFExtractor готов к использованию!")
-

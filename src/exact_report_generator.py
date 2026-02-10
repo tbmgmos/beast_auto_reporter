@@ -365,12 +365,14 @@ class ExactReportGenerator:
                     
                     # Проверяем на некорректный тип фонограммы в названии
                     has_incorrect_type = self._check_incorrect_audio_type(file_name)
-                    text_color = "E83121" if has_incorrect_type else None
+                    name_mismatch = bool(data.get('name_channel_mismatch')) or bool(data.get('name_incorrect_type'))
+                    name_error = has_incorrect_type or name_mismatch
                     
-                    self._format_cell(row.cells[1], align="left", text_color=text_color)
-                    
-                    if has_incorrect_type:
+                    if name_error:
+                        self._format_cell(row.cells[1], align="left", bg="E83121", text_color="FFFFFF")
                         logger.warning(f"⚠️  Название файла с ошибкой: {file_name}")
+                    else:
+                        self._format_cell(row.cells[1], align="left")
                     
                     # Хронометраж (формат: H:MM:SS.mmm) с цветовой индикацией
                     duration = data.get('duration', 0)  # в секундах
@@ -467,6 +469,18 @@ class ExactReportGenerator:
                             # Проверка полноты информации
                             is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
                             format_bg = "00FA02" if is_complete else "FBBA18"
+                            
+                            # Проверка соответствия каналов строке (2.0 vs 5.1)
+                            expected_channels = 6 if "51" in key else (2 if "20" in key else None)
+                            actual_channels = audio_data.get('channels')
+                            if expected_channels and actual_channels:
+                                try:
+                                    actual_channels = int(actual_channels)
+                                except Exception:
+                                    actual_channels = None
+                                if actual_channels and ((expected_channels == 6 and actual_channels < 6) or (expected_channels == 2 and actual_channels > 2)):
+                                    format_bg = "E83121"
+                            
                             self._format_cell(row.cells[6], bg=format_bg, align="left")
                             logger.info(f"  Format added from audio: {format_text}")
                     
@@ -753,28 +767,36 @@ class ExactReportGenerator:
                 self._format_cell(cell, bg="D9D9D9", bold=True, align="center", font_size=9, vertical_align="center")
             
             # Строки 3-5: Данные M&E (только 2.0 ME, 5.1 ME, VIDEO)
-            # Определяем правильные PDF ключи с приоритетом
-            pdf_20_key = None
-            pdf_51_key = None
+            # Определяем правильные AUDIO/PDF ключи с приоритетом и соответствием
+            def pick_audio_key(prefix: str):
+                for k in (f"audio_{prefix}_c", f"audio_{prefix}_uc", f"audio_{prefix}"):
+                    if tech_info and k in tech_info and tech_info[k]:
+                        return k
+                return None
             
-            if tech_info:
-                if 'pdf_20_c' in tech_info:
-                    pdf_20_key = 'pdf_20_c'
-                elif 'pdf_20_uc' in tech_info:
-                    pdf_20_key = 'pdf_20_uc'
-                elif 'pdf_20' in tech_info:
-                    pdf_20_key = 'pdf_20'
-                
-                if 'pdf_51_c' in tech_info:
-                    pdf_51_key = 'pdf_51_c'
-                elif 'pdf_51_uc' in tech_info:
-                    pdf_51_key = 'pdf_51_uc'
-                elif 'pdf_51' in tech_info:
-                    pdf_51_key = 'pdf_51'
+            def pick_pdf_key(prefix: str, audio_key: str):
+                if not tech_info:
+                    return None
+                # Пытаемся сопоставить с типом аудио (cens/uncens)
+                if audio_key:
+                    if audio_key.endswith("_uc") and f"pdf_{prefix}_uc" in tech_info:
+                        return f"pdf_{prefix}_uc"
+                    if audio_key.endswith("_c") and f"pdf_{prefix}_c" in tech_info:
+                        return f"pdf_{prefix}_c"
+                # Общий fallback
+                for k in (f"pdf_{prefix}_c", f"pdf_{prefix}_uc", f"pdf_{prefix}"):
+                    if k in tech_info:
+                        return k
+                return None
+            
+            audio_20_key = pick_audio_key("20")
+            audio_51_key = pick_audio_key("51")
+            pdf_20_key = pick_pdf_key("20", audio_20_key)
+            pdf_51_key = pick_pdf_key("51", audio_51_key)
             
             rows_data = [
-                ("2.0 ME", "audio_20_c", pdf_20_key),
-                ("5.1 ME", "audio_51_c", pdf_51_key),
+                ("2.0 ME", audio_20_key or "audio_20_c", pdf_20_key),
+                ("5.1 ME", audio_51_key or "audio_51_c", pdf_51_key),
                 ("VIDEO", "video", None)
             ]
             
@@ -799,7 +821,9 @@ class ExactReportGenerator:
                     durations[key] = tech_info[key].get('duration', 0)
             
             reference_duration = None
-            for key in ['audio_20_c', 'audio_51_c', 'video']:
+            for key in [audio_20_key, audio_51_key, 'video']:
+                if not key:
+                    continue
                 if key in durations and durations[key] > 0:
                     reference_duration = durations[key]
                     break
@@ -851,8 +875,13 @@ class ExactReportGenerator:
                                 break
                     
                     if pdf_data:
-                        # Название файла (пустое)
-                        row.cells[1].text = ""
+                        # Название файла (берем из source_pdf)
+                        source_pdf = pdf_data.get('source_pdf', '')
+                        if source_pdf:
+                            file_name_without_ext = source_pdf.rsplit('.', 1)[0] if '.' in source_pdf else source_pdf
+                            row.cells[1].text = file_name_without_ext
+                        else:
+                            row.cells[1].text = ""
                         self._format_cell(row.cells[1], align="left")
                         
                         # Хронометраж (пустой)
@@ -871,9 +900,19 @@ class ExactReportGenerator:
                             row.cells[3].text = ""
                             self._format_cell(row.cells[3], bg="FFFFFF", align="center")
                         
-                        # Формат файла (пустой)
-                        row.cells[4].text = ""
-                        self._format_cell(row.cells[4], bg="FFFFFF", align="left")
+                        # Формат файла (если есть данные)
+                        sr = pdf_data.get('sample_rate')
+                        bd = pdf_data.get('bit_depth')
+                        if sr:
+                            sr_khz = sr // 1000
+                            format_text = f"PCM {sr_khz}kHz"
+                            if bd:
+                                format_text += f" {bd} bit"
+                            row.cells[4].text = format_text
+                            self._format_cell(row.cells[4], bg="00FA02", align="left")
+                        else:
+                            row.cells[4].text = ""
+                            self._format_cell(row.cells[4], bg="FFFFFF", align="left")
                     else:
                         logger.warning(f"  No PDF data found for {label}")
                     
@@ -889,12 +928,14 @@ class ExactReportGenerator:
                     
                     # Проверяем на некорректный тип фонограммы в названии
                     has_incorrect_type = self._check_incorrect_audio_type(file_name)
-                    text_color = "E83121" if has_incorrect_type else None
+                    name_mismatch = bool(data.get('name_channel_mismatch')) or bool(data.get('name_incorrect_type'))
+                    name_error = has_incorrect_type or name_mismatch
                     
-                    self._format_cell(row.cells[1], align="left", text_color=text_color)
-                    
-                    if has_incorrect_type:
+                    if name_error:
+                        self._format_cell(row.cells[1], align="left", bg="E83121", text_color="FFFFFF")
                         logger.warning(f"⚠️  M&E: Название файла с ошибкой: {file_name}")
+                    else:
+                        self._format_cell(row.cells[1], align="left")
                     
                     if key == 'video':
                         logger.info(f"M&E: Обработка VIDEO")
@@ -970,6 +1011,17 @@ class ExactReportGenerator:
                         row.cells[4].text = format_text
                         is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
                         format_bg = "00FA02" if is_complete else "FBBA18"
+                        
+                        expected_channels = 6 if "51" in key else (2 if "20" in key else None)
+                        actual_channels = data.get('channels')
+                        if expected_channels and actual_channels:
+                            try:
+                                actual_channels = int(actual_channels)
+                            except Exception:
+                                actual_channels = None
+                            if actual_channels and ((expected_channels == 6 and actual_channels < 6) or (expected_channels == 2 and actual_channels > 2)):
+                                format_bg = "E83121"
+                        
                         self._format_cell(row.cells[4], bg=format_bg, align="left")
                     elif key == 'video':
                         # Формат видео - только формат и FPS
@@ -1331,4 +1383,3 @@ class ExactReportGenerator:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("ExactReportGenerator готов")
-

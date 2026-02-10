@@ -87,7 +87,7 @@ class TechnicalInfoExtractor:
             
             file_path_obj = Path(file_path)
             
-            # Читаем файл
+            # Читаем файл через soundfile
             info = sf.info(file_path)
             
             # Определяем порядок каналов
@@ -109,7 +109,61 @@ class TechnicalInfoExtractor:
             return tech_info
             
         except Exception as e:
+            logger.warning(f"soundfile не смог прочитать файл: {e}")
+            ff_info = self._probe_audio_info_ffprobe(file_path)
+            if ff_info:
+                return ff_info
             logger.error(f"Ошибка извлечения технической информации: {e}")
+            return {}
+
+    def _probe_audio_info_ffprobe(self, file_path: str) -> Dict:
+        """Fallback: извлечение базовых метаданных через ffprobe"""
+        try:
+            import json
+            file_path_obj = Path(file_path)
+            cmd = [
+                self.ffprobe_path,
+                '-v', 'error',
+                '-select_streams', 'a:0',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                str(file_path_obj)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                logger.warning(f"ffprobe error: {result.stderr}")
+                return {}
+            
+            data = json.loads(result.stdout or "{}")
+            streams = data.get('streams', [])
+            fmt = data.get('format', {})
+            if not streams:
+                return {}
+            
+            stream = streams[0]
+            channels = int(stream.get('channels', 0) or 0)
+            sample_rate = int(stream.get('sample_rate', 0) or 0)
+            duration = float(fmt.get('duration', 0) or 0)
+            bits = stream.get('bits_per_sample') or stream.get('bits_per_raw_sample')
+            bit_depth = f"PCM_{bits}" if bits else "PCM_24"
+            channel_order = self._get_channel_order(channels) if channels else ""
+            
+            tech_info = {
+                'file_name': file_path_obj.name,
+                'format': file_path_obj.suffix.upper().replace('.', ''),
+                'sample_rate': sample_rate or 48000,
+                'bit_depth': bit_depth,
+                'channels': channels,
+                'channel_order': channel_order,
+                'duration': duration,
+                'frames': 0
+            }
+            
+            logger.info(f"ffprobe: {sample_rate}Hz, {bit_depth}, {channels}ch")
+            return tech_info
+        except Exception as e:
+            logger.warning(f"ffprobe fallback failed: {e}")
             return {}
     
     def _get_channel_order(self, num_channels: int) -> str:
@@ -376,4 +430,3 @@ if __name__ == "__main__":
     print("\n=== ТЕХНИЧЕСКИЕ ПАРАМЕТРЫ АУДИО ===")
     for key, value in audio_info.items():
         print(f"{key}: {value}")
-
