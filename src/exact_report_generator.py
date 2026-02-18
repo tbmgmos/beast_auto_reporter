@@ -88,7 +88,7 @@ class ExactReportGenerator:
                 logger.info("Добавление пустого маркер-листа (только заголовок и шапка)")
             
             # === 2. MARKER LIST (точно как в референсе) ===
-            self._add_marker_list_exact(doc, issues)
+            self._add_marker_list_exact(doc, issues, report_type=report_type)
             
             # === 3. PDF КАК ИЗОБРАЖЕНИЯ (всегда, если файлы существуют) ===
             # PDF добавляются на отдельной странице (страница 3+)
@@ -124,17 +124,23 @@ class ExactReportGenerator:
             from docx.shared import Pt, Cm, Inches
             from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
             from datetime import datetime
+
+            OK_BG = "72F649"
+            BAD_BG = "E73322"
+            WARN_BG = "FCBA19"
+            HEADER_BG = "D5D5D5"
+            LIGHT_BG = "F5F5F5"
+            OFFWHITE_BG = "FEFFFE"
             
-            # Таблица: 11 строк x 7 столбцов
-            # Строки: 0=заголовок+дата+имя, 1=пустая, 2=колонки, 
-            #         3-7=данные (2.0 cens, 2.0 uncens, 5.1 cens, 5.1 uncens, VIDEO), 
-            #         8=индикаторы, 9=ЗАКЛЮЧЕНИЕ, 10=текст заключения
-            table = doc.add_table(rows=11, cols=7)
+            # Таблица: 13 строк x 7 столбцов (как в референсном основном отчете)
+            # Строки: 0=заголовок+дата, 1=отчет подготовил, 2=колонки,
+            #         3-7=данные, 8=пустая, 9=индикаторы, 10=пустая, 11=ЗАКЛЮЧЕНИЕ, 12=текст
+            table = doc.add_table(rows=13, cols=7)
             table.style = 'Table Grid'
             
-            # Устанавливаем ширину колонок (по скриншоту)
+            # Устанавливаем ширину колонок (точно по референсу)
             # ДОРОЖКА | НАЗВАНИЕ ФАЙЛОВ | ХРОНОМЕТРАЖ | LOUDNESS | TRUE PEAK | LRA | ФОРМАТ ФАЙЛА
-            widths_cm = [3.5, 12.0, 4.0, 4.0, 4.0, 3.5, 7.0]  # Итого: 38.0 см
+            widths_cm = [2.61, 14.27, 4.22, 2.63, 2.47, 1.89, 9.89]  # Итого: ~38.0 см
             
             # Метод 1: Устанавливаем через table.columns
             for idx, width_cm in enumerate(widths_cm):
@@ -163,51 +169,41 @@ class ExactReportGenerator:
                     if idx < len(widths_cm):
                         gridCol.set(qn('w:w'), str(int(widths_cm[idx] * 567)))  # cm to twips
             
-            # Строка 0: Заголовок + Дата
+            # Строка 0: Шапка (как в M&E референсе)
             row0 = table.rows[0]
             
-            # Левая часть: "ОБЪЕКТИВНАЯ ОЦЕНКА КАЧЕСТВА ЗВУЧАНИЯ ФОНОГРАММЫ" (объединяем первые 5 колонок)
+            # Левая часть: заголовок (объединяем первые 4 колонки)
             cell_left = row0.cells[0]
-            for col in range(1, 5):
+            for col in range(1, 4):
                 cell_left.merge(row0.cells[col])
             cell_left.text = "ОБЪЕКТИВНАЯ ОЦЕНКА КАЧЕСТВА ЗВУЧАНИЯ ФОНОГРАММЫ"
-            self._format_cell(cell_left, bg="E7E6E6", bold=True, align="center", font_size=11, vertical_align="center")
+            self._format_cell(cell_left, bg=HEADER_BG, bold=True, align="center", font_size=11, vertical_align="center")
             
-            # Правая часть: "ДАТА ОТЧЕТА:" + "ОТЧЁТ ПОДГОТОВИЛ:" (объединяем последние 2 колонки)
-            cell_right = row0.cells[5]
-            cell_right.merge(row0.cells[6])
-            
-            # Убираем левую границу для слитности
-            tc_pr_right = cell_right._element.get_or_add_tcPr()
-            tc_borders_right = OxmlElement('w:tcBorders')
-            left_border = OxmlElement('w:left')
-            left_border.set(qn('w:val'), 'none')
-            tc_borders_right.append(left_border)
-            tc_pr_right.append(tc_borders_right)
-            
-            # Устанавливаем фон
-            shading_right = OxmlElement('w:shd')
-            shading_right.set(qn('w:fill'), 'E7E6E6')
-            tc_pr_right.append(shading_right)
-            
-            # Вертикальное выравнивание
-            v_align_right = OxmlElement('w:vAlign')
-            v_align_right.set(qn('w:val'), 'center')
-            tc_pr_right.append(v_align_right)
-            
-            # Добавляем текст
-            cell_right.text = f"ДАТА ОТЧЕТА:\n{datetime.now().strftime('%d.%m.%Y')}\n\nОТЧЁТ ПОДГОТОВИЛ:\n{prepared_by or 'Не указано'}"
-            
-            # Форматируем параграфы
-            for para in cell_right.paragraphs:
-                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                for run in para.runs:
-                    run.font.bold = True
-                    run.font.size = Pt(10)
-                    run.font.name = 'Arial'
-            
-            # Строка 1: Пустая
-            # (оставляем пустой)
+            # Правая часть строки 0: дата
+            cell_date_label = row0.cells[4]
+            cell_date_label.merge(row0.cells[5])
+            cell_date_label.text = "ДАТА ОТЧЕТА:"
+            self._format_cell(cell_date_label, bold=True, align="left", font_size=10, vertical_align="center")
+
+            cell_date_value = row0.cells[6]
+            cell_date_value.text = datetime.now().strftime('%d.%m.%Y')
+            self._format_cell(cell_date_value, bold=True, align="right", font_size=10, vertical_align="center")
+
+            # Строка 1: "ОТЧЁТ ПОДГОТОВИЛ"
+            row1 = table.rows[1]
+            cell_blank = row1.cells[0]
+            for col in range(1, 4):
+                cell_blank.merge(row1.cells[col])
+            self._format_cell(cell_blank, bg=OFFWHITE_BG, align="left", vertical_align="center")
+
+            cell_prepared_label = row1.cells[4]
+            cell_prepared_label.merge(row1.cells[5])
+            cell_prepared_label.text = "ОТЧЁТ ПОДГОТОВИЛ:"
+            self._format_cell(cell_prepared_label, bg=LIGHT_BG, bold=True, align="left", font_size=10, vertical_align="center")
+
+            cell_prepared_value = row1.cells[6]
+            cell_prepared_value.text = prepared_by or "Не указано"
+            self._format_cell(cell_prepared_value, bg=LIGHT_BG, bold=True, align="right", font_size=10, vertical_align="center")
             
             # Строка 2: Заголовки столбцов
             headers = ["ДОРОЖКА", "НАЗВАНИЕ ФАЙЛОВ", "ХРОНОМЕТРАЖ", 
@@ -215,7 +211,7 @@ class ExactReportGenerator:
             for col, header in enumerate(headers):
                 cell = table.rows[2].cells[col]
                 cell.text = header
-                self._format_cell(cell, bg="D9D9D9", bold=True, align="center", font_size=9, vertical_align="center")
+                self._format_cell(cell, bg=HEADER_BG, bold=True, align="left", font_size=9, vertical_align="center")
             
             # Строки 3-7: Данные с цветовой индикацией
             rows_data = [
@@ -369,7 +365,7 @@ class ExactReportGenerator:
                     name_error = has_incorrect_type or name_mismatch
                     
                     if name_error:
-                        self._format_cell(row.cells[1], align="left", bg="E83121", text_color="FFFFFF")
+                        self._format_cell(row.cells[1], align="left", bg=BAD_BG, text_color="FFFFFF")
                         logger.warning(f"⚠️  Название файла с ошибкой: {file_name}")
                     else:
                         self._format_cell(row.cells[1], align="left")
@@ -386,7 +382,7 @@ class ExactReportGenerator:
                     if duration > 0:
                         # Сначала проверяем кратность кадру
                         if not is_frame_aligned(duration, fps):
-                            chrono_bg = "E83121"  # Красный - не кратен кадру
+                            chrono_bg = BAD_BG  # Красный - не кратен кадру
                             # Сохраняем информацию для заключения
                             if not hasattr(tech_info, '_frame_issues'):
                                 tech_info['_frame_issues'] = []
@@ -398,11 +394,11 @@ class ExactReportGenerator:
                         # Затем проверяем совпадение с референсом
                         elif reference_duration:
                             if durations_match(duration, reference_duration):
-                                chrono_bg = "00FA02"  # Зеленый - совпадает и кратен кадру
+                                chrono_bg = OK_BG  # Зеленый - совпадает и кратен кадру
                             else:
-                                chrono_bg = "E83121"  # Красный - не совпадает с референсом
+                                chrono_bg = BAD_BG  # Красный - не совпадает с референсом
                         else:
-                            chrono_bg = "FBBA18"  # Оранжевый - нет эталона, но кратен кадру
+                            chrono_bg = WARN_BG  # Оранжевый - нет эталона, но кратен кадру
                     else:
                         chrono_bg = "FFFFFF"  # Белый - нет данных
                     
@@ -428,9 +424,9 @@ class ExactReportGenerator:
                         if pdf_data.get('lufs') is not None:
                             row.cells[3].text = f"{pdf_data['lufs']:.1f} LUFS"
                             if abs(pdf_data['lufs'] - target_lufs) <= lufs_tolerance:
-                                lufs_bg = "00FA02"
+                                lufs_bg = OK_BG
                             else:
-                                lufs_bg = "E83121"
+                                lufs_bg = BAD_BG
                             self._format_cell(row.cells[3], bg=lufs_bg, align="center")
                             logger.info(f"  LUFS added to cell: {pdf_data['lufs']:.1f}")
                         else:
@@ -440,7 +436,7 @@ class ExactReportGenerator:
                         if pdf_data.get('true_peak') is not None:
                             sign = "+" if pdf_data['true_peak'] > 0 else ""
                             row.cells[4].text = f"{sign}{pdf_data['true_peak']:.1f} dBTP"
-                            peak_bg = "00FA02" if pdf_data['true_peak'] <= target_peak else "E83121"
+                            peak_bg = OK_BG if pdf_data['true_peak'] <= target_peak else BAD_BG
                             self._format_cell(row.cells[4], bg=peak_bg, align="center")
                             logger.info(f"  TRUE PEAK added to cell: {sign}{pdf_data['true_peak']:.1f}")
                         else:
@@ -449,7 +445,7 @@ class ExactReportGenerator:
                         # LRA
                         if pdf_data.get('lra') is not None:
                             row.cells[5].text = f"{pdf_data['lra']:.1f} LU"
-                            lra_bg = "00FA02" if pdf_data['lra'] <= target_lra else "E83121"
+                            lra_bg = OK_BG if pdf_data['lra'] <= target_lra else BAD_BG
                             self._format_cell(row.cells[5], bg=lra_bg, align="center")
                             logger.info(f"  LRA added to cell: {pdf_data['lra']:.1f}")
                         else:
@@ -468,7 +464,7 @@ class ExactReportGenerator:
                             
                             # Проверка полноты информации
                             is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
-                            format_bg = "00FA02" if is_complete else "FBBA18"
+                            format_bg = OK_BG if is_complete else WARN_BG
                             
                             # Проверка соответствия каналов строке (2.0 vs 5.1)
                             expected_channels = 6 if "51" in key else (2 if "20" in key else None)
@@ -479,7 +475,7 @@ class ExactReportGenerator:
                                 except Exception:
                                     actual_channels = None
                                 if actual_channels and ((expected_channels == 6 and actual_channels < 6) or (expected_channels == 2 and actual_channels > 2)):
-                                    format_bg = "E83121"
+                                    format_bg = BAD_BG
                             
                             self._format_cell(row.cells[6], bg=format_bg, align="left")
                             logger.info(f"  Format added from audio: {format_text}")
@@ -508,9 +504,9 @@ class ExactReportGenerator:
                                 row.cells[3].text = f"{value:.1f} LUFS"
                                 logger.info(f"  ✓ SET cell[3] to '{value:.1f} LUFS'")
                                 if abs(value - target_lufs) <= lufs_tolerance:
-                                    lufs_bg = "00FA02"
+                                    lufs_bg = OK_BG
                                 else:
-                                    lufs_bg = "E83121"
+                                    lufs_bg = BAD_BG
                                 self._format_cell(row.cells[3], bg=lufs_bg, align="center")
                             else:
                                 logger.warning(f"  ✗ lufs is None, cell[3] not set")
@@ -521,7 +517,7 @@ class ExactReportGenerator:
                                 sign = "+" if value > 0 else ""
                                 row.cells[4].text = f"{sign}{value:.1f} dBTP"
                                 logger.info(f"  ✓ SET cell[4] to '{sign}{value:.1f} dBTP'")
-                                peak_bg = "00FA02" if value <= target_peak else "E83121"
+                                peak_bg = OK_BG if value <= target_peak else BAD_BG
                                 self._format_cell(row.cells[4], bg=peak_bg, align="center")
                             else:
                                 logger.warning(f"  ✗ true_peak is None, cell[4] not set")
@@ -531,7 +527,7 @@ class ExactReportGenerator:
                                 value = pdf_data['lra']
                                 row.cells[5].text = f"{value:.1f} LU"
                                 logger.info(f"  ✓ SET cell[5] to '{value:.1f} LU'")
-                                lra_bg = "00FA02" if value <= target_lra else "E83121"
+                                lra_bg = OK_BG if value <= target_lra else BAD_BG
                                 self._format_cell(row.cells[5], bg=lra_bg, align="center")
                             else:
                                 logger.warning(f"  ✗ lra is None, cell[5] not set")
@@ -546,7 +542,7 @@ class ExactReportGenerator:
                             fps_video = video_data.get('fps', 25)
                             format_text = f"{video_format} {fps_video}fps"
                             row.cells[6].text = format_text
-                            self._format_cell(row.cells[6], bg="00FA02", align="left")
+                            self._format_cell(row.cells[6], bg=OK_BG, align="left")
                             logger.info(f"  VIDEO format added: {format_text}")
                     
                     elif key.startswith('audio'):
@@ -559,7 +555,7 @@ class ExactReportGenerator:
                         
                         # Проверка полноты информации
                         is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
-                        format_bg = "00FA02" if is_complete else "FBBA18"
+                        format_bg = OK_BG if is_complete else WARN_BG
                         self._format_cell(row.cells[6], bg=format_bg, align="left")
                     
                     elif key == 'video':
@@ -568,7 +564,7 @@ class ExactReportGenerator:
                         fps_video = data.get('fps', 25)
                         format_text = f"{video_format} {fps_video}fps"
                         row.cells[6].text = format_text
-                        self._format_cell(row.cells[6], bg="00FA02", align="left")
+                        self._format_cell(row.cells[6], bg=OK_BG, align="left")
                     
                     # Summary of what was set
                     logger.info(f"  === SUMMARY for {label} ===")
@@ -581,30 +577,41 @@ class ExactReportGenerator:
                     logger.info(f"    cell[6] (format): '{row.cells[6].text}'")
                     logger.info(f"  === END SUMMARY ===\n")
             
-            # Строка 8: Цветовые индикаторы (объединяем первые 4 колонки, последние 3 - индикаторы)
+            # Строка 8: Пустая (объединенная)
             row = table.rows[8]
-            cell_merged = row.cells[0]
-            for col in range(1, 4):
-                cell_merged.merge(row.cells[col])
-            
-            # Форматируем объединенную ячейку БЕЗ фона (убираем белую полосу)
-            self._format_cell(cell_merged, align="center")
-            
-            # Индикаторы в последних 3 ячейках
-            self._format_cell(row.cells[4], bg="00FA02")  # Зеленый - норма
-            self._format_cell(row.cells[5], bg="E83121")  # Красный - превышение
-            self._format_cell(row.cells[6], bg="FBBA18")  # Оранжевый - нет данных
-            
-            # Строка 9: Заголовок "ЗАКЛЮЧЕНИЕ:" (объединенная)
+            cell = row.cells[0]
+            for col in range(1, 7):
+                cell.merge(row.cells[col])
+            self._format_cell(cell, align="left")
+
+            # Строка 9: Цветовые индикаторы (точно как в референсе)
             row = table.rows[9]
+            left_block = row.cells[0]
+            left_block.merge(row.cells[1])
+            left_block.merge(row.cells[2])
+            self._format_cell(left_block, bg=LIGHT_BG, align="center")
+            self._format_cell(row.cells[3], bg="00FA00", align="center")
+            self._format_cell(row.cells[4], bg="E73322", align="center")
+            self._format_cell(row.cells[5], bg="FCBA19", align="center")
+            self._format_cell(row.cells[6], bg=LIGHT_BG, align="center")
+
+            # Строка 10: Пустая (объединенная)
+            row = table.rows[10]
+            cell = row.cells[0]
+            for col in range(1, 7):
+                cell.merge(row.cells[col])
+            self._format_cell(cell, align="left")
+
+            # Строка 11: Заголовок "ЗАКЛЮЧЕНИЕ:" (объединенная)
+            row = table.rows[11]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
             cell.text = "ЗАКЛЮЧЕНИЕ:"
-            self._format_cell(cell, bold=True, font_size=10, align="left")
+            self._format_cell(cell, bg=HEADER_BG, bold=True, font_size=10, align="left")
             
-            # Строка 10: Область для заключений (объединенная, 2 подзаголовка)
-            row = table.rows[10]
+            # Строка 12: Область для заключений (объединенная, 2 подзаголовка)
+            row = table.rows[12]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
@@ -615,23 +622,14 @@ class ExactReportGenerator:
             logger.info(f"conclusion_subj: '{conclusion_subj}' (длина: {len(conclusion_subj)})")
             logger.info("=" * 50)
             
-            # Добавляем оба заключения в одну ячейку (заголовки уже в тексте заключений)
+            # Добавляем оба заключения в одну ячейку:
+            # сначала оценки, затем пустая строка и список проблем
             para = cell.paragraphs[0]
             para.clear()
-            
-            # Техническое заключение (уже содержит заголовок)
-            if conclusion_tech:
-                run = para.add_run(conclusion_tech)
-                run.font.name = "Helvetica Neue"
-                run.font.size = Pt(10)
-            
-            # Разделитель между заключениями
-            if conclusion_tech and conclusion_subj:
-                para.add_run("\n\n")
-            
-            # Субъективное заключение (уже содержит заголовок)
-            if conclusion_subj:
-                run = para.add_run(conclusion_subj)
+
+            conclusion_text = self._compose_conclusion_text(conclusion_tech, conclusion_subj)
+            if conclusion_text:
+                run = para.add_run(conclusion_text)
                 run.font.name = "Helvetica Neue"
                 run.font.size = Pt(10)
             
@@ -683,15 +681,15 @@ class ExactReportGenerator:
             logger.warning("VIDEO НЕ НАЙДЕНО в tech_info!")
         
         try:
-            # Таблица: 9 строк x 5 столбцов (без LOUDNESS и LRA)
-            # Строки: 0=заголовок+дата+имя, 1=пустая, 2=колонки, 3-5=данные (2.0 ME, 5.1 ME, VIDEO),
-            #         6=индикаторы, 7=ЗАКЛЮЧЕНИЕ, 8=текст заключения
-            table = doc.add_table(rows=9, cols=5)
+            # Таблица: 11 строк x 7 базовых столбцов (как в референсном M&E шаблоне)
+            # Строки: 0=заголовок+дата, 1=отчет подготовил, 2=колонки, 3-5=данные (2.0 ME, 5.1 ME, VIDEO),
+            #         6=пустой отступ, 7=индикаторы, 8=пустой отступ, 9=ЗАКЛЮЧЕНИЕ, 10=текст заключения
+            table = doc.add_table(rows=11, cols=7)
             table.style = 'Table Grid'
             
-            # Устанавливаем ширину колонок
-            # ДОРОЖКА | НАЗВАНИЕ ФАЙЛОВ | ХРОНОМЕТРАЖ | TRUE PEAK | ФОРМАТ ФАЙЛА
-            widths_cm = [3.5, 12.0, 4.0, 4.0, 14.5]  # Итого: 38.0 см
+            # Базовая сетка колонок (точно как в референсе):
+            # ДОРОЖКА | НАЗВАНИЕ | ХРОНО(1) | ХРОНО(2) | ХРОНО(3) | TRUE PEAK | ФОРМАТ
+            widths_cm = [2.61, 15.95, 2.53, 2.63, 1.81, 2.54, 9.89]  # ~38 см
             
             for idx, width_cm in enumerate(widths_cm):
                 if idx < len(table.columns):
@@ -717,54 +715,58 @@ class ExactReportGenerator:
                     if idx < len(widths_cm):
                         gridCol.set(qn('w:w'), str(int(widths_cm[idx] * 567)))
             
-            # Строка 0: Заголовок + Дата
+            # Строка 0: Шапка (предыдущий вариант)
             row0 = table.rows[0]
             cell_left = row0.cells[0]
-            for col in range(1, 3):
+            for col in range(1, 4):
                 cell_left.merge(row0.cells[col])
             cell_left.text = "ОБЪЕКТИВНАЯ ОЦЕНКА КАЧЕСТВА ЗВУЧАНИЯ ФОНОГРАММЫ"
-            self._format_cell(cell_left, bg="E7E6E6", bold=True, align="center", font_size=11, vertical_align="center")
+            self._format_cell(cell_left, bg="D5D5D5", bold=True, align="center", font_size=11, vertical_align="center")
+
+            cell_date_label = row0.cells[4]
+            cell_date_label.merge(row0.cells[5])
+            cell_date_label.text = "ДАТА ОТЧЕТА:"
+            self._format_cell(cell_date_label, bg="FFFFFF", bold=True, align="left", font_size=10, vertical_align="center")
+
+            cell_date_value = row0.cells[6]
+            cell_date_value.text = datetime.now().strftime('%d.%m.%Y')
+            self._format_cell(cell_date_value, bg="FFFFFF", bold=True, align="right", font_size=10, vertical_align="center")
             
-            cell_right = row0.cells[3]
-            cell_right.merge(row0.cells[4])
-            
-            # Убираем левую границу для слитности
-            tc_pr_right = cell_right._element.get_or_add_tcPr()
-            tc_borders_right = OxmlElement('w:tcBorders')
-            left_border = OxmlElement('w:left')
-            left_border.set(qn('w:val'), 'none')
-            tc_borders_right.append(left_border)
-            tc_pr_right.append(tc_borders_right)
-            
-            # Устанавливаем фон
-            shading_right = OxmlElement('w:shd')
-            shading_right.set(qn('w:fill'), 'E7E6E6')
-            tc_pr_right.append(shading_right)
-            
-            # Вертикальное выравнивание
-            v_align_right = OxmlElement('w:vAlign')
-            v_align_right.set(qn('w:val'), 'center')
-            tc_pr_right.append(v_align_right)
-            
-            # Добавляем текст
-            cell_right.text = f"ДАТА ОТЧЕТА:\n{datetime.now().strftime('%d.%m.%Y')}\n\nОТЧЁТ ПОДГОТОВИЛ:\n{prepared_by or 'Не указано'}"
-            
-            # Форматируем параграфы
-            for para in cell_right.paragraphs:
-                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                for run in para.runs:
-                    run.font.bold = True
-                    run.font.size = Pt(10)
-                    run.font.name = 'Arial'
-            
-            # Строка 1: Пустая
+            # Строка 1: "ОТЧЁТ ПОДГОТОВИЛ"
+            row1 = table.rows[1]
+            cell_blank = row1.cells[0]
+            for col in range(1, 4):
+                cell_blank.merge(row1.cells[col])
+            self._format_cell(cell_blank, bg="FEFFFE", align="left", vertical_align="center")
+
+            cell_prepared_label = row1.cells[4]
+            cell_prepared_label.merge(row1.cells[5])
+            cell_prepared_label.text = "ОТЧЁТ ПОДГОТОВИЛ:"
+            self._format_cell(cell_prepared_label, bg="F5F5F5", bold=True, align="left", font_size=10, vertical_align="center")
+
+            cell_prepared_value = row1.cells[6]
+            cell_prepared_value.text = prepared_by or "Не указано"
+            self._format_cell(cell_prepared_value, bg="F5F5F5", bold=True, align="right", font_size=10, vertical_align="center")
             
             # Строка 2: Заголовки столбцов
-            headers = ["ДОРОЖКА", "НАЗВАНИЕ ФАЙЛОВ", "ХРОНОМЕТРАЖ", "TRUE PEAK", "ФОРМАТ ФАЙЛА"]
-            for col, header in enumerate(headers):
-                cell = table.rows[2].cells[col]
-                cell.text = header
-                self._format_cell(cell, bg="D9D9D9", bold=True, align="center", font_size=9, vertical_align="center")
+            row2 = table.rows[2]
+            row2.cells[0].text = "ДОРОЖКА"
+            self._format_cell(row2.cells[0], bg="D5D5D5", bold=True, align="center", font_size=9, vertical_align="center")
+
+            row2.cells[1].text = "НАЗВАНИЕ ФАЙЛОВ"
+            self._format_cell(row2.cells[1], bg="D5D5D5", bold=True, align="center", font_size=9, vertical_align="center")
+
+            chrono_header = row2.cells[2]
+            chrono_header.merge(row2.cells[3])
+            chrono_header.merge(row2.cells[4])
+            chrono_header.text = "ХРОНОМЕТРАЖ"
+            self._format_cell(chrono_header, bg="D5D5D5", bold=True, align="center", font_size=9, vertical_align="center")
+
+            row2.cells[5].text = "TRUE PEAK"
+            self._format_cell(row2.cells[5], bg="D5D5D5", bold=True, align="center", font_size=9, vertical_align="center")
+
+            row2.cells[6].text = "ФОРМАТ ФАЙЛА"
+            self._format_cell(row2.cells[6], bg="D5D5D5", bold=True, align="center", font_size=9, vertical_align="center")
             
             # Строки 3-5: Данные M&E (только 2.0 ME, 5.1 ME, VIDEO)
             # Определяем правильные AUDIO/PDF ключи с приоритетом и соответствием
@@ -844,6 +846,9 @@ class ExactReportGenerator:
             
             for idx, (label, key, pdf_key) in enumerate(rows_data):
                 row = table.rows[3 + idx]
+                # В M&E хронометраж занимает 3 базовые колонки
+                row.cells[2].merge(row.cells[3])
+                row.cells[2].merge(row.cells[4])
                 row.cells[0].text = label
                 self._format_cell(row.cells[0], align="left")
                 
@@ -853,7 +858,7 @@ class ExactReportGenerator:
                 if not has_data and not has_pdf_only:
                     logger.warning(f"M&E: Нет данных для {label} (key={key})")
                     # Оставляем ячейки пустыми
-                    for col in range(1, 5):
+                    for col in range(1, 7):
                         row.cells[col].text = ""
                         self._format_cell(row.cells[col], bg="FFFFFF", align="center")
                     continue
@@ -892,13 +897,13 @@ class ExactReportGenerator:
                         true_peak = pdf_data.get('true_peak')
                         if true_peak is not None:
                             sign = "+" if true_peak > 0 else ""
-                            row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
+                            row.cells[5].text = f"{sign}{true_peak:.1f} dBTP"
                             peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
-                            self._format_cell(row.cells[3], bg=peak_bg, align="center")
+                            self._format_cell(row.cells[5], bg=peak_bg, align="center")
                             logger.info(f"  TRUE PEAK: {sign}{true_peak:.1f} dBTP")
                         else:
-                            row.cells[3].text = ""
-                            self._format_cell(row.cells[3], bg="FFFFFF", align="center")
+                            row.cells[5].text = ""
+                            self._format_cell(row.cells[5], bg="FFFFFF", align="center")
                         
                         # Формат файла (если есть данные)
                         sr = pdf_data.get('sample_rate')
@@ -908,11 +913,11 @@ class ExactReportGenerator:
                             format_text = f"PCM {sr_khz}kHz"
                             if bd:
                                 format_text += f" {bd} bit"
-                            row.cells[4].text = format_text
-                            self._format_cell(row.cells[4], bg="00FA02", align="left")
+                            row.cells[6].text = format_text
+                            self._format_cell(row.cells[6], bg="00FA02", align="left")
                         else:
-                            row.cells[4].text = ""
-                            self._format_cell(row.cells[4], bg="FFFFFF", align="left")
+                            row.cells[6].text = ""
+                            self._format_cell(row.cells[6], bg="FFFFFF", align="left")
                     else:
                         logger.warning(f"  No PDF data found for {label}")
                     
@@ -985,22 +990,22 @@ class ExactReportGenerator:
                             if true_peak is not None:
                                 # Добавляем знак + для положительных значений
                                 sign = "+" if true_peak > 0 else ""
-                                row.cells[3].text = f"{sign}{true_peak:.1f} dBTP"
+                                row.cells[5].text = f"{sign}{true_peak:.1f} dBTP"
                                 peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
-                                self._format_cell(row.cells[3], bg=peak_bg, align="center")
+                                self._format_cell(row.cells[5], bg=peak_bg, align="center")
                                 logger.info(f"M&E: {label} TRUE PEAK форматирован ({sign}{true_peak:.1f} dBTP)")
                             else:
-                                row.cells[3].text = ""
-                                self._format_cell(row.cells[3], bg="FFFFFF", align="center")
+                                row.cells[5].text = ""
+                                self._format_cell(row.cells[5], bg="FFFFFF", align="center")
                                 logger.info(f"M&E: {label} TRUE PEAK пустой (нет данных)")
                         else:
-                            row.cells[3].text = ""
-                            self._format_cell(row.cells[3], bg="FFFFFF", align="center")
+                            row.cells[5].text = ""
+                            self._format_cell(row.cells[5], bg="FFFFFF", align="center")
                             logger.warning(f"M&E: {label} PDF data not found (tried: {fallback_keys})")
                     elif key == 'video':
                         # Для VIDEO ячейка TRUE PEAK пустая с белым фоном
-                        row.cells[3].text = ""
-                        self._format_cell(row.cells[3], bg="FFFFFF", align="center")
+                        row.cells[5].text = ""
+                        self._format_cell(row.cells[5], bg="FFFFFF", align="center")
                     
                     # Формат файла
                     if key.startswith('audio'):
@@ -1008,7 +1013,7 @@ class ExactReportGenerator:
                         bd = str(data.get('bit_depth', 'PCM_24')).replace('PCM_', '')
                         co = data.get('channel_order', '')
                         format_text = f"PCM {sr}kHz {bd} bit {co}"
-                        row.cells[4].text = format_text
+                        row.cells[6].text = format_text
                         is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
                         format_bg = "00FA02" if is_complete else "FBBA18"
                         
@@ -1022,38 +1027,61 @@ class ExactReportGenerator:
                             if actual_channels and ((expected_channels == 6 and actual_channels < 6) or (expected_channels == 2 and actual_channels > 2)):
                                 format_bg = "E83121"
                         
-                        self._format_cell(row.cells[4], bg=format_bg, align="left")
+                        self._format_cell(row.cells[6], bg=format_bg, align="left")
                     elif key == 'video':
                         # Формат видео - только формат и FPS
                         video_format = data.get('format', 'MOV')
                         fps_video = data.get('fps', 25)
                         format_text = f"{video_format} {fps_video}fps"
-                        row.cells[4].text = format_text
-                        self._format_cell(row.cells[4], bg="00FA02", align="left")
+                        row.cells[6].text = format_text
+                        self._format_cell(row.cells[6], bg="00FA02", align="left")
             
-            # Строка 6: Цветовые индикаторы
+            # Строка 6: Пустой отступ перед индикаторами
             row = table.rows[6]
-            cell_merged = row.cells[0]
-            for col in range(1, 2):
-                cell_merged.merge(row.cells[col])
-            # Форматируем объединенную ячейку БЕЗ фона (убираем белую полосу)
-            self._format_cell(cell_merged, align="center")
-            self._format_cell(row.cells[2], bg="00FA02")
-            self._format_cell(row.cells[3], bg="E83121")
-            self._format_cell(row.cells[4], bg="FBBA18")
-            
-            # Строка 7: Заголовок "ЗАКЛЮЧЕНИЕ:"
+            spacer_top = row.cells[0]
+            for col in range(1, 7):
+                spacer_top.merge(row.cells[col])
+            self._format_cell(spacer_top, align="left")
+
+            # Строка 7: Цветовые индикаторы (точно как в референсном M&E)
             row = table.rows[7]
+            left_block = row.cells[0]
+            left_block.merge(row.cells[1])
+            left_block.merge(row.cells[2])
+            left_block.text = ""
+            self._format_cell(left_block, bg="F5F5F5", align="center", border=True)
+
+            row.cells[3].text = ""
+            self._format_cell(row.cells[3], bg="00FA00", align="center", border=True)
+
+            row.cells[4].text = ""
+            self._format_cell(row.cells[4], bg="E73322", align="center", border=True)
+
+            row.cells[5].text = ""
+            self._format_cell(row.cells[5], bg="FCBA19", align="center", border=True)
+
+            row.cells[6].text = ""
+            self._format_cell(row.cells[6], bg="F5F5F5", align="center", border=True)
+            
+            # Строка 8: Пустой отступ после индикаторов
+            row = table.rows[8]
+            spacer_bottom = row.cells[0]
+            for col in range(1, 7):
+                spacer_bottom.merge(row.cells[col])
+            self._format_cell(spacer_bottom, align="left")
+
+            # Строка 9: Заголовок "ЗАКЛЮЧЕНИЕ:"
+            row = table.rows[9]
             cell = row.cells[0]
-            for col in range(1, 5):
+            for col in range(1, 7):
                 cell.merge(row.cells[col])
             cell.text = "ЗАКЛЮЧЕНИЕ:"
             self._format_cell(cell, bold=True, font_size=10, align="left")
             
-            # Строка 8: Текст заключения (заголовки уже в тексте заключений)
-            row = table.rows[8]
+            # Строка 10: Текст заключения (заголовки уже в тексте заключений)
+            row = table.rows[10]
             cell = row.cells[0]
-            for col in range(1, 5):
+            for col in range(1, 7):
                 cell.merge(row.cells[col])
             
             # ЛОГИРОВАНИЕ ЗАКЛЮЧЕНИЙ В ГЕНЕРАТОРЕ
@@ -1062,14 +1090,8 @@ class ExactReportGenerator:
             logger.info(f"conclusion_subj: '{conclusion_subj}' (длина: {len(conclusion_subj)})")
             logger.info("=" * 50)
             
-            # Объединяем заключения (заголовки уже внутри)
-            conclusion_parts = []
-            if conclusion_tech:
-                conclusion_parts.append(conclusion_tech)
-            if conclusion_subj:
-                conclusion_parts.append(conclusion_subj)
-            
-            conclusion_text = "\n\n".join(conclusion_parts)
+            # Сначала оценки, затем пустая строка и список проблем
+            conclusion_text = self._compose_conclusion_text(conclusion_tech, conclusion_subj)
             cell.text = conclusion_text
             
             for paragraph in cell.paragraphs:
@@ -1078,12 +1100,41 @@ class ExactReportGenerator:
                     run.font.size = Pt(10)
                 paragraph.paragraph_format.line_spacing = 1.5
             
-            self._format_cell(cell, align="left")
+            self._format_cell(cell, bg=OFFWHITE_BG, align="left")
             
             logger.info("M&E таблица добавлена")
             
         except Exception as e:
             logger.error(f"Ошибка добавления M&E таблицы: {e}")
+
+    def _compose_conclusion_text(self, conclusion_tech: str, conclusion_subj: str) -> str:
+        """Формирует блок заключения как в референсе:
+        заголовок оценки -> пустая строка -> проблемы этой оценки.
+        """
+        def render_block(text: str) -> str:
+            if not text:
+                return ""
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if not lines:
+                return ""
+
+            heading = lines[0]
+            problems = lines[1:]
+
+            if not problems:
+                return heading
+            return heading + "\n\n" + "\n".join(problems)
+
+        parts = []
+        tech_block = render_block(conclusion_tech)
+        subj_block = render_block(conclusion_subj)
+
+        if tech_block:
+            parts.append(tech_block)
+        if subj_block:
+            parts.append(subj_block)
+
+        return "\n\n".join(parts)
     
     def _check_incorrect_audio_type(self, description: str) -> bool:
         """Проверка на некорректный тип фонограммы в названии файла
@@ -1112,9 +1163,11 @@ class ExactReportGenerator:
                 return True
         return False
     
-    def _add_marker_list_exact(self, doc: Document, issues: List[Issue]) -> None:
+    def _add_marker_list_exact(self, doc: Document, issues: List[Issue], report_type: str = "main") -> None:
         """MARKER LIST - точно как в референсе"""
         try:
+            is_me_report = report_type in ("me", "me_ours")
+
             # Добавляем заголовок "MARKER LIST"
             header_para = doc.add_paragraph()
             header_run = header_para.add_run("MARKER LIST")
@@ -1126,12 +1179,25 @@ class ExactReportGenerator:
             # Отступ после заголовка
             doc.add_paragraph()
             
+            if is_me_report:
+                headers = [
+                    "Timecode In", "Timecode Out", "Description",
+                    "2.0 C", "5.1 C",
+                    "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"
+                ]
+                # Ширина удаленных UC-колонок добавлена в Description
+                widths_cm = [2.45, 2.40, 14.99, 1.27, 1.32, 1.98, 3.55, 3.48, 6.57]
+            else:
+                headers = [
+                    "Timecode In", "Timecode Out", "Description",
+                    "2.0 C", "2.0 UC", "5.1 C", "5.1 UC",
+                    "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"
+                ]
+                widths_cm = [2.45, 2.40, 11.93, 1.27, 1.56, 1.32, 1.50, 1.98, 3.55, 3.48, 6.57]
+
             # Создаем таблицу БЕЗ заголовочной строки с повторяющимся текстом
-            table = doc.add_table(rows=1 + len(issues), cols=11)
+            table = doc.add_table(rows=1 + len(issues), cols=len(headers))
             table.style = 'Table Grid'
-            
-            # Устанавливаем ширину колонок из РЫБА ОСНОВНОЙ НОВАЯ 2025.docx
-            widths_cm = [2.45, 2.40, 11.93, 1.27, 1.56, 1.32, 1.50, 1.98, 3.55, 3.48, 6.57]
             
             # Метод 1: Устанавливаем через table.columns
             for idx, width_cm in enumerate(widths_cm):
@@ -1154,12 +1220,6 @@ class ExactReportGenerator:
                 tblPr.append(tblLayout)
             
             # Строка 0: Заголовки столбцов (единственная заголовочная строка)
-            headers = [
-                "Timecode In", "Timecode Out", "Description",
-                "2.0 C", "2.0 UC", "5.1 C", "5.1 UC",
-                "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"
-            ]
-            
             for col, header in enumerate(headers):
                 cell = table.rows[0].cells[col]
                 cell.text = header
@@ -1186,18 +1246,25 @@ class ExactReportGenerator:
                 row.cells[1].text = issue.timecode_out
                 row.cells[2].text = description_clean
                 row.cells[3].text = '*' if issue.audio_20_c else ''
-                row.cells[4].text = '*' if issue.audio_20_uc else ''
-                row.cells[5].text = '*' if issue.audio_51_c else ''
-                row.cells[6].text = '*' if issue.audio_51_uc else ''
-                row.cells[7].text = '*' if issue.blocker else ''
-                row.cells[8].text = '*' if issue.fix_required else ''
-                row.cells[9].text = '*' if issue.comment_required else ''
-                row.cells[10].text = issue.comments
+                if is_me_report:
+                    row.cells[4].text = '*' if issue.audio_51_c else ''
+                    row.cells[5].text = '*' if issue.blocker else ''
+                    row.cells[6].text = '*' if issue.fix_required else ''
+                    row.cells[7].text = '*' if issue.comment_required else ''
+                    row.cells[8].text = issue.comments
+                else:
+                    row.cells[4].text = '*' if issue.audio_20_uc else ''
+                    row.cells[5].text = '*' if issue.audio_51_c else ''
+                    row.cells[6].text = '*' if issue.audio_51_uc else ''
+                    row.cells[7].text = '*' if issue.blocker else ''
+                    row.cells[8].text = '*' if issue.fix_required else ''
+                    row.cells[9].text = '*' if issue.comment_required else ''
+                    row.cells[10].text = issue.comments
                 
                 # Определяем цвет фона
                 if is_new_marker:
-                    # Коралловый цвет для "НОВЫЙ МАРКЕР"
-                    bg_color = "FF7F50"  # Coral
+                    # Цвет для "НОВЫЙ МАРКЕР"
+                    bg_color = "FF9999"
                     logger.info(f"Строка {row_idx + 1}: НОВЫЙ МАРКЕР - коралловый фон")
                 else:
                     # Чередующийся фон для нечетных строк (начиная с row_idx=1)
@@ -1209,7 +1276,12 @@ class ExactReportGenerator:
                     text_color = "FF0000" if col_idx == 2 and has_incorrect_type else None
                     
                     # Фон только для некоторых столбцов (как в референсе)
-                    if col_idx in [0, 1, 3, 4, 5, 6, 7, 8, 9, 10]:
+                    if is_me_report:
+                        shaded_columns = [0, 1, 3, 4, 5, 6, 7, 8]
+                    else:
+                        shaded_columns = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10]
+
+                    if col_idx in shaded_columns:
                         self._format_cell(cell, bg=bg_color, font_name="Helvetica Neue", text_color=text_color)
                     else:
                         # Description (col 2) без фона (если не НОВЫЙ МАРКЕР)
