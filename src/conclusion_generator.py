@@ -518,10 +518,14 @@ class ConclusionGenerator:
         Отбирает маркеры, достойные упоминания в заключении.
         В ручных отчётах редакторы не включают в заключение:
         - маркеры с пометкой «не критично» — они остаются в маркер-листе;
-        - маркеры-вопросы к заказчику («так задумано?») — это ТРЕБУЕТ
-          КОММЕНТАРИЯ, а не констатация дефекта.
+        - вопросы к заказчику («так задумано?») и просьбы («can we add
+          fade out?») — но констатация дефекта из того же маркера в
+          заключение попадает («We hear the cut. Can we fix it?» →
+          остаётся только факт склейки).
         Блокеры не фильтруем никогда.
         """
+        import copy as _copy
+
         worthy = []
         for issue in issues:
             if issue.blocker:
@@ -531,18 +535,54 @@ class ConclusionGenerator:
             lowered = text.lower()
             if 'не критично' in lowered or 'not critical' in lowered:
                 continue
-            if self._is_question_marker(text):
+            reduced = self._strip_question_part(text)
+            if reduced is None:
                 continue
+            if reduced != text:
+                issue = _copy.copy(issue)
+                issue.description = reduced
+                issue.description_original = reduced
+                issue.description_ru = ""
             worthy.append(issue)
         return worthy
 
     @staticmethod
-    def _is_question_marker(text: str) -> bool:
-        """Маркер-вопрос к заказчику, а не констатация дефекта."""
-        stripped = text.strip().rstrip(')»"\' ')
-        if stripped.endswith('?'):
-            return True
-        return bool(re.search(r'так задуман[он]{1,2}о?\?|это норма\?|необходим[оа]?\?', text.lower()))
+    def _is_client_question(text: str) -> bool:
+        """Вопрос о намерении или просьба к заказчику — не констатация дефекта."""
+        return bool(re.search(
+            r'так задуман|это норма|точно необходим|точно нужн|нужн[аоы]? ли|надо ли|'
+            r'это (?:спец)?эффект|похож на спецэффект|'
+            r'можно ли|нельзя ли|\bможно\b|стоит ли|'
+            r'is (?:this|it|that) (?:intended|normal|necessary|needed|ok|a\s+special\s+effect)|as intended|'
+            r'\b(?:can|could|may) (?:we|you)\b|\bplease\b',
+            text.lower(),
+        ))
+
+    def _strip_question_part(self, text: str) -> Optional[str]:
+        """
+        Убирает из маркера вопросительную/просительную часть.
+        Возвращает None, если маркер целиком является вопросом о намерении
+        («так задумано?») — такому не место в заключении.
+        Чистый tentative-вопрос («Missing phrase?») трактуем как
+        осторожную констатацию дефекта — оставляем без «?».
+        """
+        stripped = text.strip()
+        if '?' not in stripped:
+            return stripped
+
+        sentences = re.split(r'(?<=[.!?])\s+', stripped)
+        statements = [s for s in sentences if not s.rstrip(')»"\' ').endswith('?')]
+        questions = [s for s in sentences if s.rstrip(')»"\' ').endswith('?')]
+
+        if statements:
+            result = ' '.join(statements).strip()
+            return result if result else None
+
+        # Маркер целиком из вопросов
+        if any(self._is_client_question(q) for q in questions):
+            return None
+        result = ' '.join(q.rstrip('?)»"\' ').strip() for q in questions).strip()
+        return result or None
 
     def _prepare_issues_for_subjective_conclusion(self, issues: List[Issue]) -> List[Issue]:
         """Подготавливает русскоязычный аналитический текст маркеров для заключения."""

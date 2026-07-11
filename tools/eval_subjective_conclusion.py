@@ -294,13 +294,13 @@ def is_recheck_conclusion(items: list[str]) -> bool:
     return any(RECHECK_RE.search(item.lower()) for item in items)
 
 
-def run_eval(limit: int | None = None, only_type: str | None = None, verbose: bool = False) -> dict:
+def run_eval(limit: int | None = None, only_type: str | None = None, verbose: bool = False, root: Path = LEARN_ROOT) -> dict:
     logging.disable(logging.WARNING)  # приглушаем болтливые логи боевого кода
 
     importer = CSVImporter()
     generator = ConclusionGenerator(use_llm=False)
 
-    pairs = find_pairs(LEARN_ROOT)
+    pairs = find_pairs(root)
     if only_type:
         pairs = [p for p in pairs if p["report_type"] == only_type]
     if limit:
@@ -311,7 +311,7 @@ def run_eval(limit: int | None = None, only_type: str | None = None, verbose: bo
 
     for pair in pairs:
         entry = {
-            "directory": str(pair["directory"].relative_to(LEARN_ROOT)),
+            "directory": str(pair["directory"].relative_to(root)),
             "report_type": pair["report_type"],
         }
         try:
@@ -388,11 +388,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--type", choices=["me", "main"], default=None)
+    parser.add_argument("--root", type=Path, default=LEARN_ROOT, help="корень с парами CSV↔DOCX")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--dump-mismatches", action="store_true", help="печатать все missed/extra пункты")
     args = parser.parse_args()
 
-    result = run_eval(limit=args.limit, only_type=args.type, verbose=args.verbose)
+    result = run_eval(limit=args.limit, only_type=args.type, verbose=args.verbose, root=args.root)
     OUTPUT_JSON.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
     s = result["summary"]

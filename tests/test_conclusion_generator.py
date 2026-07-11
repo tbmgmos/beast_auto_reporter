@@ -1607,3 +1607,72 @@ def test_prepare_issues_translates_unsync_and_credits_stereo_markers():
     assert prepared[1].description_ru == "музыка на титрах воспроизводится только в формате стерео"
     assert "реплика выглядит немного несинхронной" in conclusion.lower()
     assert "музыка на титрах воспроизводится только в формате стерео" in conclusion.lower()
+
+
+def test_question_marker_with_factual_part_keeps_only_statement():
+    generator = ConclusionGenerator(use_llm=False)
+    issues = [
+        Issue(
+            "01:02:24:05",
+            "",
+            "We hear the cut after the music. Can we add fade out please?",
+            False,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+        )
+    ]
+
+    conclusion = generator.generate_subjective_conclusion(issues, "main")
+
+    assert "склейка" in conclusion.lower()
+    assert "fade" not in conclusion.lower()
+
+
+def test_pure_intent_question_marker_is_dropped():
+    generator = ConclusionGenerator(use_llm=False)
+    issues = [
+        Issue(
+            "01:10:00:00",
+            "",
+            "комментаторы не озвучены, так задуманно?",
+            False,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+        )
+    ]
+
+    conclusion = generator.generate_subjective_conclusion(issues, "main")
+
+    assert "нареканий не обнаружено" in conclusion
+    assert "комментаторы" not in conclusion.lower()
+
+
+def test_tentative_question_marker_kept_as_statement():
+    generator = ConclusionGenerator(use_llm=False)
+    issues = [
+        Issue(
+            "01:00:15:20",
+            "",
+            "Missing phrase?",
+            False,
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+        )
+    ]
+
+    conclusion = generator.generate_subjective_conclusion(issues, "main")
+
+    assert "отсутствует реплика" in conclusion.lower()
+    assert "?" not in conclusion
