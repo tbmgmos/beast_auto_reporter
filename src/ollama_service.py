@@ -90,6 +90,80 @@ class OllamaService:
             logger.debug(f"Ollama недоступна ({self.host}): {exc}")
             return False
 
+    @staticmethod
+    def _extract_model_names(raw_list) -> list:
+        """
+        Нормализует ответ ollama.list()/api/tags к списку имён моделей.
+        SDK и HTTP API отдают разные формы (dict с ключом "models",
+        объекты с атрибутом .model вместо .name в новых версиях SDK и т.п.).
+        """
+        entries = raw_list
+        if isinstance(raw_list, dict):
+            entries = raw_list.get("models", [])
+        elif hasattr(raw_list, "models"):
+            entries = raw_list.models
+
+        names = []
+        for entry in entries or []:
+            if isinstance(entry, dict):
+                name = entry.get("name") or entry.get("model")
+            else:
+                name = getattr(entry, "name", None) or getattr(entry, "model", None)
+            if name:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _model_matches(configured: str, installed: str) -> bool:
+        """
+        Сравнивает имена моделей терпимо только к отсутствующему тегу
+        (эквивалент неявного ":latest"). НЕ считает совпадением разные
+        варианты одной базовой модели (например, "gemma3:12b" и
+        "gemma3:12b-instruct-q4" — это разные веса, не взаимозаменяемые).
+        """
+        if configured == installed:
+            return True
+
+        def split_tag(name: str):
+            base, _, tag = name.partition(":")
+            return base, (tag or "latest")
+
+        c_base, c_tag = split_tag(configured)
+        i_base, i_tag = split_tag(installed)
+        if c_base != i_base:
+            return False
+        return c_tag == i_tag or c_tag == "latest" or i_tag == "latest"
+
+    def get_status(self) -> dict:
+        """
+        Полный статус подключения: доступен ли сервис Ollama, установлена ли
+        сконфигурированная модель, и список того, что реально установлено.
+        Используется UI, чтобы показать пользователю не просто "есть/нет
+        соединение", а конкретную причину, если генерация не заработает.
+        """
+        status = {
+            "reachable": False,
+            "model": self.model,
+            "model_installed": False,
+            "installed_models": [],
+            "host": self.host,
+            "error": None,
+        }
+
+        try:
+            client = self.get_client()
+            raw_list = self._http_request("/api/tags") if client is None else client.list()
+        except Exception as exc:
+            status["error"] = str(exc)
+            logger.debug(f"Ollama недоступна ({self.host}): {exc}")
+            return status
+
+        status["reachable"] = True
+        installed = self._extract_model_names(raw_list)
+        status["installed_models"] = installed
+        status["model_installed"] = any(self._model_matches(self.model, name) for name in installed)
+        return status
+
     def generate(
         self,
         prompt: str,
