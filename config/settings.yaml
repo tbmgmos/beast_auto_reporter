@@ -41,11 +41,11 @@ detection:
 # LLM Integration
 llm:
   # Model selection
-  model: "llama3.2"  # Options: llama3.2, mistral, qwen2.5
-  
+  model: "gemma4:12b"  # Options: gemma4:12b (recommended), llama3.2, mistral, qwen2.5
+
   # Generation parameters
-  temperature: 0.7
-  max_tokens: 2000
+  temperature: 0.15  # Low temperature for consistent, predictable output
+  max_tokens: 1000
   
   # Language
   language: "ru"  # ru or en

@@ -24,7 +24,7 @@ class OllamaService:
         self.config = config or {}
         llm_cfg = self.config.get("llm", {})
 
-        self.model = llm_cfg.get("model", "gemma3:12b")
+        self.model = llm_cfg.get("model", "gemma4:12b")
         self.temperature = llm_cfg.get("temperature", 0.15)
         self.max_tokens = llm_cfg.get("max_tokens", 2000)
         self.timeout = llm_cfg.get("timeout", 60)
@@ -118,8 +118,8 @@ class OllamaService:
         """
         Сравнивает имена моделей терпимо только к отсутствующему тегу
         (эквивалент неявного ":latest"). НЕ считает совпадением разные
-        варианты одной базовой модели (например, "gemma3:12b" и
-        "gemma3:12b-instruct-q4" — это разные веса, не взаимозаменяемые).
+        варианты одной базовой модели (например, "gemma4:12b" и
+        "gemma4:12b-instruct-q4" — это разные веса, не взаимозаменяемые).
         """
         if configured == installed:
             return True
