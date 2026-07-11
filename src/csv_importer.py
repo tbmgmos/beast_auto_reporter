@@ -27,6 +27,15 @@ class Issue:
     fix_required: bool
     comment_required: bool
     comments: str = ""
+    description_original: str = ""
+    description_ru: str = ""
+    source_language: str = "unknown"
+
+    def __post_init__(self):
+        if not self.description_original:
+            self.description_original = self.description or ""
+        if not self.description_ru and self.source_language == "ru":
+            self.description_ru = self.description or ""
 
 
 class CSVImporter:
@@ -176,4 +185,3 @@ if __name__ == "__main__":
     print(f"Блокеров: {len(categories['blockers'])}")
     print(f"Требуют исправления: {len(categories['fix_required'])}")
     print(f"Требуют комментария: {len(categories['comment_required'])}")
-
