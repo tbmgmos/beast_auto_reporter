@@ -189,16 +189,15 @@ class FullReportGenerator:
                     for cell in row.cells:
                         cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
             
-            # Последняя строка: Цветовые индикаторы
+            # Последняя строка: Цветовые индикаторы (смещены вправо)
             row = table.rows[5]
-            self._merge_cells(table, 5, 0, 5, 7)
+            self._merge_cells(table, 5, 0, 5, 5)
+            self._merge_cells(table, 5, 9, 5, 10)
             
-            # Зеленый
-            self._set_cell_background(row.cells[8], "00FA02")
-            # Красный
-            self._set_cell_background(row.cells[9], "E83121")
-            # Оранжевый
-            self._set_cell_background(row.cells[10], "FBBA18")
+            # Зеленый / Красный / Оранжевый справа
+            self._set_cell_background(row.cells[6], "00FA02")
+            self._set_cell_background(row.cells[7], "E83121")
+            self._set_cell_background(row.cells[8], "FBBA18")
             
             logger.info("Техническая таблица добавлена")
             
@@ -416,4 +415,3 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
     print("FullReportGenerator - тест")
-

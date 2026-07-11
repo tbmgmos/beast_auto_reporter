@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
 from audio_analyzer import AudioAnalyzer
 from defect_detector import DefectDetector
-from llm_integration import LLMIntegration
+from conclusion_generator import ConclusionGenerator
+from csv_importer import Issue
 from report_generator import ReportGenerator
 
 # Настройка логирования
@@ -96,9 +97,9 @@ def initialize_components(_config):
     """Инициализация компонентов системы"""
     analyzer = AudioAnalyzer(_config)
     detector = DefectDetector(_config)
-    llm = LLMIntegration(_config)
+    conclusion_gen = ConclusionGenerator(use_llm=True, config=_config)
     generator = ReportGenerator(_config)
-    return analyzer, detector, llm, generator
+    return analyzer, detector, conclusion_gen, generator
 
 
 def save_uploaded_file(uploaded_file, suffix=".wav"):
@@ -119,6 +120,70 @@ def format_timedelta(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def convert_defects_to_issues(defects):
+    """Адаптация Defect объектов к Issue для ConclusionGenerator."""
+    issues = []
+
+    for defect in defects:
+        severity = getattr(defect, 'severity', 'comment_required')
+        channels = getattr(defect, 'channels', []) or []
+        issues.append(Issue(
+            timecode_in=getattr(defect, 'timecode_in', '') or '',
+            timecode_out=getattr(defect, 'timecode_out', '') or '',
+            description=getattr(defect, 'description', '') or '',
+            audio_20_c='2.0' in channels or '*' in channels,
+            audio_20_uc=False,
+            audio_51_c='5.1' in channels or '*' in channels,
+            audio_51_uc=False,
+            blocker=severity == 'blocker',
+            fix_required=severity == 'fix_required',
+            comment_required=severity == 'comment_required',
+            comments='',
+        ))
+
+    return issues
+
+
+def build_streamlit_conclusion(conclusion_gen, audio_analysis, defects, file_info):
+    """
+    Собирает совместимый текст заключения для legacy Streamlit UI:
+    короткий технический summary + субъективное заключение через актуальный ConclusionGenerator.
+    """
+    compliance = audio_analysis.get('compliance', {}) if audio_analysis else {}
+    measurements = audio_analysis.get('measurements', {}) if audio_analysis else {}
+    file_name = file_info.get('file_name', 'N/A')
+
+    problems = []
+    if not compliance.get('lufs_compliant', True):
+        problems.append(f"LUFS не соответствует норме ({measurements.get('lufs', 'N/A')})")
+    if not compliance.get('true_peak_compliant', True):
+        problems.append(f"TRUE PEAK не соответствует норме ({measurements.get('true_peak', 'N/A')})")
+    if not compliance.get('lra_compliant', True):
+        problems.append(f"LRA не соответствует норме ({measurements.get('lra', 'N/A')})")
+
+    if problems:
+        technical = (
+            f"Файл: {file_name}\n"
+            "По техническим характеристикам выявлены следующие недочёты:\n"
+            + "\n".join(f"- {problem}" for problem in problems)
+        )
+    else:
+        technical = (
+            f"Файл: {file_name}\n"
+            "По техническим характеристикам нареканий не обнаружено."
+        )
+
+    subjective = conclusion_gen.generate_subjective_conclusion(
+        convert_defects_to_issues(defects),
+        "main",
+    )
+
+    if subjective == "По субъективной оценке нареканий не обнаружено.":
+        return technical
+
+    return f"{technical}\n\n{subjective}"
+
+
 def main():
     """Главная функция приложения"""
     
@@ -131,7 +196,7 @@ def main():
     
     # Инициализация компонентов
     try:
-        analyzer, detector, llm, generator = initialize_components(config)
+        analyzer, detector, conclusion_gen, generator = initialize_components(config)
     except Exception as e:
         st.error(f"Ошибка инициализации: {e}")
         return
@@ -141,7 +206,7 @@ def main():
         st.header("⚙️ Настройки")
         
         # Проверка LLM
-        llm_status = llm.check_ollama_status()
+        llm_status = conclusion_gen.check_ollama_status()
         if llm_status:
             st.success("✓ Ollama подключена")
         else:
@@ -313,7 +378,13 @@ def main():
                         'file_name': audio_20_file.name if audio_20_file else audio_51_file.name
                     }
                     
-                    conclusion = llm.generate_conclusion(primary_analysis, all_defects, file_info)
+                    conclusion_gen.use_llm = True
+                    conclusion = build_streamlit_conclusion(
+                        conclusion_gen,
+                        primary_analysis,
+                        all_defects,
+                        file_info,
+                    )
                     
                     st.success("✓ Заключение сгенерировано")
                 
@@ -475,4 +546,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,0 +1,63 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Inter, sans-serif; background: #F5F5F7; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.row { display: flex; gap: 10px; }
+.card { background: white; border: 1px solid #E5E5EA; border-radius: 8px; padding: 12px; flex: 1; }
+.label { font-size: 9px; color: #86868B; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+
+/* Radius demos */
+.radius-row { display: flex; gap: 8px; align-items: flex-end; }
+.rbox { background: #007AFF20; border: 1.5px solid #007AFF; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding: 4px 6px; }
+.rval { font-size: 9px; color: #007AFF; font-weight: 600; }
+
+/* Shadow demos */
+.shadow-row { display: flex; gap: 12px; align-items: center; }
+.sbox { width: 40px; height: 40px; border-radius: 8px; background: white; display: flex; align-items: center; justify-content: center; }
+.slabel { font-size: 9px; color: #86868B; text-align: center; margin-top: 4px; }
+.sitem { display: flex; flex-direction: column; align-items: center; }
+</style></head><body>
+<div class="row">
+  <div class="card" style="flex:2;">
+    <div class="label">Border Radius</div>
+    <div class="radius-row">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+        <div class="rbox" style="width:32px;height:32px;border-radius:4px;"></div>
+        <div class="rval">4px</div>
+        <div style="font-size:8px;color:#AEAEB2;">sm</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+        <div class="rbox" style="width:40px;height:40px;border-radius:6px;"></div>
+        <div class="rval">6px</div>
+        <div style="font-size:8px;color:#AEAEB2;">md</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+        <div class="rbox" style="width:48px;height:48px;border-radius:8px;"></div>
+        <div class="rval">8px</div>
+        <div style="font-size:8px;color:#AEAEB2;">lg</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+        <div class="rbox" style="width:56px;height:56px;border-radius:12px;"></div>
+        <div class="rval">12px</div>
+        <div style="font-size:8px;color:#AEAEB2;">xl</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+        <div class="rbox" style="width:32px;height:32px;border-radius:9999px;"></div>
+        <div class="rval">full</div>
+        <div style="font-size:8px;color:#AEAEB2;">pill</div>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="flex:2;">
+    <div class="label">Elevation / Shadow</div>
+    <div class="shadow-row">
+      <div class="sitem"><div class="sbox" style="border:1px solid #E5E5EA;box-shadow:none;"></div><div class="slabel">none<br>border only</div></div>
+      <div class="sitem"><div class="sbox" style="box-shadow:0 1px 2px rgba(0,0,0,0.06);"></div><div class="slabel">xs<br>cards</div></div>
+      <div class="sitem"><div class="sbox" style="box-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.05);"></div><div class="slabel">sm<br>hover</div></div>
+      <div class="sitem"><div class="sbox" style="box-shadow:0 4px 12px rgba(0,0,0,0.08),0 1px 3px rgba(0,0,0,0.05);"></div><div class="slabel">md<br>dialog</div></div>
+      <div class="sitem"><div class="sbox" style="box-shadow:0 8px 24px rgba(0,0,0,0.10),0 2px 6px rgba(0,0,0,0.06);"></div><div class="slabel">lg<br>modal</div></div>
+    </div>
+  </div>
+</div>
+</body></html>

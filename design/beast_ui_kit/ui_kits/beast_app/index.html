@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Beast Auto Reporter — UI Kit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+
+  /* ── Cat PNG animations ───────────────────────────── */
+  @keyframes zFloat   { 0%{opacity:0;transform:translateY(2px) scale(0.8)} 25%{opacity:0.85} 100%{opacity:0;transform:translateY(-20px) scale(1.1)} }
+  @keyframes catWork  { 0%,100%{transform:rotate(-2deg) translateX(0) translateY(0)} 50%{transform:rotate(2deg) translateX(2px) translateY(-2px)} }
+  @keyframes catHover { 0%,100%{transform:translateY(0) scale(1) rotate(0deg)} 30%{transform:translateY(-6px) scale(1.035) rotate(-2.25deg)} 65%{transform:translateY(-2px) scale(1.015) rotate(1.75deg)} }
+  @keyframes catReady { 0%,100%{transform:translateY(0) rotate(0deg)} 25%{transform:translateY(-3px) rotate(-0.7deg)} 75%{transform:translateY(-1px) rotate(0.7deg)} }
+  @keyframes catPop   { 0%{transform:scale(0.45);opacity:0} 65%{transform:scale(1.12);opacity:1} 100%{transform:scale(1);opacity:1} }
+  @keyframes catGlow  { 0%,100%{filter:drop-shadow(0 10px 20px rgba(52,199,89,0.10))} 50%{filter:drop-shadow(0 16px 28px rgba(52,199,89,0.22))} }
+  @keyframes spkl     { 0%,100%{opacity:0;transform:scale(0.2) rotate(-15deg)} 45%{opacity:1;transform:scale(1) rotate(0deg)} }
+  @keyframes breathe  { 0%,100%{transform:scale(1)} 50%{transform:scale(0.97)} }
+  @keyframes catWait  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
+  @keyframes stagePulse { 0%,100%{transform:scale(1);opacity:0.72} 50%{transform:scale(1.06);opacity:1} }
+  @keyframes floorBreath { 0%,100%{transform:scaleX(1);opacity:0.18} 50%{transform:scaleX(0.92);opacity:0.12} }
+  @keyframes floorActive { 0%,100%{transform:scaleX(1) translateY(0);opacity:0.18} 50%{transform:scaleX(1.1) translateY(1px);opacity:0.26} }
+  @keyframes haloRise { 0%,100%{transform:translateY(0) scale(1);opacity:0.18} 50%{transform:translateY(-3px) scale(1.08);opacity:0.32} }
+  @keyframes workLine { 0%{transform:translateX(-8px);opacity:0} 20%{opacity:0.85} 100%{transform:translateX(12px);opacity:0} }
+  @keyframes reportBlink { 0%,100%{opacity:0.45;transform:scale(1)} 50%{opacity:1;transform:scale(1.06)} }
+  @keyframes reportTrace { 0%{stroke-dashoffset:22;opacity:0.25} 40%{opacity:0.95} 100%{stroke-dashoffset:0;opacity:0.55} }
+
+  .z1 { animation: zFloat 3.2s ease-in-out 0s    infinite; }
+  .z2 { animation: zFloat 3.2s ease-in-out 1.07s infinite; }
+  .z3 { animation: zFloat 3.2s ease-in-out 2.14s infinite; }
+  .sp1 { animation: spkl 2.2s ease-in-out 0s    infinite; }
+  .sp2 { animation: spkl 2.2s ease-in-out 0.73s infinite; }
+  .sp3 { animation: spkl 2.2s ease-in-out 1.46s infinite; }
+
+  body {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #D8D8DC;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .window {
+    width: 430px;
+    background: #FFFFFF;
+    border-radius: 14px;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.10);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    max-height: 94vh;
+  }
+  .titlebar {
+    height: 40px;
+    background: rgba(246,246,248,0.96);
+    border-bottom: 1px solid #E5E5EA;
+    display: flex; align-items: center;
+    padding: 0 14px; gap: 7px; flex-shrink: 0;
+    user-select: none;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot-close { background: #FF5F57; }
+  .dot-min   { background: #FEBC2E; }
+  .dot-max   { background: #28C840; }
+  .titlebar-label {
+    flex: 1; text-align: center; font-size: 12px; font-weight: 600;
+    color: #3D3D3D; margin-right: 52px; letter-spacing: -0.01em;
+  }
+  .body { flex: 1; overflow-y: auto; padding: 14px 14px 0; display: flex; flex-direction: column; gap: 10px; }
+  .slabel { font-size: 10px; color: #86868B; margin-bottom: 3px; letter-spacing: 0.01em; }
+  .scard { background: #FFFFFF; border: 1px solid #E5E5EA; border-radius: 10px; padding: 10px 12px; }
+  .footer { border-top: 1px solid #E5E5EA; padding: 10px 14px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; background: #FAFAFA; }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #D2D2D7; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// ── Icons ──────────────────────────────────────────────────────────────
+const S = (props) => (
+  <svg width={props.size||14} height={props.size||14} viewBox="0 0 16 16"
+    fill="none" stroke={props.c||'currentColor'}
+    strokeWidth={props.w||1.5} strokeLinecap="round" strokeLinejoin="round"
+    style={props.style}>
+    {props.children}
+  </svg>
+);
+
+const icons = {
+  doc:     <S><rect x="2" y="1" width="12" height="14" rx="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="10.5" x2="8" y2="10.5"/></S>,
+  speaker: <S><path d="M3 6h1.5l3-3v10l-3-3H3a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z"/><path d="M11 5.5c.8.8 1.3 2 1.3 2.5s-.5 1.7-1.3 2.5"/></S>,
+  tv:      <S><rect x="1" y="3" width="14" height="9" rx="1.5"/><circle cx="8" cy="7.5" r="1.8"/><line x1="5" y1="14.5" x2="11" y2="14.5"/><line x1="8" y1="12" x2="8" y2="14.5"/></S>,
+  film:    <S><circle cx="8" cy="8" r="6.5"/><circle cx="8" cy="8" r="2"/><line x1="8" y1="1.5" x2="8" y2="5.5"/><line x1="8" y1="10.5" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="5.5" y2="8"/><line x1="10.5" y1="8" x2="14.5" y2="8"/></S>,
+  star:    <S><path d="M8 1l1.5 4.5H14l-3.8 2.8 1.5 4.5L8 10l-3.7 2.8 1.5-4.5L2 5.5h4.5z"/></S>,
+  trash:   <S size={15}><polyline points="3 5 5 5 13 5"/><path d="M12 5l-.8 9H4.8L4 5"/><path d="M7 8v4M9 8v4"/><path d="M6 5V3.5h4V5"/></S>,
+  gear:    <S size={15}><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v1.3M8 13.2v1.3M1.5 8h1.3M13.2 8h1.3M3.4 3.4l.9.9M11.7 11.7l.9.9M3.4 12.6l.9-.9M11.7 4.3l.9-.9"/></S>,
+  upload:  <S size={15}><path d="M13 10.5v2A1.5 1.5 0 0 1 11.5 14h-7A1.5 1.5 0 0 1 3 12.5v-2"/><line x1="8" y1="2" x2="8" y2="10"/><polyline points="5,5 8,2 11,5"/></S>,
+  folder:  <S size={13}><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2H6l1.5 2H13.5A1.5 1.5 0 0 1 15 5.5v7A1.5 1.5 0 0 1 13.5 14h-11A1.5 1.5 0 0 1 1 12.5V3.5z"/></S>,
+  music:   <S size={13}><path d="M5 12V4l8-2v8"/><circle cx="3.5" cy="12" r="1.5"/><circle cx="11.5" cy="10" r="1.5"/></S>,
+  video:   <S size={13}><rect x="1" y="3.5" width="10" height="9" rx="1.5"/><path d="M11 7l4-2v6l-4-2V7z"/></S>,
+  csv:     <S size={13}><rect x="2" y="1" width="12" height="14" rx="1.5"/><line x1="4.5" y1="6" x2="11.5" y2="6"/><line x1="4.5" y1="8.5" x2="11.5" y2="8.5"/><line x1="4.5" y1="11" x2="8" y2="11"/></S>,
+  pdf:     <S size={13}><rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 9h2a1 1 0 0 0 0-2H5v4m4-4h1.5a1.5 1.5 0 0 1 0 3H9V7"/></S>,
+  copy:    <S size={14}><rect x="6" y="5" width="8" height="9" rx="1.5"/><path d="M4 11H2.5A1.5 1.5 0 0 1 1 9.5v-7A1.5 1.5 0 0 1 2.5 1h7A1.5 1.5 0 0 1 11 2.5V4"/></S>,
+  search:  <S size={14}><circle cx="7" cy="7" r="5"/><line x1="10.5" y1="10.5" x2="14" y2="14"/></S>,
+  check:   <S size={14}><circle cx="8" cy="8" r="6"/><polyline points="5,8 7,10.5 11,6"/></S>,
+  err:     <S size={14}><circle cx="8" cy="8" r="6"/><line x1="8" y1="5.5" x2="8" y2="8.5"/><line x1="8" y1="11" x2="8.01" y2="11"/></S>,
+  sparkle: <S size={14}><path d="M8 1l1.2 4.8H14l-4 2.9 1.5 4.8L8 10.5 4.5 13.5 6 8.7 2 5.8h4.8z"/></S>,
+  fileupl: (
+    <svg width="28" height="28" viewBox="0 0 32 32" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="4" width="20" height="24" rx="2"/>
+      <line x1="16" y1="22" x2="16" y2="12"/>
+      <polyline points="12,16 16,12 20,16"/>
+    </svg>
+  ),
+};
+
+// ── Tokens ─────────────────────────────────────────────────────────────
+const C = {
+  primary:'#007AFF', primaryHover:'#0063D1', primarySubtle:'#EBF5FF',
+  bg:'#FFFFFF', surface:'#F5F5F7', border:'#E5E5EA', borderStrong:'#D2D2D7',
+  fg:'#1D1D1F', fg2:'#86868B', fg3:'#AEAEB2', disabled:'#E8E8ED',
+  success:'#34C759', error:'#FF3B30',
+};
+
+// ── Report types ────────────────────────────────────────────────────────
+const REPORT_TYPES = [
+  { id:'main',     label:'Основной', icon: icons.doc    },
+  { id:'me',       label:'M&E',      icon: icons.speaker },
+  { id:'me_ours',  label:'ME (наши)',icon: icons.speaker },
+  { id:'tifflo',   label:'TIFFLO',   icon: icons.tv     },
+  { id:'dcp',      label:'DCP',      icon: icons.film   },
+];
+
+// ── Progress steps ──────────────────────────────────────────────────────
+const STEPS = [
+  { pct:0,   label:'Ожидание',                     icon: icons.copy,   color: C.fg3     },
+  { pct:10,  label:'Копирование файлов...',          icon: icons.copy,   color: C.primary },
+  { pct:20,  label:'Анализ файлов...',               icon: icons.search, color: C.primary },
+  { pct:50,  label:'Извлечение данных из PDF...',    icon: icons.pdf,    color: C.primary },
+  { pct:70,  label:'Расчёт loudness...',             icon: icons.star,   color: C.primary },
+  { pct:85,  label:'Генерация заключений...',        icon: icons.sparkle,color: C.primary },
+  { pct:95,  label:'Создание отчёта...',             icon: icons.doc,    color: C.primary },
+  { pct:100, label:'Отчёт создан — Файлов: 4',      icon: icons.check,  color: C.success },
+];
+
+// ── File icons map ──────────────────────────────────────────────────────
+const FILE_ICONS = { wav: icons.music, mp4: icons.video, mov: icons.video, mkv: icons.video, csv: icons.csv, pdf: icons.pdf };
+const fileExt = name => (name.split('.').pop() || '').toLowerCase();
+
+// ── Demo data ───────────────────────────────────────────────────────────
+const DEMO_FILES = ['serial_ep01_20_cens.wav','serial_ep01_51_cens.wav','serial_ep01_markers.csv','serial_ep01_20_cens.pdf'];
+const TP_RESULTS = [
+  { label:'2.0 Censored', file:'serial_ep01_20_cens.wav', youlean:'-2.0', precise:-2.14 },
+  { label:'5.1 Censored', file:'serial_ep01_51_cens.wav', youlean:'-1.8', precise:-1.87 },
+];
+
+const CAT_ASSETS = {
+  sleeping: '../../assets/cat-states/cat-sleeping.png',
+  hover: '../../assets/cat-states/cat-hover.png',
+  ready: '../../assets/cat-states/cat-ready.png',
+  working: '../../assets/cat-states/cat-working.png',
+  done: '../../assets/cat-states/cat-done.png',
+};
+
+// ── Small helpers ───────────────────────────────────────────────────────
+function Cb({ checked, onChange }) {
+  return (
+    <div onClick={onChange} style={{
+      width:17, height:17, borderRadius:5, flexShrink:0, cursor:'pointer',
+      background: checked ? C.primary : 'transparent',
+      border: checked ? 'none' : `1.5px solid ${C.fg3}`,
+      display:'flex', alignItems:'center', justifyContent:'center',
+    }}>
+      {checked && <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,6 5,9 10,3"/></svg>}
+    </div>
+  );
+}
+
+function Rb({ checked, onChange }) {
+  return (
+    <div onClick={onChange} style={{
+      width:15, height:15, borderRadius:'50%', flexShrink:0, cursor:'pointer',
+      background: checked ? C.primary : 'transparent',
+      border: checked ? 'none' : `1.5px solid ${C.fg3}`,
+      display:'flex', alignItems:'center', justifyContent:'center',
+    }}>
+      {checked && <div style={{width:5,height:5,borderRadius:'50%',background:'white'}}/>}
+    </div>
+  );
+}
+
+function IconBtn({ onClick, title, children, active }) {
+  const [hov, setHov] = React.useState(false);
+  return (
+    <button onClick={onClick} title={title}
+      onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+      style={{
+        background: active ? C.primarySubtle : hov ? C.surface : 'transparent',
+        border: `1px solid ${active ? '#007AFF40' : hov ? C.borderStrong : C.border}`,
+        borderRadius:8, width:34, height:34, cursor:'pointer',
+        display:'flex', alignItems:'center', justifyContent:'center',
+        transition:'all 120ms', color: active ? C.primary : C.fg2,
+      }}>
+      {children}
+    </button>
+  );
+}
+
+function SCard({ label, children }) {
+  return (
+    <div>
+      {label && <div className="slabel">{label}</div>}
+      <div className="scard">{children}</div>
+    </div>
+  );
+}
+
+// ── Overlay / Dialogs ───────────────────────────────────────────────────
+function Overlay({ children, onClose }) {
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.32)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:'white',borderRadius:14,padding:'20px',minWidth:340,maxWidth:460,width:'90%',boxShadow:'0 12px 40px rgba(0,0,0,0.18)'}}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function DlgBtn({ primary, onClick, children }) {
+  const [hov, setHov] = React.useState(false);
+  return (
+    <button onClick={onClick}
+      onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+      style={{
+        background: primary ? (hov ? C.primaryHover : C.primary) : (hov ? C.surface : 'white'),
+        color: primary ? 'white' : C.fg,
+        border: primary ? 'none' : `1px solid ${C.borderStrong}`,
+        borderRadius:8, padding:'6px 16px', fontSize:12,
+        fontWeight: primary ? 600 : 400, cursor:'pointer', fontFamily:'inherit',
+        transition:'background 120ms',
+      }}>
+      {children}
+    </button>
+  );
+}
+
+function SettingsDialog({ onClose }) {
+  const [del, setDel] = React.useState(false);
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
+        <div style={{color:C.fg2}}>{icons.gear}</div>
+        <div style={{fontSize:13,fontWeight:600,color:C.fg}}>Настройки</div>
+      </div>
+      <div style={{display:'flex',alignItems:'flex-start',gap:10,cursor:'pointer'}} onClick={()=>setDel(!del)}>
+        <Cb checked={del} onChange={()=>setDel(!del)}/>
+        <div>
+          <div style={{fontSize:12,color:C.fg}}>Удалять исходники после копирования</div>
+          <div style={{fontSize:10,color:C.fg2,marginTop:2}}>PDF, CSV и параметры будут удалены из исходной папки.</div>
+        </div>
+      </div>
+      <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20}}>
+        <DlgBtn onClick={onClose}>Отмена</DlgBtn>
+        <DlgBtn primary onClick={onClose}>Сохранить</DlgBtn>
+      </div>
+    </Overlay>
+  );
+}
+
+function TpDialog({ onApply, onClose }) {
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{fontSize:13,fontWeight:600,color:C.fg,marginBottom:4}}>True Peak — измерение</div>
+      <div style={{fontSize:11,color:C.fg2,marginBottom:14}}>ITU-R BS.1770-4, 4× oversampling</div>
+      {TP_RESULTS.map((r,i) => {
+        const pass = r.precise <= -2.0;
+        return (
+          <div key={i} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',marginBottom:8}}>
+            <div style={{fontSize:12,fontWeight:600,color:C.fg}}>{r.label}</div>
+            <div style={{fontSize:10,color:C.fg3,marginTop:1,marginBottom:8}}>{r.file}</div>
+            <div style={{display:'flex',gap:10,alignItems:'center'}}>
+              <span style={{fontSize:11,color:C.fg2}}>Youlean: {r.youlean} dBTP</span>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={C.fg3} strokeWidth="1.5" strokeLinecap="round"><line x1="3" y1="8" x2="13" y2="8"/><polyline points="9,4 13,8 9,12"/></svg>
+              <span style={{fontSize:12,fontWeight:700,color:pass?C.success:C.error}}>{r.precise} dBTP</span>
+              <span style={{fontSize:11,fontWeight:600,color:pass?C.success:C.error}}>{pass?'PASS':'FAIL'}</span>
+            </div>
+          </div>
+        );
+      })}
+      <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}}>
+        <DlgBtn onClick={onClose}>Оставить Youlean</DlgBtn>
+        <DlgBtn primary onClick={onApply}>Применить точные значения</DlgBtn>
+      </div>
+    </Overlay>
+  );
+}
+
+// ── Main App ────────────────────────────────────────────────────────────
+function App() {
+  const [files, setFiles]           = React.useState([]);
+  const [reportType, setReportType] = React.useState('main');
+  const [ai,        setAi]          = React.useState(false);
+  const [full,      setFull]        = React.useState(false);
+  const [tp,        setTp]          = React.useState(false);
+  const [name,      setName]        = React.useState('');
+  const [progress,  setProgress]    = React.useState(0);
+  const [stepIdx,   setStepIdx]     = React.useState(0);
+  const [processing,setProcessing]  = React.useState(false);
+  const [dialog,    setDialog]      = React.useState(null);
+  const timer = React.useRef(null);
+
+  const hasFiles = files.length > 0;
+  const curStep  = STEPS[stepIdx] || STEPS[0];
+  const done     = progress === 100;
+
+  function loadDemo() { setFiles(DEMO_FILES); setProgress(0); setStepIdx(0); }
+  function clear()    {
+    setFiles([]); setProgress(0); setStepIdx(0); setProcessing(false);
+    clearInterval(timer.current);
+  }
+
+  function start() {
+    if (!hasFiles || processing) return;
+    setProcessing(true); let i = 0;
+    const tick = () => {
+      if (i >= STEPS.length) {
+        clearInterval(timer.current); setProcessing(false);
+        if (tp) setTimeout(()=>setDialog('tp'), 400);
+        return;
+      }
+      setStepIdx(i); setProgress(STEPS[i].pct); i++;
+    };
+    tick(); timer.current = setInterval(tick, 750);
+  }
+
+  const canStart = hasFiles && !processing;
+
+  return (
+    <div className="window">
+      {/* Title bar */}
+      <div className="titlebar">
+        <div className="dot dot-close"/><div className="dot dot-min"/><div className="dot dot-max"/>
+        <div className="titlebar-label" style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,marginRight:52}}>
+          <img src="../../assets/app_icon.png" alt="" style={{width:20,height:20,borderRadius:5,objectFit:'cover',flexShrink:0}}/>
+          <span>Beast Auto Reporter</span>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="body">
+
+        {/* Report type */}
+        <SCard label="Тип отчёта">
+          <div style={{display:'flex',flexWrap:'wrap',gap:2}}>
+            {REPORT_TYPES.map(t => {
+              const active = reportType === t.id;
+              return (
+                <div key={t.id} onClick={()=>setReportType(t.id)} style={{
+                  display:'flex', alignItems:'center', gap:6,
+                  padding:'6px 10px', borderRadius:8, cursor:'pointer',
+                  background: active ? C.primarySubtle : 'transparent',
+                  border: `1px solid ${active ? '#007AFF30' : 'transparent'}`,
+                  color: active ? C.primary : C.fg2,
+                  fontSize:11, fontWeight: active ? 500 : 400,
+                  transition:'all 120ms',
+                }}>
+                  <span style={{color: active ? C.primary : C.fg3}}>{t.icon}</span>
+                  {t.label}
+                </div>
+              );
+            })}
+          </div>
+        </SCard>
+
+        {/* Options + Name */}
+        <SCard>
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {/* Options */}
+            <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+              {[
+                {key:'ai',   val:ai,   set:setAi,   icon:icons.sparkle, label:'AI генерация'},
+                {key:'full', val:full, set:setFull,  icon:icons.search,  label:'Full analyze'},
+                {key:'tp',   val:tp,   set:setTp,    icon:<S size={13}><circle cx="8" cy="8" r="1"/><circle cx="8" cy="8" r="5"/><line x1="8" y1="1" x2="8" y2="3"/></S>, label:'TP verify'},
+              ].map(o => (
+                <label key={o.key} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:11,color:C.fg,userSelect:'none'}}>
+                  <Cb checked={o.val} onChange={()=>o.set(!o.val)}/>
+                  <span style={{color:o.val?C.primary:C.fg3,display:'flex'}}>{o.icon}</span>
+                  {o.label}
+                </label>
+              ))}
+            </div>
+            {/* Name + folder */}
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontSize:10,color:C.fg2,flexShrink:0}}>Имя</span>
+              <div style={{display:'flex',alignItems:'center',gap:6,border:`1px solid ${C.borderStrong}`,borderRadius:7,padding:'5px 8px',flex:1}}>
+                <span style={{color:C.fg3,display:'flex'}}><S size={12}><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c0-2.5 2.2-4 5-4s5 1.5 5 4"/></S></span>
+                <input value={name} onChange={e=>setName(e.target.value)} placeholder="Ваше имя"
+                  style={{border:'none',outline:'none',fontSize:11,color:C.fg,flex:1,background:'transparent',fontFamily:'inherit'}}/>
+              </div>
+              <span style={{fontSize:10,color:C.fg2,flexShrink:0}}>Папка</span>
+              <div style={{display:'flex',alignItems:'center',gap:5,border:`1px solid ${C.border}`,borderRadius:7,padding:'5px 8px',background:C.surface,maxWidth:100}}>
+                <span style={{color:C.fg3,display:'flex'}}>{icons.folder}</span>
+                <span style={{fontSize:11,color:C.fg2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Рабочий стол</span>
+              </div>
+            </div>
+          </div>
+        </SCard>
+
+        {/* Drop zone */}
+        <SCard label="Файлы">
+          <DropZoneArea
+            onDrop={loadDemo}
+            isEmpty={!hasFiles}
+            hasFiles={hasFiles}
+            processing={processing}
+            done={done}
+          />
+          {/* File list — only when files loaded and not yet processing */}
+          {hasFiles && !processing && !done && (
+            <div style={{marginTop:8,display:'flex',flexDirection:'column'}}>
+              {files.map((f,i) => (
+                <div key={i} style={{
+                  display:'flex',alignItems:'center',gap:8,
+                  fontSize:11,color:C.fg,padding:'4px 0',
+                  borderBottom: i<files.length-1 ? `1px solid ${C.surface}` : 'none',
+                }}>
+                  <span style={{color:C.fg3,display:'flex',flexShrink:0}}>{FILE_ICONS[fileExt(f)] || icons.csv}</span>
+                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Open folder button — done state */}
+          {done && (
+            <button onClick={()=>{}} style={{
+              marginTop:8,width:'100%',background:C.surface,border:`1px solid ${C.border}`,
+              borderRadius:8,padding:'7px',fontSize:11,color:C.fg2,cursor:'pointer',
+              display:'flex',alignItems:'center',justifyContent:'center',gap:6,fontFamily:'inherit',
+            }}>
+              <span style={{color:C.fg3,display:'flex'}}>{icons.folder}</span>
+              Открыть папку с отчётом
+            </button>
+          )}
+        </SCard>
+
+        {/* Progress bar — compact, shown while processing or done */}
+        {progress > 0 && (
+          <SCard>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <div style={{
+                width:26,height:26,borderRadius:7,flexShrink:0,
+                background: done ? '#34C75918' : C.primarySubtle,
+                display:'flex',alignItems:'center',justifyContent:'center',
+                color: done ? C.success : C.primary,
+              }}>
+                {curStep.icon}
+              </div>
+              <div style={{flex:1,display:'flex',flexDirection:'column',gap:5}}>
+                <div style={{fontSize:11,color:done?C.success:C.fg,fontWeight:done?500:400}}>{curStep.label}</div>
+                <div style={{height:3,background:C.border,borderRadius:9999,overflow:'hidden'}}>
+                  <div style={{height:'100%',width:`${progress}%`,background:done?C.success:C.primary,borderRadius:9999,transition:'width 0.5s ease'}}/>
+                </div>
+              </div>
+              <div style={{fontSize:10,color:done?C.success:C.fg3,flexShrink:0,fontWeight:done?600:400}}>{progress}%</div>
+            </div>
+          </SCard>
+        )}
+
+        <div style={{height:6}}/>
+      </div>
+
+      {/* Footer */}
+      <div className="footer">
+        <IconBtn onClick={clear} title="Очистить">{icons.trash}</IconBtn>
+        <IconBtn onClick={()=>setDialog('settings')} title="Настройки">{icons.gear}</IconBtn>
+        <div style={{flex:1}}/>
+        <PrimaryBtn onClick={start} disabled={!canStart} loading={processing}>
+          {processing
+            ? <><span style={{display:'flex'}}>{icons.sparkle}</span> Создаётся...</>
+            : <><span style={{display:'flex'}}>{icons.upload}</span> Создать отчёт</>
+          }
+        </PrimaryBtn>
+      </div>
+
+      {dialog === 'settings' && <SettingsDialog onClose={()=>setDialog(null)}/>}
+      {dialog === 'tp'       && <TpDialog onApply={()=>setDialog(null)} onClose={()=>setDialog(null)}/>}
+    </div>
+  );
+}
+
+// ── Cat PNG component — state-specific mascot reactions ───────────────
+
+function CatImg({ state }) {
+  const cfg = {
+    sleeping: {
+      size:76,
+      filter:'brightness(0.985) saturate(1.02)',
+      anim:'breathe 4s ease-in-out infinite',
+      shadow:'0 8px 20px rgba(29,29,31,0.05)',
+      clip:'inset(12% 11% 11% 11% round 30%)',
+      blend:'multiply',
+      stage:'radial-gradient(circle at 50% 45%, rgba(232,236,246,0.92) 0%, rgba(245,245,247,0.18) 58%, rgba(245,245,247,0) 76%)',
+      stageAnim:'stagePulse 5.4s ease-in-out infinite',
+      floor:'floorBreath 4s ease-in-out infinite',
+    },
+    hover: {
+      size:78,
+      filter:'brightness(1.02) saturate(1.04)',
+      anim:'catHover 1.25s ease-in-out infinite',
+      shadow:'0 10px 24px rgba(0,122,255,0.10)',
+      clip:'inset(12% 11% 11% 11% round 30%)',
+      blend:'multiply',
+      stage:'radial-gradient(circle at 50% 45%, rgba(215,238,255,0.95) 0%, rgba(235,245,255,0.34) 55%, rgba(235,245,255,0) 78%)',
+      stageAnim:'stagePulse 2.2s ease-in-out infinite',
+      floor:'floorActive 1.25s ease-in-out infinite',
+      halo:'haloRise 1.5s ease-in-out infinite',
+    },
+    ready: {
+      size:76,
+      filter:'brightness(1.01) saturate(1.03)',
+      anim:'catReady 2.8s ease-in-out infinite',
+      shadow:'0 9px 22px rgba(29,29,31,0.07)',
+      clip:'inset(12% 11% 11% 11% round 30%)',
+      blend:'multiply',
+      stage:'radial-gradient(circle at 50% 42%, rgba(236,241,250,0.95) 0%, rgba(245,245,247,0.24) 57%, rgba(245,245,247,0) 79%)',
+      stageAnim:'stagePulse 4.5s ease-in-out infinite',
+      floor:'floorBreath 3.1s ease-in-out infinite',
+    },
+    working: {
+      size:80,
+      filter:'brightness(1.01) saturate(1.02)',
+      anim:'catWork 1.35s ease-in-out infinite',
+      shadow:'0 11px 26px rgba(0,122,255,0.10)',
+      clip:'inset(12% 11% 11% 11% round 30%)',
+      blend:'multiply',
+      stage:'radial-gradient(circle at 50% 42%, rgba(218,239,255,0.98) 0%, rgba(235,245,255,0.36) 58%, rgba(235,245,255,0) 80%)',
+      stageAnim:'stagePulse 2.4s ease-in-out infinite',
+      floor:'floorActive 1.35s ease-in-out infinite',
+      halo:'haloRise 1.8s ease-in-out infinite',
+    },
+    done: {
+      size:82,
+      filter:'brightness(1.04) saturate(1.05)',
+      anim:'catPop 0.5s cubic-bezier(0.34,1.56,0.64,1) both, catGlow 2.5s ease-in-out 0.55s infinite',
+      shadow:'0 12px 28px rgba(52,199,89,0.12)',
+      clip:'inset(12% 11% 11% 11% round 30%)',
+      blend:'multiply',
+      stage:'radial-gradient(circle at 50% 42%, rgba(226,247,232,0.98) 0%, rgba(52,199,89,0.12) 48%, rgba(226,247,232,0) 78%)',
+      stageAnim:'stagePulse 2.4s ease-in-out infinite',
+      floor:'floorActive 1.8s ease-in-out infinite',
+      halo:'haloRise 1.7s ease-in-out infinite',
+    },
+  };
+  const c = cfg[state] || cfg.sleeping;
+  const r = Math.round(c.size * 0.22);
+  return (
+    <div style={{position:'relative', width:c.size + 22, height:c.size + 20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center'}}>
+      <div
+        style={{
+          position:'absolute',
+          inset:'2px 0 12px',
+          borderRadius:'50%',
+          background:c.stage,
+          animation:c.stageAnim,
+          pointerEvents:'none',
+        }}
+      />
+      {c.halo && (
+        <div
+          style={{
+            position:'absolute',
+            width:c.size * 0.9,
+            height:c.size * 0.9,
+            borderRadius:'50%',
+            background:'radial-gradient(circle, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0) 72%)',
+            animation:c.halo,
+            pointerEvents:'none',
+          }}
+        />
+      )}
+      <div
+        style={{
+          position:'absolute',
+          bottom:5,
+          width:c.size * 0.64,
+          height:12,
+          borderRadius:'9999px',
+          background: state === 'done'
+            ? 'rgba(52,199,89,0.16)'
+            : state === 'hover' || state === 'working'
+              ? 'rgba(0,122,255,0.15)'
+              : 'rgba(29,29,31,0.12)',
+          filter:'blur(5px)',
+          animation:c.floor,
+          pointerEvents:'none',
+        }}
+      />
+      <img src={CAT_ASSETS[state] || CAT_ASSETS.sleeping} alt=""
+        style={{width:c.size, height:c.size, borderRadius:r, objectFit:'cover', display:'block',
+          filter:c.filter, animation:c.anim, transition:'filter 300ms ease, transform 300ms ease',
+          boxShadow:c.shadow, clipPath:c.clip, mixBlendMode:c.blend, position:'relative', zIndex:1}}/>
+      {state === 'working' && (
+        <>
+          <div
+            style={{
+              position:'absolute',
+              right:14,
+              top:25,
+              width:24,
+              height:31,
+              borderRadius:8,
+              background:'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.02))',
+              boxShadow:'inset 0 0 0 1px rgba(0,122,255,0.12)',
+              pointerEvents:'none',
+              zIndex:2,
+            }}
+          >
+            <span style={{position:'absolute', left:4, top:8, width:12, height:2, borderRadius:9999, background:'rgba(0,122,255,0.55)', animation:'workLine 1.1s ease-out infinite'}} />
+            <span style={{position:'absolute', left:6, top:14, width:10, height:2, borderRadius:9999, background:'rgba(29,29,31,0.24)', animation:'workLine 1.1s ease-out 0.18s infinite'}} />
+            <span style={{position:'absolute', left:5, top:20, width:14, height:2, borderRadius:9999, background:'rgba(52,199,89,0.42)', animation:'workLine 1.1s ease-out 0.36s infinite'}} />
+            <span style={{position:'absolute', right:4, top:5, width:5, height:5, borderRadius:'50%', background:'rgba(0,122,255,0.72)', animation:'reportBlink 1.25s ease-in-out infinite'}} />
+          </div>
+          <svg
+            viewBox="0 0 30 22"
+            style={{
+              position:'absolute',
+              right:8,
+              top:30,
+              width:28,
+              height:22,
+              overflow:'visible',
+              pointerEvents:'none',
+              zIndex:2,
+            }}
+          >
+            <path
+              d="M3 14 C8 10, 10 15, 15 11 S23 7, 27 9"
+              fill="none"
+              stroke="rgba(255,91,87,0.85)"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeDasharray="22"
+              style={{animation:'reportTrace 1.4s ease-in-out infinite'}}
+            />
+          </svg>
+        </>
+      )}
+      {state === 'sleeping' && (
+        <div style={{position:'absolute',top:0,right:-2,pointerEvents:'none'}}>
+          <span className="z1" style={{position:'absolute',top:6, right:2,  fontSize:10,color:'#B4B4C8',fontFamily:'Georgia,serif',fontWeight:700}}>z</span>
+          <span className="z2" style={{position:'absolute',top:-8,right:13, fontSize:13,color:'#A8A8BC',fontFamily:'Georgia,serif',fontWeight:700}}>z</span>
+          <span className="z3" style={{position:'absolute',top:-24,right:24,fontSize:17,color:'#9C9CB0',fontFamily:'Georgia,serif',fontWeight:700}}>Z</span>
+        </div>
+      )}
+      {state === 'done' && (
+        <>
+          <span className="sp1" style={{position:'absolute',top:-10,right:-6, fontSize:15,color:'#FBBA18',lineHeight:1}}>✦</span>
+          <span className="sp2" style={{position:'absolute',top:4, left:-12, fontSize:11,color:'#34C759', lineHeight:1}}>✦</span>
+          <span className="sp3" style={{position:'absolute',bottom:-2,right:-11,fontSize:12,color:'#007AFF', lineHeight:1}}>✦</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Drop Zone ──────────────────────────────────────────────────────────
+function DropZoneArea({ onDrop, isEmpty, hasFiles, processing, done }) {
+  const [hov, setHov] = React.useState(false);
+
+  let catState = 'sleeping';
+  let label    = 'Перетащите файлы сюда';
+  let sub      = 'аудио · видео · CSV · PDF';
+  let lblClr   = '#3D3D3D';
+  let border   = 'rgba(0,0,0,0.13)';
+  let bg       = 'rgba(0,0,0,0.015)';
+
+  if (done) {
+    catState = 'done';
+    label = 'Готово!'; sub = 'Отчёт создан успешно'; lblClr = '#34C759';
+    border = 'rgba(52,199,89,0.4)'; bg = 'rgba(52,199,89,0.04)';
+  } else if (processing) {
+    catState = 'working';
+    label = 'Обрабатываю...'; sub = 'Пожалуйста, подождите'; lblClr = '#007AFF';
+    border = 'rgba(0,122,255,0.28)'; bg = 'rgba(0,122,255,0.03)';
+  } else if (hasFiles) {
+    catState = 'ready';
+    label = 'Готов к работе'; sub = 'Нажмите «Создать отчёт»'; lblClr = '#1D1D1F';
+    border = 'rgba(0,122,255,0.2)'; bg = 'rgba(0,122,255,0.02)';
+  } else if (hov) {
+    catState = 'hover';
+    label = 'Отпустите файлы'; lblClr = '#007AFF';
+    border = 'rgba(0,122,255,0.5)'; bg = 'rgba(0,122,255,0.05)';
+  }
+
+  return (
+    <div
+      onMouseEnter={() => !processing && !done && setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      onClick={!processing && !done ? onDrop : undefined}
+      style={{
+        border: `1.5px dashed ${border}`,
+        borderRadius: 10, minHeight: 130,
+        background: bg,
+        display:'flex', flexDirection:'column',
+        alignItems:'center', justifyContent:'center', gap:7,
+        cursor: processing || done ? 'default' : 'pointer',
+        transition: 'border-color 260ms, background 260ms',
+        padding: '14px 0 10px',
+      }}>
+      <CatImg state={catState}/>
+      <div style={{fontSize:11,fontWeight:600,color:lblClr,transition:'color 260ms'}}>{label}</div>
+      <div style={{fontSize:10,color:'#86868B'}}>{sub}</div>
+    </div>
+  );
+}
+
+function PrimaryBtn({ onClick, disabled, loading, children }) {
+  const [hov, setHov] = React.useState(false);
+  return (
+    <button onClick={onClick} disabled={disabled}
+      onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+      style={{
+        display:'flex', alignItems:'center', gap:6,
+        background: disabled ? '#E8E8ED' : hov ? '#0063D1' : '#007AFF',
+        color: disabled ? '#AEAEB2' : 'white',
+        border:'none', borderRadius:9, padding:'0 20px',
+        height:34, fontSize:12, fontWeight:600,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        transition:'background 120ms', fontFamily:'inherit',
+        letterSpacing:'-0.01em',
+      }}>
+      {children}
+    </button>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

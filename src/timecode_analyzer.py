@@ -58,19 +58,42 @@ class TimecodeAnalyzer:
                 '-v', 'quiet',
                 '-print_format', 'json',
                 '-show_format',
+                '-show_streams',
+                '-select_streams', 'v:0',
                 video_path
             ]
-            
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 check=True
             )
-            
+
             data = json.loads(result.stdout)
-            duration = float(data['format']['duration'])
-            
+
+            # Приоритет: stream duration → nb_frames/fps → format duration
+            # format.duration на Intel Mac может включать контейнерный паддинг
+            duration = 0.0
+            streams = data.get('streams', [])
+            if streams:
+                stream = streams[0]
+                stream_dur = stream.get('duration')
+                nb_frames = stream.get('nb_frames')
+                if stream_dur and float(stream_dur) > 0:
+                    duration = float(stream_dur)
+                elif nb_frames and int(nb_frames) > 0:
+                    fps_str = stream.get('r_frame_rate', '25/1')
+                    if '/' in fps_str:
+                        num, denom = fps_str.split('/')
+                        fps = float(num) / float(denom)
+                    else:
+                        fps = float(fps_str)
+                    if fps > 0:
+                        duration = int(nb_frames) / fps
+            if duration == 0.0:
+                duration = float(data['format']['duration'])
+
             logger.info(f"Длительность видео {Path(video_path).name}: {duration:.2f} сек")
             return duration
             

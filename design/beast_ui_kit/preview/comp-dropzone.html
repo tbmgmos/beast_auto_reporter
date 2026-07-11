@@ -1,0 +1,53 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Inter, sans-serif; background: #F5F5F7; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.drop { border: 1.5px dashed rgba(0,0,0,0.15); border-radius: 8px; background: rgba(0,0,0,0.02); min-height: 90px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+.drop.hover { border: 1.5px dashed rgba(0,122,255,0.35); background: rgba(0,122,255,0.04); }
+.drop.active { border: 2px dashed rgba(0,122,255,0.5); background: rgba(0,122,255,0.08); }
+.drop-icon { width: 28px; height: 28px; }
+.drop-text { font-size: 12px; font-weight: 600; color: #3D3D3D; }
+.drop-hint { font-size: 10px; color: #6B7280; }
+.row { display: flex; gap: 10px; }
+.lbl { font-size: 9px; color: #86868B; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+</style></head><body>
+<div class="row">
+  <div style="flex:1;">
+    <div class="lbl">Default</div>
+    <div class="drop">
+      <svg class="drop-icon" viewBox="0 0 32 32" fill="none" stroke="#AEAEB2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="4" width="20" height="24" rx="2"/>
+        <line x1="16" y1="22" x2="16" y2="12"/>
+        <polyline points="12,16 16,12 20,16"/>
+      </svg>
+      <div class="drop-text">Перетащите файлы сюда</div>
+      <div class="drop-hint">аудио, видео, CSV, PDF</div>
+    </div>
+  </div>
+  <div style="flex:1;">
+    <div class="lbl">Hover</div>
+    <div class="drop hover">
+      <svg class="drop-icon" viewBox="0 0 32 32" fill="none" stroke="#007AFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="4" width="20" height="24" rx="2"/>
+        <line x1="16" y1="22" x2="16" y2="12"/>
+        <polyline points="12,16 16,12 20,16"/>
+      </svg>
+      <div class="drop-text" style="color:#007AFF;">Перетащите файлы сюда</div>
+      <div class="drop-hint">аудио, видео, CSV, PDF</div>
+    </div>
+  </div>
+  <div style="flex:1;">
+    <div class="lbl">Active Drop</div>
+    <div class="drop active">
+      <svg class="drop-icon" viewBox="0 0 32 32" fill="none" stroke="#007AFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="4" width="20" height="24" rx="2"/>
+        <line x1="16" y1="22" x2="16" y2="12"/>
+        <polyline points="12,16 16,12 20,16"/>
+      </svg>
+      <div class="drop-text" style="color:#007AFF;">Отпустите файлы</div>
+      <div class="drop-hint">аудио, видео, CSV, PDF</div>
+    </div>
+  </div>
+</div>
+</body></html>

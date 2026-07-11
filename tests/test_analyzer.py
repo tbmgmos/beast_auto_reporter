@@ -96,8 +96,63 @@ class TestAudioAnalyzer:
         
         assert "5.1" in layout
 
+    def test_parse_ebur128_output(self):
+        """Парсер ebur128 должен извлекать I/LRA/TPK/FTPK."""
+        sample_output = """
+[Parsed_ebur128_0 @ 0x111111] Summary:
+  Integrated loudness:
+    I:         -23.04 LUFS
+    Threshold: -33.04 LUFS
+
+  Loudness range:
+    LRA:         6.27 LU
+    Threshold: -43.33 LUFS
+    LRA low:   -25.77 LUFS
+    LRA high:  -19.50 LUFS
+
+  True peak:
+    TPK:       -2.40 dBFS
+    FTPK:      -2.12 dBFS
+"""
+        parsed = AudioAnalyzer.parse_ebur128_output(sample_output)
+        assert parsed["i_lufs"] == -23.04
+        assert parsed["lra"] == 6.27
+        assert parsed["tpk_dbtp"] == -2.4
+        assert parsed["ftpk_dbtp"] == -2.12
+        assert parsed["true_peak_dbtp"] == -2.12
+
+    def test_evaluate_compliance_with_boundary_epsilon(self):
+        """Граничные значения должны проходить по epsilon допуску."""
+        config = {
+            'audio': {
+                'target_lufs': -23.0,
+                'lufs_tolerance': 0.5,
+                'true_peak': -2.0,
+                'lra_max': 18.0,
+                'boundary_epsilon': 0.05,
+                'sample_rate': 48000
+            }
+        }
+        analyzer = AudioAnalyzer(config)
+
+        compliance, details, deviations = analyzer.evaluate_compliance(
+            lufs=-22.45,      # abs delta = 0.55 (0.5 + epsilon)
+            true_peak=-1.96,  # excess = 0.04 (inside epsilon)
+            lra=18.03         # excess = 0.03 (inside epsilon)
+        )
+
+        assert compliance["lufs_compliant"] is True
+        assert compliance["true_peak_compliant"] is True
+        assert compliance["lra_compliant"] is True
+        assert compliance["overall_compliant"] is True
+
+        assert details["lufs_is_borderline"] is True
+        assert details["true_peak_is_borderline"] is True
+        assert details["lra_is_borderline"] is True
+
+        assert deviations["lufs_deviation"] == 0.55
+
 
 if __name__ == "__main__":
     # Запуск тестов
     pytest.main([__file__, '-v'])
-

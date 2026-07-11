@@ -25,6 +25,8 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+APP_VERSION = "2.0.0"
+
 
 def load_app_config() -> dict:
     """Загружает конфиг приложения из config/settings.yaml."""
@@ -168,7 +170,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QListWidget, QListWidgetItem, QFrame, QMessageBox, QFileDialog,
     QGroupBox, QScrollArea, QSizePolicy, QGraphicsDropShadowEffect,
     QDialog, QDialogButtonBox, QFormLayout, QPlainTextEdit, QComboBox,
-    QTableWidget, QTableWidgetItem
+    QTableWidget, QTableWidgetItem, QProgressDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QEventLoop, QMetaObject, Q_ARG, QTimer, QRectF, QSize
 from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor, QIcon, QPainter, QPainterPath, QBrush, QPen, QPixmap, QRadialGradient, QImage
@@ -176,12 +178,18 @@ from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor, QI
 import fitz
 
 from src.exact_report_generator import ExactReportGenerator
-from src.technical_info_extractor import TechnicalInfoExtractor
+from src.technical_info_extractor import TechnicalInfoExtractor, format_fps
 from src.csv_importer import CSVImporter
 from src.pdf_extractor import PDFExtractor
 from src.conclusion_generator import ConclusionGenerator
 from src.parameter_exporter import ParameterExporter
 from src.audio_metrics import parse_ebur128_output, run_ffmpeg_ebur128, measure_true_peak_precise
+from src.update_checker import (
+    check_for_update,
+    download_update_asset,
+    load_skipped_version,
+    save_skipped_version,
+)
 
 # Настройка логирования
 logging.basicConfig(
@@ -534,18 +542,50 @@ def _matching_base_name(name: str) -> str:
     return base
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Расстояние Левенштейна (число правок для превращения a в b)."""
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _bases_match(a: str, b: str, min_len_for_fuzzy: int = 10, max_typo_distance: int = 2) -> bool:
+    """Считает две базы «одним материалом»: точное совпадение, либо
+
+    небольшая опечатка (расстояние Левенштейна <= 2) — но только для
+    достаточно длинных имён. На коротких именах (< 10 симв.) даже один
+    отличающийся символ обычно означает *другой* материал (например,
+    "movie_a" / "movie_b"), поэтому там разрешено только точное совпадение.
+    """
+    if a == b:
+        return True
+    if min(len(a), len(b)) < min_len_for_fuzzy:
+        return False
+    return _levenshtein(a, b) <= max_typo_distance
+
+
 def validate_file_consistency(files_data: dict) -> list:
     """Проверяет, что audio / pdf / csv файлы относятся к одному и тому же материалу.
 
+    Базовые имена сравниваются не только на точное равенство: небольшая
+    опечатка в достаточно длинном имени (расстояние Левенштейна <= 2, длина
+    >= 10 символов) не считается несоответствием — см. `_bases_match()`.
+
     Возвращает список строк-предупреждений. Пустой список = всё в порядке.
     """
-    groups: dict = {}
+    items: list = []
 
     def _add(path_str: str, category: str):
         base = _matching_base_name(str(path_str))
         if not base:
             return
-        groups.setdefault(base, []).append((category, Path(str(path_str)).name))
+        items.append((base, category, Path(str(path_str)).name))
 
     for f in files_data.get('audio', []) or []:
         _add(f, 'audio')
@@ -554,13 +594,25 @@ def validate_file_consistency(files_data: dict) -> list:
     for f in files_data.get('csv', []) or []:
         _add(f, 'csv')
 
-    if len(groups) <= 1:
+    if len(items) <= 1:
         return []
 
-    lines = [f"Файлы относятся к разным материалам ({len(groups)} групп(ы)):"]
-    for base, items in groups.items():
-        lines.append(f"\n• «{base}»")
-        for category, name in items:
+    # Кластеризуем по похожести базового имени, а не по точному совпадению
+    clusters: list = []
+    for base, category, name in items:
+        target_cluster = next((c for c in clusters if _bases_match(base, c["rep"])), None)
+        if target_cluster is not None:
+            target_cluster["items"].append((category, name))
+        else:
+            clusters.append({"rep": base, "items": [(category, name)]})
+
+    if len(clusters) <= 1:
+        return []
+
+    lines = [f"Файлы относятся к разным материалам ({len(clusters)} групп(ы)):"]
+    for cluster in clusters:
+        lines.append(f"\n• «{cluster['rep']}»")
+        for category, name in cluster["items"]:
             lines.append(f"    [{category}] {name}")
     return lines
 
@@ -1658,7 +1710,7 @@ def _preview_duration_text(duration_seconds) -> str:
     return f"{hours}:{mins:02d}:{secs:02d}.{millis:03d}"
 
 
-def _preview_is_frame_aligned(duration_seconds, fps: int = 25) -> bool:
+def _preview_is_frame_aligned(duration_seconds, fps: float = 25.0) -> bool:
     try:
         duration = float(duration_seconds)
     except (TypeError, ValueError):
@@ -1684,7 +1736,7 @@ def preview_duration_issues(record: dict, duration_context: dict) -> list:
     if duration_ms is None:
         return []
 
-    fps = int(duration_context.get("fps") or 25)
+    fps = float(duration_context.get("fps") or 25.0)
     video_duration_ms = duration_context.get("video_duration_ms")
     audio_durations_ms = duration_context.get("audio_durations_ms") or []
     audio_durations_ms_set = duration_context.get("audio_durations_ms_set") or set()
@@ -1696,7 +1748,7 @@ def preview_duration_issues(record: dict, duration_context: dict) -> list:
             if duration_ms != video_duration_ms:
                 issues.append("Хронометраж не совпадает с видео.")
             if not _preview_is_frame_aligned(duration, fps):
-                issues.append(f"Хронометраж не кратен кадру ({fps} fps).")
+                issues.append(f"Хронометраж не кратен кадру ({format_fps(fps)} fps).")
         elif not all_audio_match:
             issues.append("Хронометраж отличается от других аудио.")
     elif kind == "video":
@@ -1704,7 +1756,7 @@ def preview_duration_issues(record: dict, duration_context: dict) -> list:
             if duration_ms not in audio_durations_ms_set:
                 issues.append("Хронометраж не совпадает с аудио.")
         elif not _preview_is_frame_aligned(duration, fps):
-            issues.append(f"Хронометраж не кратен кадру ({fps} fps).")
+            issues.append(f"Хронометраж не кратен кадру ({format_fps(fps)} fps).")
 
     return issues
 
@@ -1766,7 +1818,7 @@ def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -
             item_warnings.append("Будет проигнорирован: в отчет идет только первый видеофайл.")
         video_info = tech_extractor.extract_video_info(video_file) if idx == 0 else {}
         details = _preview_detail_pairs([
-            f"{video_info.get('fps')} fps" if video_info.get('fps') else "",
+            f"{format_fps(video_info.get('fps'))} fps" if video_info.get('fps') else "",
             f"{video_info.get('sample_rate')} Hz" if video_info.get('sample_rate') else "",
             f"{video_info.get('channels')} ch" if video_info.get('channels') else "",
             video_info.get('format') or "",
@@ -2025,11 +2077,11 @@ def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -
         None,
     )
     video_duration_ms = None
-    fps = 25
+    fps = 25.0
     if video_record:
         video_metrics = video_record.get("metrics") or {}
         video_duration_ms = _preview_duration_ms(video_metrics.get("duration"))
-        fps = int(video_metrics.get("fps") or 25)
+        fps = float(video_metrics.get("fps") or 25.0)
 
     duration_context = {
         "fps": fps,
@@ -2274,6 +2326,8 @@ class SettingsDialog(QDialog):
             "delete_sources_after_copy": False,
             "auto_detect_report_type": False,
             "check_file_consistency": True,
+            "auto_reset_after_done": True,
+            "extended_analysis_enabled": False,
         }
 
         if cls.CONFIG_FILE.exists():
@@ -2345,7 +2399,7 @@ class SettingsDialog(QDialog):
                 background-color: transparent; border: 1.5px solid #86868B;
             }
             QCheckBox::indicator:checked {
-                background-color: #007AFF; border: none;
+                background-color: #007AFF; border: 1.5px solid #007AFF;
             }
         """
         self.delete_sources_cb = QCheckBox("Удалять исходники после копирования")
@@ -2387,6 +2441,73 @@ class SettingsDialog(QDialog):
 
         layout.addSpacing(8)
 
+        # Чекбокс автоготовности после завершения отчёта
+        self.auto_reset_cb = QCheckBox("Готовность к новому отчёту через 5 сек")
+        self.auto_reset_cb.setFont(QFont(".AppleSystemUIFont", 12))
+        self.auto_reset_cb.setStyleSheet(checkbox_style)
+        self.auto_reset_cb.setIcon(make_icon("copy", "#86868B", 14))
+        self.auto_reset_cb.setIconSize(QSize(14, 14))
+        self.auto_reset_cb.setChecked(self._settings.get("auto_reset_after_done", True))
+        self.auto_reset_cb.setToolTip(
+            "После завершения отчёта приложение само очистит список\n"
+            "файлов через 5 секунд, не дожидаясь нажатия «Очистить»."
+        )
+        layout.addWidget(self.auto_reset_cb)
+
+        auto_reset_hint = QLabel("Файлы очищаются автоматически, чтобы можно\nбыло сразу закинуть следующие.")
+        auto_reset_hint.setFont(QFont(".AppleSystemUIFont", 10))
+        auto_reset_hint.setStyleSheet("color: #86868B; margin-left: 24px;")
+        layout.addWidget(auto_reset_hint)
+
+        layout.addSpacing(8)
+
+        # Чекбокс расширенного анализа (PyLoudNorm)
+        self.extended_analysis_cb = QCheckBox("Расширенный анализ")
+        self.extended_analysis_cb.setFont(QFont(".AppleSystemUIFont", 12))
+        self.extended_analysis_cb.setStyleSheet(checkbox_style)
+        self.extended_analysis_cb.setIcon(make_icon("gear", "#86868B", 14))
+        self.extended_analysis_cb.setIconSize(QSize(14, 14))
+        self.extended_analysis_cb.setChecked(self._settings.get("extended_analysis_enabled", False))
+        self.extended_analysis_cb.setToolTip(
+            "Полный анализ громкости через PyLoudNorm (ITU-R BS.1770)\n"
+            "с экспортом дополнительных CSV/HTML данных.\n"
+            "Увеличивает время обработки отчёта."
+        )
+        layout.addWidget(self.extended_analysis_cb)
+
+        extended_analysis_hint = QLabel("Дополнительные данные громкости,\nно отчёт формируется дольше.")
+        extended_analysis_hint.setFont(QFont(".AppleSystemUIFont", 10))
+        extended_analysis_hint.setStyleSheet("color: #86868B; margin-left: 24px;")
+        layout.addWidget(extended_analysis_hint)
+
+        layout.addSpacing(8)
+
+        # Версия приложения + ручная проверка обновлений
+        update_row = QHBoxLayout()
+        update_row.setSpacing(8)
+        version_label = QLabel(f"Версия {APP_VERSION}")
+        version_label.setFont(QFont(".AppleSystemUIFont", 11))
+        version_label.setStyleSheet("color: #86868B;")
+        update_row.addWidget(version_label)
+        update_row.addStretch()
+        check_updates_btn = QPushButton("Проверить обновления")
+        check_updates_btn.setFont(QFont(".AppleSystemUIFont", 11))
+        check_updates_btn.setStyleSheet("""
+            QPushButton {
+                background: #FFFFFF;
+                color: #007AFF;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                padding: 5px 12px;
+            }
+            QPushButton:hover { background: #F5F5F7; }
+        """)
+        check_updates_btn.clicked.connect(self._on_check_updates_clicked)
+        update_row.addWidget(check_updates_btn)
+        layout.addLayout(update_row)
+
+        layout.addSpacing(8)
+
         # Кнопки OK / Отмена
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Сохранить")
@@ -2425,8 +2546,15 @@ class SettingsDialog(QDialog):
     def _on_accept(self):
         self._settings["delete_sources_after_copy"] = self.delete_sources_cb.isChecked()
         self._settings["check_file_consistency"] = self.check_files_cb.isChecked()
+        self._settings["auto_reset_after_done"] = self.auto_reset_cb.isChecked()
+        self._settings["extended_analysis_enabled"] = self.extended_analysis_cb.isChecked()
         self.save_settings(self._settings)
         self.accept()
+
+    def _on_check_updates_clicked(self):
+        parent = self.parent()
+        if parent is not None:
+            parent._check_for_updates(silent=False)
 
 
 class PreviewAnalysisThread(QThread):
@@ -3424,43 +3552,6 @@ class ProcessingThread(QThread):
 
                 logger.info("=== TP VERIFY: КОНЕЦ ===")
 
-            # === Контент-анализ ===
-            _cc_settings = SettingsDialog.load_settings()
-            if _cc_settings.get("content_check", {}).get("enabled", False):
-                self.status_update.emit("🔍 Контент-анализ...")
-                self.progress_update.emit(72)
-                try:
-                    from src.content_checker import ContentChecker
-                    _checker = ContentChecker(settings=_cc_settings)
-                    _uc_path = (
-                        audio_path_by_key.get("audio_20_uc")
-                        or audio_path_by_key.get("audio_51_uc")
-                    )
-                    _c_path = (
-                        audio_path_by_key.get("audio_20_c")
-                        or audio_path_by_key.get("audio_51_c")
-                    )
-                    _is_51 = bool(
-                        audio_path_by_key.get("audio_51_uc")
-                        or audio_path_by_key.get("audio_51_c")
-                    )
-                    _content_result = _checker.analyze(
-                        audio_uc_path=str(_uc_path) if _uc_path else None,
-                        audio_c_path=str(_c_path) if _c_path else None,
-                        is_51=_is_51,
-                    )
-                    tech_info["content_warnings"] = _content_result
-                    _n_violations = len(_content_result.get("violations", []))
-                    logger.info("Контент-анализ завершён: нарушений=%d", _n_violations)
-                    self.status_update.emit(
-                        f"🔍 Контент-анализ: найдено нарушений {_n_violations}"
-                    )
-                except Exception as _cc_err:
-                    logger.error("Ошибка контент-анализа: %s", _cc_err, exc_info=True)
-                    tech_info["content_warnings"] = None
-            else:
-                logger.debug("Контент-анализ пропущен (отключён в настройках)")
-
             # Генерация заключений
             self.status_update.emit("📝 Генерация заключений...")
             
@@ -3729,905 +3820,6 @@ class ProcessingThread(QThread):
             self._tp_verify_loop.quit()
 
 
-_CONTENT_CHECK_CATEGORY_RU = {
-    "profanity": "Нецензурная лексика",
-    "legal": "Правовые ограничения (ФЗ-436)",
-    "custom": "Пользовательский словарь",
-}
-_CONTENT_CHECK_SOURCE_RU = {
-    "stt": "Распознавание речи",
-    "beep": "Цензурный бип",
-    "subtitles": "Субтитры",
-}
-
-
-def _write_content_check_csv(path: Path, result: dict) -> None:
-    """Сохраняет нарушения в CSV (UTF-8 BOM для Excel, разделитель — точка с запятой)."""
-    import csv
-    violations = result.get("violations", [])
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f, delimiter=";", quoting=csv.QUOTE_MINIMAL)
-        writer.writerow([
-            "Тайм-код", "Слово", "Лемма", "Категория",
-            "Источник", "Серьёзность",
-        ])
-        for v in violations:
-            writer.writerow([
-                v.get("timecode", ""),
-                v.get("word", ""),
-                v.get("lemma", ""),
-                _CONTENT_CHECK_CATEGORY_RU.get(v.get("category", ""), v.get("category", "")),
-                _CONTENT_CHECK_SOURCE_RU.get(v.get("source", ""), v.get("source", "")),
-                "Блокер" if v.get("severity") == "blocker" else "Предупреждение",
-            ])
-
-
-def _write_nuendo_markers(path: Path, result: dict) -> None:
-    """Сохраняет маркеры в CSV для импорта в Nuendo / Cubase.
-
-    Формат: CSV (запятая), колонки Name и Timecode In.
-    Nuendo при импорте позволяет выбрать разделитель и назначить колонки.
-    Кодировка UTF-8 (без BOM — Nuendo лучше определяет).
-    Тайм-коды в SMPTE (HH:MM:SS:FF) при 25fps.
-    """
-    import csv
-    violations = result.get("violations", [])
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f, delimiter=",", quoting=csv.QUOTE_MINIMAL)
-        writer.writerow(["Name", "Timecode In"])
-        for v in violations:
-            word = (v.get("word") or "").strip().rstrip(".,!?;:") or v.get("lemma", "")
-            timecode = v.get("timecode", "")
-            if not timecode:
-                continue
-            writer.writerow([word, timecode])
-
-
-class ContentCheckThread(QThread):
-    """Фоновый поток для самостоятельного запуска контент-анализа."""
-
-    status_update = pyqtSignal(str)
-    progress_update = pyqtSignal(int)   # 0-100
-    finished = pyqtSignal(bool, object, str)  # success, result_dict, error_message
-
-    def __init__(self, audio_uc_path: str = None, audio_c_path: str = None,
-                 subtitle_paths: list = None, is_51: bool = False, settings: dict = None):
-        super().__init__()
-        self.audio_uc_path = audio_uc_path
-        self.audio_c_path = audio_c_path
-        self.subtitle_paths = subtitle_paths or []
-        self.is_51 = is_51
-        self.settings = settings or {}
-
-    def _on_stage(self, stage: str, percent):
-        """Колбэк для ContentChecker — превращает этапы в Qt-сигналы."""
-        self.status_update.emit(stage)
-        if percent is not None:
-            self.progress_update.emit(int(percent))
-
-    def run(self):
-        """Запуск контент-анализа."""
-        try:
-            self.status_update.emit("Инициализация…")
-            self.progress_update.emit(2)
-            from src.content_checker import ContentChecker
-            checker = ContentChecker(settings=self.settings)
-
-            result = checker.analyze(
-                audio_uc_path=self.audio_uc_path,
-                audio_c_path=self.audio_c_path,
-                subtitle_paths=self.subtitle_paths,
-                is_51=self.is_51,
-                progress_callback=self._on_stage,
-            )
-            self.finished.emit(True, result, "")
-        except Exception as exc:
-            logger.error("Ошибка standalone контент-анализа: %s", exc, exc_info=True)
-            self.finished.emit(False, None, str(exc))
-
-
-class _AudioDropZone(QFrame):
-    """Зона drag-and-drop для аудиофайлов с поддержкой клика."""
-
-    file_dropped = pyqtSignal(str)
-
-    _AUDIO_EXTS = {
-        ".wav", ".mp3", ".flac", ".aac", ".mxf", ".caf",
-        ".aiff", ".aif", ".m4a", ".mp4", ".mov",
-    }
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self._drag_active = False
-        self._file_name = ""
-        self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(56)
-        self.setMaximumHeight(64)
-        self._update_style(False)
-
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(12, 8, 12, 8)
-        self._layout.setAlignment(Qt.AlignCenter)
-
-        self._label = QLabel("Перетащите аудиофайл или нажмите для выбора")
-        self._label.setFont(QFont(".AppleSystemUIFont", 11))
-        self._label.setStyleSheet("color: #86868B; background: transparent; border: none;")
-        self._label.setAlignment(Qt.AlignCenter)
-        self._layout.addWidget(self._label)
-
-    def _update_style(self, hover: bool):
-        if self._file_name:
-            self.setStyleSheet("""
-                _AudioDropZone {
-                    background: #F0F7FF; border: 1.5px solid #007AFF;
-                    border-radius: 10px;
-                }
-            """)
-        elif hover:
-            self.setStyleSheet("""
-                _AudioDropZone {
-                    background: #EBEBF0; border: 2px dashed #007AFF;
-                    border-radius: 10px;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                _AudioDropZone {
-                    background: #F5F5F7; border: 2px dashed #B4B4B8;
-                    border-radius: 10px;
-                }
-            """)
-
-    def set_file(self, path: str):
-        name = Path(path).name if path else ""
-        self._file_name = name
-        if name:
-            self._label.setText(f"🎤  {name}")
-            self._label.setStyleSheet("color: #1D1D1F; background: transparent; border: none;")
-        else:
-            self._label.setText("Перетащите аудиофайл или нажмите для выбора")
-            self._label.setStyleSheet("color: #86868B; background: transparent; border: none;")
-        self._update_style(False)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Выберите аудиофайл", "",
-                "Аудио (*.wav *.mp3 *.flac *.aac *.mxf *.caf *.aiff *.aif *.m4a *.mp4 *.mov)",
-            )
-            if path:
-                self.file_dropped.emit(path)
-        super().mousePressEvent(event)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                if Path(url.toLocalFile()).suffix.lower() in self._AUDIO_EXTS:
-                    event.acceptProposedAction()
-                    self._drag_active = True
-                    self._update_style(True)
-                    return
-        event.ignore()
-
-    def dragLeaveEvent(self, event):
-        self._drag_active = False
-        self._update_style(False)
-        super().dragLeaveEvent(event)
-
-    def dropEvent(self, event):
-        self._drag_active = False
-        self._update_style(False)
-        for url in event.mimeData().urls():
-            fpath = url.toLocalFile()
-            if Path(fpath).suffix.lower() in self._AUDIO_EXTS:
-                self.file_dropped.emit(fpath)
-                event.acceptProposedAction()
-                return
-        event.ignore()
-
-
-class ContentCheckDialog(QDialog):
-    """Окно «Контент-анализ» — настройки, drag-and-drop, словарь, экспорт."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Контент-анализ")
-        self.setModal(False)
-        self.resize(430, 560)
-        self.setStyleSheet("""
-            QDialog { background: #FFFFFF; }
-            QLabel { background: transparent; border: none; color: #1D1D1F; }
-        """)
-
-        self._audio_uc_path: str = ""
-        self._audio_c_path: str = ""
-        self._subtitle_paths: list = []
-        self._thread: ContentCheckThread = None
-        self._last_result: dict = None
-        self._last_csv_path: str = ""
-        self._last_nuendo_path: str = ""
-
-        # --- Стили ---
-        self._cb_style = """
-            QCheckBox {
-                background: transparent; border: none; color: #1D1D1F; spacing: 6px;
-            }
-            QCheckBox::indicator { width: 14px; height: 14px; border-radius: 3px; }
-            QCheckBox::indicator:unchecked {
-                background-color: transparent; border: 1.5px solid #86868B;
-            }
-            QCheckBox::indicator:checked { background-color: #007AFF; border: none; }
-        """
-        self._toggle_style = """
-            QPushButton {
-                background: transparent; border: none; color: #86868B;
-                padding: 4px 0; text-align: left; font-size: 10px;
-            }
-            QPushButton:hover { color: #1D1D1F; }
-        """
-        self._sec_btn_style = """
-            QPushButton {
-                background: #F5F5F7; color: #1D1D1F; border: 1px solid #E5E5EA;
-                border-radius: 6px; padding: 5px 10px; font-size: 10px;
-                text-align: left;
-            }
-            QPushButton:hover { background: #EBEBF0; }
-        """
-
-        # --- Загрузка настроек ---
-        self._settings = SettingsDialog.load_settings().get("content_check", {})
-
-        # --- Основной layout ---
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        # Скроллируемая область
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: #FFFFFF; border: none; }")
-        scroll_widget = QWidget()
-        layout = QVBoxLayout(scroll_widget)
-        layout.setContentsMargins(20, 18, 20, 12)
-        layout.setSpacing(8)
-        scroll.setWidget(scroll_widget)
-        outer.addWidget(scroll, 1)
-
-        # ═══════════════════ Заголовок ═══════════════════
-        title = QLabel("Контент-анализ")
-        title.setFont(QFont(".AppleSystemUIFont", 16, QFont.DemiBold))
-        layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Поиск мата и нежелательных слов в аудио через распознавание речи."
-        )
-        subtitle.setFont(QFont(".AppleSystemUIFont", 10))
-        subtitle.setStyleSheet("color: #86868B;")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        # ═══════════════════ Drag-and-drop зона ═══════════════════
-        layout.addSpacing(4)
-        self.drop_zone = _AudioDropZone()
-        self.drop_zone.file_dropped.connect(self._on_audio_dropped)
-        layout.addWidget(self.drop_zone)
-
-        self.is_51_cb = QCheckBox("Аудио 5.1 (микшировать без LFE)")
-        self.is_51_cb.setFont(QFont(".AppleSystemUIFont", 10))
-        self.is_51_cb.setStyleSheet(self._cb_style)
-        layout.addWidget(self.is_51_cb)
-
-        # ═══════════════════ Дополнительно: бипы и субтитры ═══════════════════
-        self.adv_toggle = QPushButton("▸ Дополнительно: бипы и субтитры")
-        self.adv_toggle.setCheckable(True)
-        self.adv_toggle.setStyleSheet(self._toggle_style)
-        self.adv_toggle.clicked.connect(self._toggle_advanced)
-        layout.addWidget(self.adv_toggle)
-
-        self.adv_widget = QWidget()
-        adv_layout = QVBoxLayout(self.adv_widget)
-        adv_layout.setContentsMargins(8, 0, 0, 0)
-        adv_layout.setSpacing(4)
-
-        self.c_btn = QPushButton("Цензурированное аудио (для бипов)…")
-        self.c_btn.setStyleSheet(self._sec_btn_style)
-        self.c_btn.clicked.connect(self._pick_c)
-        adv_layout.addWidget(self.c_btn)
-        self.c_label = QLabel("Не выбрано")
-        self.c_label.setStyleSheet("color: #86868B; font-size: 10px; margin-left: 4px;")
-        adv_layout.addWidget(self.c_label)
-
-        self.subs_btn = QPushButton("Субтитры (.srt / .vtt)…")
-        self.subs_btn.setStyleSheet(self._sec_btn_style)
-        self.subs_btn.clicked.connect(self._pick_subs)
-        adv_layout.addWidget(self.subs_btn)
-        self.subs_label = QLabel("Не выбрано")
-        self.subs_label.setStyleSheet("color: #86868B; font-size: 10px; margin-left: 4px;")
-        adv_layout.addWidget(self.subs_label)
-
-        self.adv_widget.setVisible(False)
-        layout.addWidget(self.adv_widget)
-
-        # ═══════════════════ Настройки ═══════════════════
-        self._build_settings_section(layout)
-
-        # ═══════════════════ Словарь ═══════════════════
-        self._build_dictionary_section(layout)
-
-        # ═══════════════════ Прогресс ═══════════════════
-        layout.addSpacing(4)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(4)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                background: #E5E5EA; border: none; border-radius: 2px;
-            }
-            QProgressBar::chunk {
-                background-color: #007AFF; border-radius: 2px;
-            }
-        """)
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-
-        self.status_label = QLabel("Готов к запуску")
-        self.status_label.setFont(QFont(".AppleSystemUIFont", 10))
-        self.status_label.setStyleSheet("color: #86868B;")
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
-
-        layout.addStretch()
-
-        # ═══════════════════ Футер: кнопки ═══════════════════
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFixedHeight(1)
-        sep.setStyleSheet("background: #E5E5EA; border: none;")
-        outer.addWidget(sep)
-
-        footer = QWidget()
-        btn_row = QHBoxLayout(footer)
-        btn_row.setContentsMargins(20, 10, 20, 14)
-        btn_row.setSpacing(8)
-
-        self.run_btn = QPushButton("Запустить анализ")
-        self.run_btn.setFont(QFont(".AppleSystemUIFont", 12, QFont.DemiBold))
-        self.run_btn.setMinimumHeight(36)
-        self.run_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #007AFF; color: white; border: none;
-                border-radius: 8px; padding: 8px 16px; font-size: 12px;
-            }
-            QPushButton:hover { background-color: #0063D1; }
-            QPushButton:disabled { background-color: #B4B4B8; }
-        """)
-        self.run_btn.clicked.connect(self._start_analysis)
-        btn_row.addWidget(self.run_btn, 1)
-
-        self.export_btn = QPushButton("Экспорт ▾")
-        self.export_btn.setMinimumHeight(36)
-        self.export_btn.setFont(QFont(".AppleSystemUIFont", 11))
-        self.export_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent; color: #1D1D1F; border: 1px solid #D2D2D7;
-                border-radius: 8px; padding: 8px 12px; font-size: 11px;
-            }
-            QPushButton:hover { background: #F5F5F7; }
-            QPushButton:disabled { color: #B4B4B8; border-color: #E5E5EA; }
-        """)
-        self.export_btn.setEnabled(False)
-        self.export_btn.clicked.connect(self._show_export_menu)
-        btn_row.addWidget(self.export_btn)
-
-        close_btn = QPushButton("Закрыть")
-        close_btn.setMinimumHeight(36)
-        close_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent; color: #1D1D1F; border: 1px solid #D2D2D7;
-                border-radius: 8px; padding: 8px 16px; font-size: 11px;
-            }
-            QPushButton:hover { background: #F5F5F7; }
-        """)
-        close_btn.clicked.connect(self.close)
-        btn_row.addWidget(close_btn)
-
-        outer.addWidget(footer)
-
-    # ------------------------------------------------------------------
-    # Секция: Настройки
-    # ------------------------------------------------------------------
-    def _build_settings_section(self, parent_layout):
-        self.settings_toggle = QPushButton("▸ Настройки")
-        self.settings_toggle.setCheckable(True)
-        self.settings_toggle.setStyleSheet(self._toggle_style)
-        self.settings_toggle.clicked.connect(self._toggle_settings)
-        parent_layout.addWidget(self.settings_toggle)
-
-        self.settings_widget = QWidget()
-        sl = QVBoxLayout(self.settings_widget)
-        sl.setContentsMargins(8, 4, 0, 4)
-        sl.setSpacing(6)
-
-        # Модель Whisper
-        model_row = QHBoxLayout()
-        model_row.setSpacing(8)
-        model_lbl = QLabel("Модель Whisper:")
-        model_lbl.setFont(QFont(".AppleSystemUIFont", 11))
-        model_row.addWidget(model_lbl)
-
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(["tiny", "base", "small", "medium", "large-v3"])
-        self.model_combo.setCurrentText(self._settings.get("model_size", "large-v3"))
-        self.model_combo.setFont(QFont(".AppleSystemUIFont", 11))
-        self.model_combo.setStyleSheet("""
-            QComboBox {
-                background: #F5F5F7; border: 1px solid #D2D2D7; border-radius: 6px;
-                padding: 3px 8px; font-size: 11px; color: #1D1D1F; min-width: 90px;
-            }
-            QComboBox::drop-down { border: none; }
-        """)
-        model_row.addWidget(self.model_combo)
-        model_row.addStretch()
-        sl.addLayout(model_row)
-
-        # Подсказка по моделям
-        model_hint = QLabel("tiny — быстро, неточно  ·  large-v3 — медленно, точно")
-        model_hint.setFont(QFont(".AppleSystemUIFont", 9))
-        model_hint.setStyleSheet("color: #86868B;")
-        sl.addWidget(model_hint)
-
-        # ФЗ-436
-        self.legal_cb = QCheckBox("Проверять ФЗ-436 (наркотики, суицид, терроризм и т.д.)")
-        self.legal_cb.setFont(QFont(".AppleSystemUIFont", 10))
-        self.legal_cb.setStyleSheet(self._cb_style)
-        self.legal_cb.setChecked(self._settings.get("legal_dict_enabled", True))
-        sl.addWidget(self.legal_cb)
-
-        self.settings_widget.setVisible(False)
-        parent_layout.addWidget(self.settings_widget)
-
-    def _toggle_settings(self):
-        vis = self.settings_toggle.isChecked()
-        self.settings_widget.setVisible(vis)
-        self.settings_toggle.setText(f"{'▾' if vis else '▸'} Настройки")
-
-    # ------------------------------------------------------------------
-    # Секция: Словарь
-    # ------------------------------------------------------------------
-    def _build_dictionary_section(self, parent_layout):
-        self.dict_toggle = QPushButton("▸ Словарь")
-        self.dict_toggle.setCheckable(True)
-        self.dict_toggle.setStyleSheet(self._toggle_style)
-        self.dict_toggle.clicked.connect(self._toggle_dict)
-        parent_layout.addWidget(self.dict_toggle)
-
-        self.dict_widget = QWidget()
-        dl = QVBoxLayout(self.dict_widget)
-        dl.setContentsMargins(8, 4, 0, 4)
-        dl.setSpacing(6)
-
-        builtin_lbl = QLabel("Встроено: нецензурная лексика RU/EN (всегда активна)")
-        builtin_lbl.setFont(QFont(".AppleSystemUIFont", 9))
-        builtin_lbl.setStyleSheet("color: #86868B;")
-        builtin_lbl.setWordWrap(True)
-        dl.addWidget(builtin_lbl)
-
-        custom_lbl = QLabel("Пользовательские слова (по одному на строку):")
-        custom_lbl.setFont(QFont(".AppleSystemUIFont", 10))
-        custom_lbl.setStyleSheet("color: #3C3C3E;")
-        dl.addWidget(custom_lbl)
-
-        self.custom_words_edit = QPlainTextEdit()
-        existing = self._settings.get("custom_words", [])
-        self.custom_words_edit.setPlainText("\n".join(existing))
-        self.custom_words_edit.setFont(QFont(".AppleSystemUIFont", 11))
-        self.custom_words_edit.setFixedHeight(80)
-        self.custom_words_edit.setStyleSheet("""
-            QPlainTextEdit {
-                background: #F5F5F7; border: 1px solid #D2D2D7; border-radius: 6px;
-                padding: 4px 8px; font-size: 11px; color: #1D1D1F;
-            }
-        """)
-        self.custom_words_edit.setPlaceholderText("Введите слова для отслеживания…")
-        dl.addWidget(self.custom_words_edit)
-
-        # Кнопки загрузки / очистки
-        word_btns = QHBoxLayout()
-        word_btns.setSpacing(6)
-
-        load_btn = QPushButton("Загрузить из файла…")
-        load_btn.setFont(QFont(".AppleSystemUIFont", 10))
-        load_btn.setStyleSheet(self._sec_btn_style)
-        load_btn.setToolTip("TXT, JSON, CSV, Excel (XLSX)")
-        load_btn.clicked.connect(self._load_words_from_file)
-        word_btns.addWidget(load_btn)
-
-        clear_btn = QPushButton("Очистить")
-        clear_btn.setFont(QFont(".AppleSystemUIFont", 10))
-        clear_btn.setStyleSheet(self._sec_btn_style)
-        clear_btn.clicked.connect(lambda: self.custom_words_edit.setPlainText(""))
-        word_btns.addWidget(clear_btn)
-
-        word_btns.addStretch()
-        dl.addLayout(word_btns)
-
-        self.dict_widget.setVisible(False)
-        parent_layout.addWidget(self.dict_widget)
-
-    def _toggle_dict(self):
-        vis = self.dict_toggle.isChecked()
-        self.dict_widget.setVisible(vis)
-        self.dict_toggle.setText(f"{'▾' if vis else '▸'} Словарь")
-
-    # ------------------------------------------------------------------
-    # Всплывающее меню экспорта
-    # ------------------------------------------------------------------
-    def _show_export_menu(self):
-        if not self._last_result:
-            return
-        from PyQt5.QtWidgets import QMenu
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background: #FFFFFF; border: 1px solid #D2D2D7;
-                border-radius: 8px; padding: 4px 0;
-                font-family: ".AppleSystemUIFont"; font-size: 11px;
-            }
-            QMenu::item {
-                padding: 6px 16px; color: #1D1D1F;
-            }
-            QMenu::item:selected { background: #007AFF; color: white; border-radius: 4px; }
-            QMenu::separator { height: 1px; background: #E5E5EA; margin: 4px 8px; }
-        """)
-        act_csv = menu.addAction("📄  CSV (Excel)")
-        act_nuendo = menu.addAction("🎛  Nuendo / Cubase (.csv)")
-        menu.addSeparator()
-        act_both = menu.addAction("📦  Оба формата")
-
-        action = menu.exec_(self.export_btn.mapToGlobal(
-            self.export_btn.rect().topLeft() - QPoint(0, menu.sizeHint().height())
-        ))
-        if action == act_csv:
-            self._do_export(self._last_result, csv=True, nuendo=False)
-        elif action == act_nuendo:
-            self._do_export(self._last_result, csv=False, nuendo=True)
-        elif action == act_both:
-            self._do_export(self._last_result, csv=True, nuendo=True)
-
-    # ------------------------------------------------------------------
-    # Drag-and-drop / файлы
-    # ------------------------------------------------------------------
-    def _on_audio_dropped(self, path: str):
-        self._audio_uc_path = path
-        self.drop_zone.set_file(path)
-
-    def _toggle_advanced(self):
-        is_open = self.adv_toggle.isChecked()
-        self.adv_widget.setVisible(is_open)
-        arrow = "▾" if is_open else "▸"
-        self.adv_toggle.setText(f"{arrow} Дополнительно: бипы и субтитры")
-
-    def _pick_c(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите цензурированное аудио", "",
-            "Аудио (*.wav *.mp3 *.flac *.aac *.mxf *.caf *.aiff *.aif *.m4a *.mp4 *.mov)",
-        )
-        if path:
-            self._audio_c_path = path
-            self.c_label.setText(Path(path).name)
-            self.c_label.setStyleSheet("color: #1D1D1F; font-size: 10px; margin-left: 4px;")
-
-    def _pick_subs(self):
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "Выберите субтитры", "", "Субтитры (*.srt *.vtt)",
-        )
-        if paths:
-            self._subtitle_paths = paths
-            self.subs_label.setText(", ".join(Path(p).name for p in paths))
-            self.subs_label.setStyleSheet("color: #1D1D1F; font-size: 10px; margin-left: 4px;")
-
-    # ------------------------------------------------------------------
-    # Загрузка слов из файлов (пресеты)
-    # ------------------------------------------------------------------
-    def _load_words_from_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Загрузить список слов", "",
-            "Файлы словарей (*.txt *.json *.csv *.xlsx);;Все файлы (*)",
-        )
-        if not path:
-            return
-
-        suffix = Path(path).suffix.lower()
-        words: list = []
-        try:
-            if suffix == ".txt":
-                words = self._parse_txt_words(path)
-            elif suffix == ".json":
-                words = self._parse_json_words(path)
-            elif suffix == ".csv":
-                words = self._parse_csv_words(path)
-            elif suffix == ".xlsx":
-                words = self._parse_xlsx_words(path)
-            else:
-                # Пробуем как txt
-                words = self._parse_txt_words(path)
-        except Exception as exc:
-            QMessageBox.warning(
-                self, "Ошибка загрузки",
-                f"Не удалось прочитать файл:\n{exc}",
-            )
-            return
-
-        if not words:
-            QMessageBox.information(self, "Словарь", "Файл не содержит слов.")
-            return
-
-        # Добавляем к существующим, убирая дубли
-        existing = set(
-            w.strip() for w in self.custom_words_edit.toPlainText().splitlines() if w.strip()
-        )
-        new_words = [w for w in words if w not in existing]
-        if new_words:
-            current = self.custom_words_edit.toPlainText().rstrip()
-            if current:
-                current += "\n"
-            self.custom_words_edit.setPlainText(current + "\n".join(new_words))
-
-        self.status_label.setText(
-            f"Загружено слов: {len(new_words)} (из {Path(path).name})"
-        )
-        self.status_label.setStyleSheet("color: #34C759;")
-
-    @staticmethod
-    def _parse_txt_words(path: str) -> list:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-        return [w.strip() for w in text.splitlines() if w.strip()]
-
-    @staticmethod
-    def _parse_json_words(path: str) -> list:
-        import json
-        data = json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
-        if isinstance(data, list):
-            return [str(w).strip() for w in data if str(w).strip()]
-        if isinstance(data, dict):
-            # Ищем ключ "words", "слова", или первый массив
-            for key in ("words", "слова", "custom_words"):
-                if key in data and isinstance(data[key], list):
-                    return [str(w).strip() for w in data[key] if str(w).strip()]
-            # Первый массив
-            for v in data.values():
-                if isinstance(v, list):
-                    return [str(w).strip() for w in v if str(w).strip()]
-        return []
-
-    @staticmethod
-    def _parse_csv_words(path: str) -> list:
-        import csv
-        words = []
-        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
-            reader = csv.reader(f)
-            for i, row in enumerate(reader):
-                if not row:
-                    continue
-                val = row[0].strip()
-                # Пропускаем заголовок (если похож)
-                if i == 0 and val.lower() in ("word", "слово", "words", "слова", "term"):
-                    continue
-                if val:
-                    words.append(val)
-        return words
-
-    @staticmethod
-    def _parse_xlsx_words(path: str) -> list:
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            raise ImportError(
-                "Для чтения XLSX установите openpyxl:\npip install openpyxl"
-            )
-        wb = load_workbook(path, read_only=True, data_only=True)
-        ws = wb.active
-        words = []
-        for i, row in enumerate(ws.iter_rows(min_col=1, max_col=1, values_only=True)):
-            val = str(row[0]).strip() if row[0] is not None else ""
-            if i == 0 and val.lower() in ("word", "слово", "words", "слова", "term"):
-                continue
-            if val:
-                words.append(val)
-        wb.close()
-        return words
-
-    # ------------------------------------------------------------------
-    # Сохранение / загрузка настроек
-    # ------------------------------------------------------------------
-    def _save_content_settings(self):
-        custom_words = [
-            w.strip()
-            for w in self.custom_words_edit.toPlainText().splitlines()
-            if w.strip()
-        ]
-        cc = {
-            "enabled": True,
-            "model_size": self.model_combo.currentText(),
-            "legal_dict_enabled": self.legal_cb.isChecked(),
-            "custom_words": custom_words,
-        }
-        all_settings = SettingsDialog.load_settings()
-        all_settings["content_check"] = cc
-        SettingsDialog.save_settings(all_settings)
-        return all_settings
-
-    def closeEvent(self, event):
-        self._save_content_settings()
-        super().closeEvent(event)
-
-    # ------------------------------------------------------------------
-    # Пути
-    # ------------------------------------------------------------------
-    def _default_csv_path(self) -> Path:
-        source = (
-            self._audio_uc_path
-            or self._audio_c_path
-            or (self._subtitle_paths[0] if self._subtitle_paths else "")
-        )
-        if source:
-            src = Path(source)
-            return src.with_name(f"{src.stem}_content_check.csv")
-        return Path.home() / "Desktop" / "content_check.csv"
-
-    # ------------------------------------------------------------------
-    # Запуск анализа
-    # ------------------------------------------------------------------
-    def _start_analysis(self):
-        if not self._audio_uc_path and not self._audio_c_path and not self._subtitle_paths:
-            QMessageBox.warning(
-                self, "Контент-анализ",
-                "Перетащите аудиофайл или выберите его через клик на зону.",
-            )
-            return
-
-        # Сохраняем настройки и строим settings dict
-        settings = self._save_content_settings()
-
-        # Блокируем UI
-        self.run_btn.setEnabled(False)
-        self.export_btn.setEnabled(False)
-        self.drop_zone.setEnabled(False)
-        self.is_51_cb.setEnabled(False)
-
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(True)
-        self.status_label.setText("Запуск…")
-        self.status_label.setStyleSheet("color: #007AFF;")
-
-        self._thread = ContentCheckThread(
-            audio_uc_path=self._audio_uc_path or None,
-            audio_c_path=self._audio_c_path or None,
-            subtitle_paths=list(self._subtitle_paths) if self._subtitle_paths else None,
-            is_51=self.is_51_cb.isChecked(),
-            settings=settings,
-        )
-        self._thread.status_update.connect(self._on_status)
-        self._thread.progress_update.connect(self.progress_bar.setValue)
-        self._thread.finished.connect(self._on_finished)
-        self._thread.start()
-
-    def _on_status(self, msg: str):
-        self.status_label.setText(msg)
-        self.status_label.setStyleSheet("color: #007AFF;")
-
-    def _on_finished(self, success: bool, result, error_message: str):
-        # Восстанавливаем интерактивность
-        self.run_btn.setEnabled(True)
-        self.drop_zone.setEnabled(True)
-        self.is_51_cb.setEnabled(True)
-
-        if not success or result is None:
-            self.progress_bar.setVisible(False)
-            self.status_label.setText(f"❌ Ошибка: {error_message}")
-            self.status_label.setStyleSheet("color: #FF3B30;")
-            return
-
-        self._last_result = result
-        violations = result.get("violations", [])
-        total = len(violations)
-        blockers = sum(1 for v in violations if v.get("severity") == "blocker")
-        errors = result.get("errors", []) or []
-        warnings_list = result.get("warnings", []) or []
-        stt_word_count = result.get("stt_word_count", 0)
-
-        if errors:
-            self.progress_bar.setVisible(False)
-            self.status_label.setText(f"❌ {'; '.join(errors)}")
-            self.status_label.setStyleSheet("color: #FF3B30;")
-            return
-
-        # Автоматический экспорт в оба формата (без открытия Finder)
-        csv_path = self._default_csv_path()
-        nuendo_path = csv_path.with_name(
-            f"{csv_path.stem.replace('_content_check', '')}_nuendo_markers.csv"
-        )
-        try:
-            _write_content_check_csv(csv_path, result)
-            self._last_csv_path = str(csv_path)
-            _write_nuendo_markers(nuendo_path, result)
-            self._last_nuendo_path = str(nuendo_path)
-        except Exception as exc:
-            logger.error("Авто-экспорт: %s", exc)
-
-        self.progress_bar.setValue(100)
-        warn_suffix = f" · ⚠ {warnings_list[0]}" if warnings_list else ""
-
-        if total == 0:
-            if stt_word_count == 0:
-                self.status_label.setText(
-                    f"⚠️ STT не распознал ни одного слова. "
-                    f"Файл может быть тихим или повреждённым.{warn_suffix}"
-                )
-                self.status_label.setStyleSheet("color: #FF9500;")
-            else:
-                self.status_label.setText(
-                    f"✅ Нарушений не обнаружено · STT: {stt_word_count} слов"
-                )
-                self.status_label.setStyleSheet("color: #34C759;")
-        else:
-            color = "#FF3B30" if blockers else "#FF9500"
-            parts = [f"⚠️ Нарушений: {total} (блокеров: {blockers}) · STT: {stt_word_count} слов"]
-            if self._last_csv_path:
-                parts.append(f"📄 CSV: {Path(self._last_csv_path).name}")
-            if self._last_nuendo_path:
-                parts.append(f"🎛 Nuendo: {Path(self._last_nuendo_path).name}")
-            if warn_suffix:
-                parts[-1] += warn_suffix
-            self.status_label.setText("\n".join(parts))
-            self.status_label.setStyleSheet(f"color: {color};")
-
-        # Включаем экспорт
-        self.export_btn.setEnabled(True)
-
-    # ------------------------------------------------------------------
-    # Экспорт
-    # ------------------------------------------------------------------
-    def _do_export(self, result: dict, csv: bool = True, nuendo: bool = True):
-        """Экспортирует в указанные форматы."""
-        csv_path = self._default_csv_path()
-        nuendo_path = csv_path.with_name(
-            f"{csv_path.stem.replace('_content_check', '')}_nuendo_markers.csv"
-        )
-        exported = []
-        try:
-            if csv:
-                _write_content_check_csv(csv_path, result)
-                self._last_csv_path = str(csv_path)
-                exported.append(csv_path.name)
-                logger.info("CSV: %s", csv_path)
-            if nuendo:
-                _write_nuendo_markers(nuendo_path, result)
-                self._last_nuendo_path = str(nuendo_path)
-                exported.append(nuendo_path.name)
-                logger.info("Nuendo markers: %s", nuendo_path)
-        except Exception as exc:
-            logger.error("Ошибка экспорта: %s", exc)
-            self.status_label.setText(f"❌ Не удалось сохранить: {exc}")
-            self.status_label.setStyleSheet("color: #FF3B30;")
-            return
-
-        if exported:
-            # Открываем в Finder
-            reveal_path = self._last_csv_path if csv else self._last_nuendo_path
-            if reveal_path and Path(reveal_path).exists():
-                try:
-                    subprocess.run(["open", "-R", reveal_path], check=False)
-                except Exception:
-                    pass
-            self.status_label.setText(f"✅ Экспорт: {', '.join(exported)}")
-            self.status_label.setStyleSheet("color: #34C759;")
-
 
 class MacTitleBar(QWidget):
     """Compact in-app header styled to match the macOS-inspired UI."""
@@ -4802,10 +3994,16 @@ class PreviewDialog(QDialog):
 class BeastApp(QMainWindow):
     """macOS-style main window"""
     _ollama_status_signal = pyqtSignal(str, str)  # (status, detail) — thread-safe обновление индикатора
+    _update_check_signal = pyqtSignal(object)  # UpdateInfo | None — результат проверки обновлений
+    _update_download_signal = pyqtSignal(bool, str)  # (success, path_or_error)
 
     def __init__(self):
         super().__init__()
         self._ollama_status_signal.connect(self._set_ollama_dot)
+        self._update_check_signal.connect(self._on_update_check_result)
+        self._update_download_signal.connect(self._on_update_download_finished)
+        self._pending_update_info = None
+        self._update_progress_dialog = None
         self.config = load_app_config()
 
         self.report_gen = ExactReportGenerator()
@@ -4842,6 +4040,10 @@ class BeastApp(QMainWindow):
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.timeout.connect(self._run_preview_refresh)
+
+        self.auto_reset_timer = QTimer(self)
+        self.auto_reset_timer.setSingleShot(True)
+        self.auto_reset_timer.timeout.connect(self._auto_reset_after_done)
 
         self.init_ui()
 
@@ -4952,15 +4154,6 @@ class BeastApp(QMainWindow):
         settings_btn.setIconSize(QSize(15, 15))
         settings_btn.clicked.connect(self.open_settings)
         layout.addWidget(settings_btn)
-
-        content_check_btn = QPushButton()
-        content_check_btn.setFixedSize(30, 30)
-        content_check_btn.setToolTip("Контент-анализ — поиск мата в аудио")
-        content_check_btn.setStyleSheet(icon_btn_style)
-        content_check_btn.setIcon(make_icon("search", "#86868B", 15))
-        content_check_btn.setIconSize(QSize(15, 15))
-        content_check_btn.clicked.connect(self.open_content_check)
-        layout.addWidget(content_check_btn)
 
         layout.addStretch()
 
@@ -5848,16 +5041,6 @@ class BeastApp(QMainWindow):
             lambda checked: self.toggle_ai_generation(Qt.Checked if checked else Qt.Unchecked)
         )
 
-        self.pyloudnorm_checkbox = QPushButton("Full analyze")
-        self.pyloudnorm_checkbox.setFont(QFont(".AppleSystemUIFont", 11))
-        self.pyloudnorm_checkbox.setCheckable(True)
-        self.pyloudnorm_checkbox.setChecked(False)
-        self.pyloudnorm_checkbox.setStyleSheet(option_tab_style)
-        self.pyloudnorm_checkbox.setIconSize(QSize(11, 11))
-        self.pyloudnorm_checkbox.setFixedHeight(28)
-        self.pyloudnorm_checkbox.setMinimumWidth(90)
-        self.pyloudnorm_checkbox.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-
         self.tp_verify_checkbox = QPushButton("TP verify")
         self.tp_verify_checkbox.setFont(QFont(".AppleSystemUIFont", 11))
         self.tp_verify_checkbox.setCheckable(True)
@@ -5874,7 +5057,6 @@ class BeastApp(QMainWindow):
 
         self._option_icon_config = [
             (self.ai_enabled_checkbox, "sparkle"),
-            (self.pyloudnorm_checkbox, "zap"),
             (self.tp_verify_checkbox, "target"),
         ]
         for btn, _ in self._option_icon_config:
@@ -5897,7 +5079,6 @@ class BeastApp(QMainWindow):
         ai_tab_layout.addWidget(self.ollama_model_label, 0, Qt.AlignVCenter)
 
         options_row.addWidget(ai_tab_widget)
-        options_row.addWidget(self.pyloudnorm_checkbox)
         options_row.addWidget(self.tp_verify_checkbox)
         options_row.addStretch(1)
         layout.addLayout(options_row)
@@ -6369,18 +5550,6 @@ class BeastApp(QMainWindow):
         dialog = SettingsDialog(parent=self)
         dialog.exec_()
 
-    def open_content_check(self):
-        """Открыть отдельное окно контент-анализа."""
-        if getattr(self, "_content_check_dialog", None) is not None:
-            try:
-                self._content_check_dialog.raise_()
-                self._content_check_dialog.activateWindow()
-                return
-            except Exception:
-                pass
-        self._content_check_dialog = ContentCheckDialog(parent=self)
-        self._content_check_dialog.show()
-
     def handle_dropped_files(self, files):
         """Обработка перетащенных файлов"""
         logger.info(f"Получено файлов: {len(files)}")
@@ -6546,7 +5715,14 @@ class BeastApp(QMainWindow):
         self._auto_created_csv_path = None
         logger.info("🗑  Авто-CSV удалён (загружен реальный CSV)")
 
+    def _auto_reset_after_done(self):
+        """Автоматически готовит приложение к следующему отчёту после успешной генерации."""
+        if self._processing_active or not self.drop_zone._is_done:
+            return
+        self.clear_files()
+
     def clear_files(self):
+        self.auto_reset_timer.stop()
         self._preview_epoch += 1
         if self._auto_created_csv_path:
             try:
@@ -6656,6 +5832,119 @@ class BeastApp(QMainWindow):
             self._ollama_status_signal.emit(new_status, detail)
 
         threading.Thread(target=_ping, daemon=True).start()
+
+    def _check_for_updates(self, silent: bool = True):
+        """Проверить наличие новой версии на GitHub в фоновом потоке.
+
+        silent=True (автопроверка при запуске): при отсутствии обновлений — тишина.
+        silent=False (ручная проверка из настроек): всегда показывает результат,
+        в том числе "у вас последняя версия", и игнорирует ранее пропущенную версию.
+        """
+        import threading
+
+        self._update_check_silent = silent
+
+        def _worker():
+            try:
+                info = check_for_update(APP_VERSION)
+            except Exception as exc:
+                logger.info("Проверка обновлений завершилась с ошибкой: %s", exc)
+                info = None
+            self._update_check_signal.emit(info)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_check_result(self, info):
+        silent = getattr(self, "_update_check_silent", True)
+
+        if info is None:
+            if not silent:
+                QMessageBox.information(
+                    self, "Обновление",
+                    f"У вас установлена последняя версия ({APP_VERSION})."
+                )
+            return
+        if silent and info.version == load_skipped_version():
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Доступно обновление")
+        box.setText(
+            f"Вышла новая версия Beast Auto Reporter {info.version}.\n"
+            f"У вас установлена версия {APP_VERSION}."
+        )
+        if info.notes:
+            box.setInformativeText(info.notes[:500])
+        download_label = "Скачать и открыть" if info.is_direct_download else "Открыть страницу релиза"
+        download_btn = box.addButton(download_label, QMessageBox.AcceptRole)
+        box.addButton("Напомнить позже", QMessageBox.RejectRole)
+        skip_btn = box.addButton("Пропустить версию", QMessageBox.DestructiveRole)
+        box.setDefaultButton(download_btn)
+        box.exec_()
+
+        clicked = box.clickedButton()
+        if clicked is download_btn:
+            self._download_and_open_update(info)
+        elif clicked is skip_btn:
+            save_skipped_version(info.version)
+
+    def _download_and_open_update(self, info):
+        import threading
+
+        if not info.download_url:
+            QMessageBox.warning(
+                self, "Обновление",
+                f"Не удалось найти файл обновления.\nОткройте страницу релиза вручную: {info.html_url}"
+            )
+            return
+
+        if not info.is_direct_download:
+            # Нет файла под текущую архитектуру (arm64/Intel) — открываем
+            # страницу релиза, чтобы пользователь выбрал файл сам, вместо
+            # того чтобы молча скачать несовместимую сборку.
+            try:
+                subprocess.run(["open", info.download_url], check=False)
+            except Exception as exc:
+                logger.error("Не удалось открыть страницу релиза: %s", exc)
+            return
+
+        self._pending_update_info = info
+        self._update_progress_dialog = QProgressDialog("Загрузка обновления…", None, 0, 0, self)
+        self._update_progress_dialog.setWindowTitle("Обновление")
+        self._update_progress_dialog.setCancelButton(None)
+        self._update_progress_dialog.setWindowModality(Qt.WindowModal)
+        self._update_progress_dialog.show()
+
+        def _worker():
+            try:
+                path = download_update_asset(info.download_url)
+                self._update_download_signal.emit(True, path)
+            except Exception as exc:
+                logger.error("Не удалось скачать обновление: %s", exc, exc_info=True)
+                self._update_download_signal.emit(False, str(exc))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_download_finished(self, success: bool, payload: str):
+        if self._update_progress_dialog:
+            self._update_progress_dialog.close()
+            self._update_progress_dialog = None
+
+        info = self._pending_update_info
+        self._pending_update_info = None
+
+        if success:
+            try:
+                subprocess.run(["open", payload], check=False)
+            except Exception as exc:
+                logger.error("Не удалось открыть скачанное обновление: %s", exc)
+        else:
+            html_url = info.html_url if info else ""
+            QMessageBox.warning(
+                self, "Обновление",
+                f"Не удалось скачать обновление автоматически ({payload}).\n"
+                f"Откройте страницу релиза вручную: {html_url}"
+            )
     
     def get_report_type(self):
         """Получение выбранного типа отчета"""
@@ -6692,6 +5981,15 @@ class BeastApp(QMainWindow):
                 msg.setDefaultButton(QMessageBox.No)
                 msg.button(QMessageBox.Yes).setText("Продолжить")
                 msg.button(QMessageBox.No).setText("Отмена")
+                details_btn = None
+                for _btn in msg.findChildren(QPushButton):
+                    if _btn.text() in ("Show Details...", "Hide Details..."):
+                        details_btn = _btn
+                if details_btn is not None:
+                    def _relabel_details(btn=details_btn):
+                        btn.setText("Детали")
+                    details_btn.setText("Детали")
+                    details_btn.clicked.connect(lambda: QTimer.singleShot(0, _relabel_details))
                 if msg.exec_() != QMessageBox.Yes:
                     logger.info("Генерация отменена пользователем из-за несоответствия файлов")
                     return
@@ -6722,6 +6020,7 @@ class BeastApp(QMainWindow):
         self.last_output_folder = output_folder
         
         # Отключаем кнопки
+        self.auto_reset_timer.stop()
         self._processing_active = True
         self._set_generate_button_processing(True)
         self._update_action_buttons()
@@ -6737,9 +6036,10 @@ class BeastApp(QMainWindow):
         
         # Запускаем поток с Desktop папкой
         report_type = self.get_report_type()
-        pyloudnorm_enabled = self.pyloudnorm_checkbox.isChecked()
+        _saved_settings = SettingsDialog.load_settings()
+        pyloudnorm_enabled = _saved_settings.get("extended_analysis_enabled", False)
         tp_verify_enabled = self.tp_verify_checkbox.isChecked()
-        delete_sources = SettingsDialog.load_settings().get("delete_sources_after_copy", False)
+        delete_sources = _saved_settings.get("delete_sources_after_copy", False)
         logger.info(f"PyLoudNorm: {pyloudnorm_enabled}, Report type: {report_type}")
         logger.info(f"TP verify: {tp_verify_enabled}, Delete sources: {delete_sources}")
 
@@ -6820,6 +6120,9 @@ class BeastApp(QMainWindow):
             self._update_open_folder_button_state()
             logger.info(f"=== SUCCESS ===")
             logger.info(f"{message}")
+
+            if SettingsDialog.load_settings().get("auto_reset_after_done", True):
+                self.auto_reset_timer.start(5000)
         else:
             error_text = message if isinstance(message, str) else "Неизвестная ошибка"
             self.progress_card.setVisible(True)
@@ -7008,7 +6311,6 @@ def main():
             padding: 6px 20px;
             font-family: ".AppleSystemUIFont";
             font-size: 13px;
-            min-width: 70px;
         }
         QMessageBox QPushButton:hover {
             background-color: #0063D1;
@@ -7017,6 +6319,7 @@ def main():
 
     window = BeastApp()
     window.show()
+    QTimer.singleShot(1500, window._check_for_updates)
 
     sys.exit(app.exec_())
 

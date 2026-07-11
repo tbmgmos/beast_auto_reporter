@@ -1,0 +1,51 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Inter, sans-serif; background: #F5F5F7; padding: 16px; }
+.row { display: flex; gap: 10px; }
+.swatch { flex: 1; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.block { height: 64px; display: flex; align-items: center; justify-content: center; }
+.badge { font-size: 11px; font-weight: 600; color: white; padding: 2px 8px; border-radius: 4px; background: rgba(255,255,255,0.25); }
+.label { padding: 6px 8px; background: white; border-top: none; }
+.name { font-size: 10px; font-weight: 600; color: #1D1D1F; }
+.hex  { font-size: 9px; color: #86868B; }
+.qc-row { display: flex; gap: 10px; margin-top: 10px; }
+.qc-chip { flex: 1; border-radius: 6px; border: 1px solid #E5E5EA; padding: 8px 10px; background: white; }
+.qc-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }
+.qc-label { font-size: 11px; color: #1D1D1F; font-weight: 500; }
+.qc-sub { font-size: 9px; color: #86868B; margin-top: 2px; }
+</style></head><body>
+<div class="row">
+  <div class="swatch">
+    <div class="block" style="background:#34C759;"><span class="badge">PASS</span></div>
+    <div class="label"><div class="name">Success</div><div class="hex">#34C759</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#FF3B30;"><span class="badge">FAIL</span></div>
+    <div class="label"><div class="name">Error</div><div class="hex">#FF3B30</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#FBBA18;"><span class="badge" style="color:#1D1D1F;">WARN</span></div>
+    <div class="label"><div class="name">Warning</div><div class="hex">#FBBA18</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#FF9500;"><span class="badge">ALT</span></div>
+    <div class="label"><div class="name">Orange</div><div class="hex">#FF9500</div></div>
+  </div>
+</div>
+<div class="qc-row">
+  <div class="qc-chip">
+    <span class="qc-dot" style="background:#00FA02;"></span><span class="qc-label">В норме</span>
+    <div class="qc-sub">QC table: #00FA02 — параметры в допуске</div>
+  </div>
+  <div class="qc-chip">
+    <span class="qc-dot" style="background:#E83121;"></span><span class="qc-label">Вне допуска</span>
+    <div class="qc-sub">QC table: #E83121 — превышение нормы</div>
+  </div>
+  <div class="qc-chip">
+    <span class="qc-dot" style="background:#FBBA18;"></span><span class="qc-label">Предупреждение</span>
+    <div class="qc-sub">QC table: #FBBA18 — неполные данные</div>
+  </div>
+</div>
+</body></html>

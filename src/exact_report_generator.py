@@ -20,6 +20,7 @@ import io
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.csv_importer import Issue
+from src.technical_info_extractor import format_fps
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,49 @@ class ExactReportGenerator:
     
     def __init__(self):
         logger.info("ExactReportGenerator инициализирован")
+
+    @staticmethod
+    def _fmt_metric(value, decimals: int = 2) -> str:
+        """Формат метрик с заданной точностью."""
+        try:
+            return f"{float(value):.{int(decimals)}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _peak_decimals(pdf_data: dict, default_decimals: int = 1) -> int:
+        """Количество знаков для True Peak: 2 если точное измерение, иначе default."""
+        if isinstance(pdf_data, dict) and pdf_data.get('true_peak_source') == 'precise_4x_oversampling':
+            return 2
+        return default_decimals
+
+    @staticmethod
+    def _collect_pdf_paths(pdf_paths: List[str] = None,
+                           pdf_20_path: str = None,
+                           pdf_51_path: str = None) -> List[str]:
+        """Собирает итоговый список PDF для вставки в отчет без дубликатов."""
+        ordered_paths = []
+        seen = set()
+
+        for pdf_path in pdf_paths or []:
+            if not pdf_path:
+                continue
+            normalized = str(pdf_path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered_paths.append(normalized)
+
+        for pdf_path in (pdf_20_path, pdf_51_path):
+            if not pdf_path:
+                continue
+            normalized = str(pdf_path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered_paths.append(normalized)
+
+        return ordered_paths
     
     def create_exact_report(self,
                            issues: List[Issue],
@@ -36,12 +80,14 @@ class ExactReportGenerator:
                            tech_info: Dict = None,
                            pdf_20_path: str = None,
                            pdf_51_path: str = None,
+                           pdf_paths: List[str] = None,
                            conclusion_technical: str = "",
                            conclusion_subjective: str = "",
                            report_type: str = "main",
-                           prepared_by: str = "") -> None:
+                           prepared_by: str = "",
+                           ) -> None:
         """Создание точного отчета
-        
+
         Args:
             report_type: Тип отчета - "main" (основной) или "me" (M&E)
         """
@@ -72,7 +118,12 @@ class ExactReportGenerator:
                     )
                 else:
                     self._add_technical_table_with_conclusion(
-                        doc, tech_info, conclusion_technical, conclusion_subjective, prepared_by
+                        doc,
+                        tech_info,
+                        conclusion_technical,
+                        conclusion_subjective,
+                        prepared_by,
+                        report_type=report_type,
                     )
             
             # === PAGE BREAK (переход на страницу 2) ===
@@ -89,25 +140,27 @@ class ExactReportGenerator:
             
             # === 2. MARKER LIST (точно как в референсе) ===
             self._add_marker_list_exact(doc, issues, report_type=report_type)
-            
+
             # === 3. PDF КАК ИЗОБРАЖЕНИЯ (всегда, если файлы существуют) ===
             # PDF добавляются на отдельной странице (страница 3+)
-            if pdf_20_path or pdf_51_path:
+            report_pdf_paths = self._collect_pdf_paths(
+                pdf_paths=pdf_paths,
+                pdf_20_path=pdf_20_path,
+                pdf_51_path=pdf_51_path,
+            )
+
+            if report_pdf_paths:
                 # Page break перед PDF (переход на страницу 3)
                 para_break_pdf = doc.add_paragraph()
                 run_pdf = para_break_pdf.add_run()
                 run_pdf.add_break(WD_BREAK.PAGE)
                 logger.info("Page break перед PDF добавлен")
-            
-            if pdf_20_path:
-                self._add_pdf_image(doc, pdf_20_path)
-                logger.info(f"PDF 2.0 добавлен на странице 3+: {pdf_20_path}")
-            
-            if pdf_51_path:
-                if pdf_20_path:
+
+            for idx, pdf_path in enumerate(report_pdf_paths):
+                if idx > 0:
                     doc.add_paragraph()  # Отступ между PDF
-                self._add_pdf_image(doc, pdf_51_path)
-                logger.info(f"PDF 5.1 добавлен: {pdf_51_path}")
+                self._add_pdf_image(doc, pdf_path)
+                logger.info(f"PDF добавлен в приложение отчета: {pdf_path}")
             
             doc.save(output_path)
             logger.info(f"Отчет создан: {output_path}")
@@ -116,8 +169,9 @@ class ExactReportGenerator:
             logger.error(f"Ошибка создания отчета: {e}")
             raise
     
-    def _add_technical_table_with_conclusion(self, doc: Document, tech_info: Dict, 
-                                             conclusion_tech: str, conclusion_subj: str, prepared_by: str = "") -> None:
+    def _add_technical_table_with_conclusion(self, doc: Document, tech_info: Dict,
+                                             conclusion_tech: str, conclusion_subj: str,
+                                             prepared_by: str = "", report_type: str = "standard") -> None:
         """Техническая таблица с заключением (точно по скриншоту)"""
         try:
             # Импорты для работы с форматированием
@@ -131,6 +185,12 @@ class ExactReportGenerator:
             HEADER_BG = "D5D5D5"
             LIGHT_BG = "F5F5F5"
             OFFWHITE_BG = "FEFFFE"
+            is_dcp_report = report_type == "dcp"
+            peak_header = "SAMPLE PEAK" if is_dcp_report else "TRUE PEAK"
+            peak_value_key = "sample_peak" if is_dcp_report else "true_peak"
+            peak_unit = "dBFS" if is_dcp_report else "dBTP"
+            peak_label_for_logs = "SAMPLE PEAK" if is_dcp_report else "TRUE PEAK"
+            peak_decimals = 2 if is_dcp_report else 1
             
             # Таблица: 13 строк x 7 столбцов (как в референсном основном отчете)
             # Строки: 0=заголовок+дата, 1=отчет подготовил, 2=колонки,
@@ -207,7 +267,7 @@ class ExactReportGenerator:
             
             # Строка 2: Заголовки столбцов
             headers = ["ДОРОЖКА", "НАЗВАНИЕ ФАЙЛОВ", "ХРОНОМЕТРАЖ", 
-                      "LOUDNESS", "TRUE PEAK", "LRA", "ФОРМАТ ФАЙЛА"]
+                      "LOUDNESS", peak_header, "LRA", "ФОРМАТ ФАЙЛА"]
             for col, header in enumerate(headers):
                 cell = table.rows[2].cells[col]
                 cell.text = header
@@ -225,13 +285,17 @@ class ExactReportGenerator:
             # Fallback маппинг: если точный ключ не найден, пробуем альтернативы
             pdf_key_fallbacks = {
                 'pdf_20_c': ['pdf_20_c', 'pdf_20'],
-                'pdf_20_uc': ['pdf_20_uc', 'pdf_20'],
+                'pdf_20_uc': ['pdf_20_uc'],
                 'pdf_51_c': ['pdf_51_c', 'pdf_51'],
-                'pdf_51_uc': ['pdf_51_uc', 'pdf_51'],
+                'pdf_51_uc': ['pdf_51_uc'],
                 'pdf_20': ['pdf_20'],
                 'pdf_51': ['pdf_51']
             }
             
+            # Трекинг использованных источников для предотвращения дубликатов
+            _used_pdf_sources = set()
+            _used_audio_files = set()
+
             logger.info(f"rows_data: {rows_data}")
             logger.info(f"pdf_key_fallbacks: {pdf_key_fallbacks}")
             logger.info(f"Total table rows: {len(table.rows)}")
@@ -268,41 +332,15 @@ class ExactReportGenerator:
                 
                 if has_pdf and pdf_data:
                     logger.info(f"    - PDF DATA FOUND: {pdf_data}")
-                    logger.info(f"    - lufs={pdf_data.get('lufs')}, peak={pdf_data.get('true_peak')}, lra={pdf_data.get('lra')}")
+                    logger.info(
+                        f"    - lufs={pdf_data.get('lufs')}, "
+                        f"peak={pdf_data.get(peak_value_key)}, lra={pdf_data.get('lra')}"
+                    )
                 elif has_pdf:
                     logger.warning(f"    - WARNING: pdf_key '{pdf_key}' exists but pdf_data is None or empty!")
                 else:
                     logger.info(f"    - NO PDF DATA")
             logger.info("=== END PDF DATA CHECK ===")
-            
-            # Собираем длительности всех файлов для сравнения
-            durations = {}
-            for label, key, _ in rows_data:
-                if tech_info and key in tech_info and tech_info[key]:
-                    durations[key] = tech_info[key].get('duration', 0)
-            
-            # Определяем эталонную длительность (берем первый аудио файл)
-            reference_duration = None
-            for key in ['audio_20_c', 'audio_51_c', 'audio_20_uc', 'audio_51_uc']:
-                if key in durations and durations[key] > 0:
-                    reference_duration = durations[key]
-                    break
-            
-            # Функция сравнения хронометража (допуск 0.1 сек = 100 мс)
-            def durations_match(dur1, dur2, tolerance=0.1):
-                if dur1 is None or dur2 is None or dur1 == 0 or dur2 == 0:
-                    return False
-                return abs(dur1 - dur2) <= tolerance
-            
-            # Функция проверки кратности кадру
-            def is_frame_aligned(duration_seconds, fps=25):
-                """Проверяет, кратна ли длительность одному кадру"""
-                if duration_seconds == 0:
-                    return True
-                frame_duration = 1.0 / fps  # Длительность одного кадра в секундах
-                remainder = duration_seconds % frame_duration
-                # Допуск: 0.001 секунды (1 мс)
-                return remainder < 0.001 or remainder > (frame_duration - 0.001)
             
             # Определяем FPS из видео или параметров
             fps = 25  # По умолчанию 25 fps
@@ -313,7 +351,41 @@ class ExactReportGenerator:
                 fps = params.get('fps', 25)
             
             logger.info(f"Используется FPS: {fps} для проверки кратности кадру")
-            
+
+            # Функция сравнения хронометража по отображаемым миллисекундам
+            def durations_match(dur1, dur2):
+                if dur1 is None or dur2 is None or dur1 == 0 or dur2 == 0:
+                    return False
+                # round() вместо int() — int() truncates, что даёт -1мс при float вроде 1376.27999...
+                return int(dur1 * 1000) == int(dur2 * 1000)
+
+            # Функция проверки кратности кадру (с допуском 0.5 мс)
+            def is_frame_aligned(duration_seconds, fps=25):
+                """Проверяет, кратна ли длительность одному кадру"""
+                if duration_seconds <= 0:
+                    return True
+                ms = duration_seconds * 1000
+                frame_ms = 1000.0 / fps  # 40.0 для 25fps, ~41.67 для 24fps
+                nearest_frame = round(ms / frame_ms)
+                return abs(ms - nearest_frame * frame_ms) < 0.5
+
+            # Собираем длительности всех файлов для сравнения
+            durations = {}
+            for label, key, _ in rows_data:
+                if tech_info and key in tech_info and tech_info[key]:
+                    durations[key] = tech_info[key].get('duration', 0)
+
+            # Проверяем, совпадают ли все аудиофайлы между собой
+            audio_durations_ms = []
+            for key in ['audio_20_c', 'audio_51_c', 'audio_20_uc', 'audio_51_uc']:
+                if key in durations and durations[key] > 0:
+                    audio_durations_ms.append(int(durations[key] * 1000))
+            all_audio_match = len(audio_durations_ms) <= 1 or len(set(audio_durations_ms)) == 1
+            audio_durations_ms_set = set(audio_durations_ms)
+            video_duration_ms = None
+            if durations.get('video', 0) > 0:
+                video_duration_ms = int(durations['video'] * 1000)
+
             for idx, (label, key, pdf_key) in enumerate(rows_data):
                 logger.info(f"\n=== ОБРАБОТКА СТРОКИ {idx}: {label} ===")
                 logger.info(f"  key={key}, pdf_key={pdf_key}")
@@ -321,10 +393,10 @@ class ExactReportGenerator:
                 row = table.rows[3 + idx]
                 logger.info(f"  Row index in table: {3 + idx}")
                 
-                # Установить label в первую ячейку
+                # Установить label в первую ячейку (серый фон как у заголовков)
                 row.cells[0].text = label
                 logger.info(f"  ✓ Set cell[0] = '{label}'")
-                self._format_cell(row.cells[0], align="left")
+                self._format_cell(row.cells[0], bg=HEADER_BG, bold=True, align="left")
                 
                 # Проверяем наличие аудио файла
                 has_audio = tech_info and key in tech_info and tech_info.get(key) is not None
@@ -332,6 +404,79 @@ class ExactReportGenerator:
                 has_pdf = pdf_key and pdf_key in tech_info and tech_info.get(pdf_key) is not None
                 
                 logger.info(f"  has_audio={has_audio}, has_pdf={has_pdf}")
+
+                # Важно: поддержка отчета без аудиофайлов (только PDF + CSV).
+                # Раньше эта ветка была вложена в has_audio и не исполнялась.
+                if (not has_audio) and pdf_key:
+                    pdf_data = None
+                    used_pdf_key = None
+                    fallback_keys = pdf_key_fallbacks.get(pdf_key, [pdf_key])
+                    for fallback_key in fallback_keys:
+                        if fallback_key in tech_info and tech_info.get(fallback_key) is not None:
+                            pdf_data = tech_info[fallback_key]
+                            used_pdf_key = fallback_key
+                            logger.info(
+                                f"  ✓ PDF-ONLY: Found data using key '{fallback_key}' (wanted: '{pdf_key}')"
+                            )
+                            break
+
+                    # Дедупликация: пропускаем строку если этот PDF-источник уже использован
+                    if pdf_data:
+                        source_pdf = str(pdf_data.get('source_pdf') or '')
+                        if source_pdf and source_pdf in _used_pdf_sources:
+                            logger.info(f"  ⏭ Пропуск дубликата PDF: {source_pdf} (уже использован)")
+                            continue
+                        if source_pdf:
+                            _used_pdf_sources.add(source_pdf)
+
+                    if pdf_data:
+                        source_name = source_pdf.rsplit('.', 1)[0] if source_pdf and '.' in source_pdf else source_pdf
+                        if source_name:
+                            row.cells[1].text = source_name
+                            self._format_cell(row.cells[1], align="left")
+
+                        if pdf_data.get('lufs') is not None:
+                            value = pdf_data['lufs']
+                            row.cells[3].text = f"{self._fmt_metric(value, decimals=1)} LUFS"
+                            if is_dcp_report:
+                                lufs_bg = OK_BG if abs(value - target_lufs) <= lufs_tolerance else WARN_BG
+                            else:
+                                lufs_bg = OK_BG if abs(value - target_lufs) <= lufs_tolerance else BAD_BG
+                            self._format_cell(row.cells[3], bg=lufs_bg, align="center")
+
+                        peak_value = pdf_data.get(peak_value_key)
+                        if peak_value is None and is_dcp_report:
+                            peak_value = pdf_data.get('true_peak')
+                        if peak_value is not None:
+                            value = peak_value
+                            sign = "+" if value > 0 else ""
+                            dp = self._peak_decimals(pdf_data, peak_decimals)
+                            row.cells[4].text = f"{sign}{self._fmt_metric(value, decimals=dp)} {peak_unit}"
+                            if is_dcp_report:
+                                peak_bg = OK_BG if value <= 0 else BAD_BG
+                            else:
+                                peak_bg = OK_BG if value <= target_peak else BAD_BG
+                            self._format_cell(row.cells[4], bg=peak_bg, align="center")
+
+                        if pdf_data.get('lra') is not None:
+                            value = pdf_data['lra']
+                            row.cells[5].text = f"{self._fmt_metric(value, decimals=1)} LU"
+                            if is_dcp_report:
+                                lra_bg = OK_BG if value <= target_lra else WARN_BG
+                            else:
+                                lra_bg = OK_BG if value <= target_lra else BAD_BG
+                            self._format_cell(row.cells[5], bg=lra_bg, align="center")
+
+                        logger.info(
+                            f"  PDF-ONLY values set for {label} "
+                            f"(key={used_pdf_key or pdf_key}): "
+                            f"LUFS={pdf_data.get('lufs')}, "
+                            f"{peak_label_for_logs}={pdf_data.get(peak_value_key)}, "
+                            f"LRA={pdf_data.get('lra')}"
+                        )
+                    else:
+                        logger.warning(f"  ⚠️ PDF-ONLY: No data found for {pdf_key} (tried: {fallback_keys})")
+                    continue
                 
                 # ДИАГНОСТИКА: показываем что есть в tech_info для этого pdf_key
                 if pdf_key:
@@ -340,7 +485,10 @@ class ExactReportGenerator:
                         logger.info(f"  ✓ pdf_key '{pdf_key}' FOUND in tech_info")
                         logger.info(f"     pdf_data type: {type(pdf_data)}")
                         if isinstance(pdf_data, dict):
-                            logger.info(f"     lufs={pdf_data.get('lufs')}, peak={pdf_data.get('true_peak')}, lra={pdf_data.get('lra')}")
+                            logger.info(
+                                f"     lufs={pdf_data.get('lufs')}, "
+                                f"peak={pdf_data.get(peak_value_key)}, lra={pdf_data.get('lra')}"
+                            )
                         else:
                             logger.info(f"     pdf_data value: {pdf_data}")
                     else:
@@ -351,10 +499,18 @@ class ExactReportGenerator:
                 
                 if has_audio:
                     data = tech_info[key]
-                    logger.info(f"  Audio data found: {data.get('file_name')}")
-                    
-                    # Имя файла с проверкой на некорректный тип (убираем расширение)
                     file_name = data.get('file_name', '')
+
+                    # Дедупликация: пропускаем если этот аудиофайл уже использован
+                    if file_name and file_name in _used_audio_files:
+                        logger.info(f"  ⏭ Пропуск дубликата аудио: {file_name} (уже использован)")
+                        continue
+                    if file_name:
+                        _used_audio_files.add(file_name)
+
+                    logger.info(f"  Audio data found: {file_name}")
+
+                    # Имя файла с проверкой на некорректный тип (убираем расширение)
                     file_name_without_ext = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
                     row.cells[1].text = file_name_without_ext
                     logger.info(f"  ✓ Set cell[1] = '{file_name_without_ext}'")
@@ -372,33 +528,39 @@ class ExactReportGenerator:
                     
                     # Хронометраж (формат: H:MM:SS.mmm) с цветовой индикацией
                     duration = data.get('duration', 0)  # в секундах
-                    hours = int(duration // 3600)
-                    mins = int((duration % 3600) // 60)
-                    secs = int(duration % 60)
-                    millis = round((duration % 1) * 1000)  # round для точности как в Nuendo!
+                    total_ms = int(duration * 1000)
+                    hours = total_ms // 3600000
+                    mins = (total_ms % 3600000) // 60000
+                    secs = (total_ms % 60000) // 1000
+                    millis = total_ms % 1000
                     row.cells[2].text = f"{hours}:{mins:02d}:{secs:02d}.{millis:03d}"
                     
                     # Цветовая индикация с проверкой кратности кадру
                     if duration > 0:
-                        # Сначала проверяем кратность кадру
-                        if not is_frame_aligned(duration, fps):
-                            chrono_bg = BAD_BG  # Красный - не кратен кадру
-                            # Сохраняем информацию для заключения
-                            if not hasattr(tech_info, '_frame_issues'):
-                                tech_info['_frame_issues'] = []
-                            tech_info['_frame_issues'].append({
-                                'file': label,
-                                'duration': duration,
-                                'fps': fps
-                            })
-                        # Затем проверяем совпадение с референсом
-                        elif reference_duration:
-                            if durations_match(duration, reference_duration):
-                                chrono_bg = OK_BG  # Зеленый - совпадает и кратен кадру
+                        if key.startswith('audio'):
+                            # Если есть видео, оцениваем дорожку относительно него.
+                            # Так синхронная с видео дорожка остается зеленой, даже если
+                            # другая аудиодорожка имеет иной хронометраж.
+                            if video_duration_ms is not None:
+                                chrono_bg = OK_BG if total_ms == video_duration_ms else BAD_BG
+                            elif not all_audio_match:
+                                chrono_bg = BAD_BG  # Красный - аудиофайлы не совпадают
                             else:
-                                chrono_bg = BAD_BG  # Красный - не совпадает с референсом
+                                chrono_bg = OK_BG  # Зеленый - аудиофайлы совпадают
+                        elif key == 'video':
+                            # Для видео: сравниваем с аудио
+                            if audio_durations_ms:
+                                video_ms = int(duration * 1000)
+                                if video_ms in audio_durations_ms_set:
+                                    chrono_bg = OK_BG  # Зеленый - совпадает с аудио
+                                else:
+                                    chrono_bg = BAD_BG  # Красный - не совпадает с аудио
+                            else:
+                                frame_ok = is_frame_aligned(duration, fps)
+                                chrono_bg = OK_BG if frame_ok else WARN_BG
                         else:
-                            chrono_bg = WARN_BG  # Оранжевый - нет эталона, но кратен кадру
+                            frame_ok = is_frame_aligned(duration, fps)
+                            chrono_bg = OK_BG if frame_ok else WARN_BG
                     else:
                         chrono_bg = "FFFFFF"  # Белый - нет данных
                     
@@ -420,38 +582,61 @@ class ExactReportGenerator:
                             logger.warning(f"  ⚠️ PDF data not found for {pdf_key} (tried: {fallback_keys})")
                     
                     if pdf_data is not None:
+                        # Трекинг PDF-источника для предотвращения дублей
+                        _src = str(pdf_data.get('source_pdf') or '')
+                        if _src:
+                            _used_pdf_sources.add(_src)
+
                         # LUFS с цветовой индикацией
                         if pdf_data.get('lufs') is not None:
-                            row.cells[3].text = f"{pdf_data['lufs']:.1f} LUFS"
-                            if abs(pdf_data['lufs'] - target_lufs) <= lufs_tolerance:
+                            row.cells[3].text = f"{self._fmt_metric(pdf_data['lufs'], decimals=1)} LUFS"
+                            if is_dcp_report:
+                                lufs_bg = OK_BG if abs(pdf_data['lufs'] - target_lufs) <= lufs_tolerance else WARN_BG
+                            elif abs(pdf_data['lufs'] - target_lufs) <= lufs_tolerance:
                                 lufs_bg = OK_BG
                             else:
                                 lufs_bg = BAD_BG
                             self._format_cell(row.cells[3], bg=lufs_bg, align="center")
-                            logger.info(f"  LUFS added to cell: {pdf_data['lufs']:.1f}")
+                            logger.info(f"  LUFS added to cell: {self._fmt_metric(pdf_data['lufs'], decimals=1)}")
                         else:
                             logger.warning(f"  ⚠️ LUFS is None in pdf_data for {used_pdf_key or pdf_key}")
-                        
-                        # TRUE PEAK
-                        if pdf_data.get('true_peak') is not None:
-                            sign = "+" if pdf_data['true_peak'] > 0 else ""
-                            row.cells[4].text = f"{sign}{pdf_data['true_peak']:.1f} dBTP"
-                            peak_bg = OK_BG if pdf_data['true_peak'] <= target_peak else BAD_BG
+
+                        # Peak metric (TRUE PEAK / SAMPLE PEAK)
+                        peak_value = pdf_data.get(peak_value_key)
+                        if peak_value is None and is_dcp_report:
+                            peak_value = pdf_data.get('true_peak')
+                        if peak_value is not None:
+                            sign = "+" if peak_value > 0 else ""
+                            dp = self._peak_decimals(pdf_data, peak_decimals)
+                            row.cells[4].text = f"{sign}{self._fmt_metric(peak_value, decimals=dp)} {peak_unit}"
+                            if is_dcp_report:
+                                peak_bg = OK_BG if peak_value <= 0 else BAD_BG
+                            else:
+                                peak_bg = OK_BG if peak_value <= target_peak else BAD_BG
                             self._format_cell(row.cells[4], bg=peak_bg, align="center")
-                            logger.info(f"  TRUE PEAK added to cell: {sign}{pdf_data['true_peak']:.1f}")
+                            logger.info(
+                                f"  {peak_label_for_logs} added to cell: "
+                                f"{sign}{self._fmt_metric(peak_value, decimals=dp)}"
+                            )
                         else:
-                            logger.warning(f"  ⚠️ TRUE PEAK is None in pdf_data for {used_pdf_key or pdf_key}")
-                        
+                            logger.warning(f"  ⚠️ {peak_label_for_logs} is None in pdf_data for {used_pdf_key or pdf_key}")
+
                         # LRA
                         if pdf_data.get('lra') is not None:
-                            row.cells[5].text = f"{pdf_data['lra']:.1f} LU"
-                            lra_bg = OK_BG if pdf_data['lra'] <= target_lra else BAD_BG
+                            row.cells[5].text = f"{self._fmt_metric(pdf_data['lra'], decimals=1)} LU"
+                            if is_dcp_report:
+                                lra_bg = OK_BG if pdf_data['lra'] <= target_lra else WARN_BG
+                            else:
+                                lra_bg = OK_BG if pdf_data['lra'] <= target_lra else BAD_BG
                             self._format_cell(row.cells[5], bg=lra_bg, align="center")
-                            logger.info(f"  LRA added to cell: {pdf_data['lra']:.1f}")
+                            logger.info(f"  LRA added to cell: {self._fmt_metric(pdf_data['lra'], decimals=1)}")
                         else:
                             logger.warning(f"  ⚠️ LRA is None in pdf_data for {used_pdf_key or pdf_key}")
                         
-                        logger.info(f"  PDF data processed for {label}: LUFS={pdf_data.get('lufs')}, Peak={pdf_data.get('true_peak')}, LRA={pdf_data.get('lra')}")
+                        logger.info(
+                            f"  PDF data processed for {label}: LUFS={pdf_data.get('lufs')}, "
+                            f"{peak_label_for_logs}={pdf_data.get(peak_value_key)}, LRA={pdf_data.get('lra')}"
+                        )
                         
                         # ДОБАВЛЯЕМ формат файла из audio data (mediainfo)
                         if key in tech_info and isinstance(tech_info[key], dict):
@@ -461,22 +646,10 @@ class ExactReportGenerator:
                             co = audio_data.get('channel_order', '')
                             format_text = f"PCM {sr}kHz {bd} bit {co}"
                             row.cells[6].text = format_text
-                            
-                            # Проверка полноты информации
-                            is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
-                            format_bg = OK_BG if is_complete else WARN_BG
-                            
-                            # Проверка соответствия каналов строке (2.0 vs 5.1)
-                            expected_channels = 6 if "51" in key else (2 if "20" in key else None)
-                            actual_channels = audio_data.get('channels')
-                            if expected_channels and actual_channels:
-                                try:
-                                    actual_channels = int(actual_channels)
-                                except Exception:
-                                    actual_channels = None
-                                if actual_channels and ((expected_channels == 6 and actual_channels < 6) or (expected_channels == 2 and actual_channels > 2)):
-                                    format_bg = BAD_BG
-                            
+
+                            # Определяем цвет ячейки формата
+                            format_bg = self._get_format_bg(sr, bd, co, key, OK_BG, BAD_BG, WARN_BG)
+
                             self._format_cell(row.cells[6], bg=format_bg, align="left")
                             logger.info(f"  Format added from audio: {format_text}")
                     
@@ -492,7 +665,16 @@ class ExactReportGenerator:
                                 used_pdf_key = fallback_key
                                 logger.info(f"  ✓ PDF-ONLY: Found data using key '{fallback_key}' (wanted: '{pdf_key}')")
                                 break
-                        
+
+                        # Дедупликация
+                        if pdf_data:
+                            _src2 = str(pdf_data.get('source_pdf') or '')
+                            if _src2 and _src2 in _used_pdf_sources:
+                                logger.info(f"  ⏭ Пропуск дубликата PDF (block2): {_src2}")
+                                continue
+                            if _src2:
+                                _used_pdf_sources.add(_src2)
+
                         if pdf_data:
                             logger.info(f"  === PDF-ONLY BLOCK ENTERED for {label} ===")
                             logger.info(f"  pdf_key={pdf_key}, used_key={used_pdf_key}, has_audio={has_audio}")
@@ -501,33 +683,48 @@ class ExactReportGenerator:
                             # LUFS
                             if pdf_data.get('lufs') is not None:
                                 value = pdf_data['lufs']
-                                row.cells[3].text = f"{value:.1f} LUFS"
-                                logger.info(f"  ✓ SET cell[3] to '{value:.1f} LUFS'")
-                                if abs(value - target_lufs) <= lufs_tolerance:
+                                row.cells[3].text = f"{self._fmt_metric(value, decimals=1)} LUFS"
+                                logger.info(f"  ✓ SET cell[3] to '{self._fmt_metric(value, decimals=1)} LUFS'")
+                                if is_dcp_report:
+                                    lufs_bg = OK_BG if abs(value - target_lufs) <= lufs_tolerance else WARN_BG
+                                elif abs(value - target_lufs) <= lufs_tolerance:
                                     lufs_bg = OK_BG
                                 else:
                                     lufs_bg = BAD_BG
                                 self._format_cell(row.cells[3], bg=lufs_bg, align="center")
                             else:
                                 logger.warning(f"  ✗ lufs is None, cell[3] not set")
-                            
-                            # TRUE PEAK
-                            if pdf_data.get('true_peak') is not None:
-                                value = pdf_data['true_peak']
+
+                            # Peak metric (TRUE PEAK / SAMPLE PEAK)
+                            peak_value = pdf_data.get(peak_value_key)
+                            if peak_value is None and is_dcp_report:
+                                peak_value = pdf_data.get('true_peak')
+                            if peak_value is not None:
+                                value = peak_value
                                 sign = "+" if value > 0 else ""
-                                row.cells[4].text = f"{sign}{value:.1f} dBTP"
-                                logger.info(f"  ✓ SET cell[4] to '{sign}{value:.1f} dBTP'")
-                                peak_bg = OK_BG if value <= target_peak else BAD_BG
+                                dp = self._peak_decimals(pdf_data, peak_decimals)
+                                row.cells[4].text = f"{sign}{self._fmt_metric(value, decimals=dp)} {peak_unit}"
+                                logger.info(
+                                    f"  ✓ SET cell[4] to "
+                                    f"'{sign}{self._fmt_metric(value, decimals=dp)} {peak_unit}'"
+                                )
+                                if is_dcp_report:
+                                    peak_bg = OK_BG if value <= 0 else BAD_BG
+                                else:
+                                    peak_bg = OK_BG if value <= target_peak else BAD_BG
                                 self._format_cell(row.cells[4], bg=peak_bg, align="center")
                             else:
-                                logger.warning(f"  ✗ true_peak is None, cell[4] not set")
-                            
+                                logger.warning(f"  ✗ {peak_value_key} is None, cell[4] not set")
+
                             # LRA
                             if pdf_data.get('lra') is not None:
                                 value = pdf_data['lra']
-                                row.cells[5].text = f"{value:.1f} LU"
-                                logger.info(f"  ✓ SET cell[5] to '{value:.1f} LU'")
-                                lra_bg = OK_BG if value <= target_lra else BAD_BG
+                                row.cells[5].text = f"{self._fmt_metric(value, decimals=1)} LU"
+                                logger.info(f"  ✓ SET cell[5] to '{self._fmt_metric(value, decimals=1)} LU'")
+                                if is_dcp_report:
+                                    lra_bg = OK_BG if value <= target_lra else WARN_BG
+                                else:
+                                    lra_bg = OK_BG if value <= target_lra else BAD_BG
                                 self._format_cell(row.cells[5], bg=lra_bg, align="center")
                             else:
                                 logger.warning(f"  ✗ lra is None, cell[5] not set")
@@ -540,7 +737,7 @@ class ExactReportGenerator:
                             video_data = tech_info[key]
                             video_format = video_data.get('format', 'MOV')
                             fps_video = video_data.get('fps', 25)
-                            format_text = f"{video_format} {fps_video}fps"
+                            format_text = f"{video_format} {format_fps(fps_video)}fps"
                             row.cells[6].text = format_text
                             self._format_cell(row.cells[6], bg=OK_BG, align="left")
                             logger.info(f"  VIDEO format added: {format_text}")
@@ -552,17 +749,15 @@ class ExactReportGenerator:
                         co = data.get('channel_order', '')
                         format_text = f"PCM {sr}kHz {bd} bit {co}"
                         row.cells[6].text = format_text
-                        
-                        # Проверка полноты информации
-                        is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
-                        format_bg = OK_BG if is_complete else WARN_BG
+
+                        format_bg = self._get_format_bg(sr, bd, co, key, OK_BG, BAD_BG, WARN_BG)
                         self._format_cell(row.cells[6], bg=format_bg, align="left")
                     
                     elif key == 'video':
                         # Для видео - показываем только формат и FPS
                         video_format = data.get('format', 'MOV')
                         fps_video = data.get('fps', 25)
-                        format_text = f"{video_format} {fps_video}fps"
+                        format_text = f"{video_format} {format_fps(fps_video)}fps"
                         row.cells[6].text = format_text
                         self._format_cell(row.cells[6], bg=OK_BG, align="left")
                     
@@ -641,7 +836,7 @@ class ExactReportGenerator:
             spacing.set(qn('w:line'), '360')  # 1.5 интервал
             spacing.set(qn('w:lineRule'), 'auto')
             pPr.append(spacing)
-            
+
             logger.info("Техническая таблица с областью заключения добавлена")
             
         except Exception as e:
@@ -681,6 +876,10 @@ class ExactReportGenerator:
             logger.warning("VIDEO НЕ НАЙДЕНО в tech_info!")
         
         try:
+            HEADER_BG = "D5D5D5"
+            LIGHT_BG = "F5F5F5"
+            OFFWHITE_BG = "FEFFFE"
+
             # Таблица: 11 строк x 7 базовых столбцов (как в референсном M&E шаблоне)
             # Строки: 0=заголовок+дата, 1=отчет подготовил, 2=колонки, 3-5=данные (2.0 ME, 5.1 ME, VIDEO),
             #         6=пустой отступ, 7=индикаторы, 8=пустой отступ, 9=ЗАКЛЮЧЕНИЕ, 10=текст заключения
@@ -805,9 +1004,9 @@ class ExactReportGenerator:
             # Fallback маппинг для M&E (как в основной таблице)
             pdf_key_fallbacks = {
                 'pdf_20_c': ['pdf_20_c', 'pdf_20'],
-                'pdf_20_uc': ['pdf_20_uc', 'pdf_20'],
+                'pdf_20_uc': ['pdf_20_uc'],
                 'pdf_51_c': ['pdf_51_c', 'pdf_51'],
-                'pdf_51_uc': ['pdf_51_uc', 'pdf_51'],
+                'pdf_51_uc': ['pdf_51_uc'],
                 'pdf_20': ['pdf_20'],
                 'pdf_51': ['pdf_51']
             }
@@ -816,42 +1015,48 @@ class ExactReportGenerator:
             params = tech_info.get('params', {}) if tech_info else {}
             target_peak = params.get('true_peak', -2.0)
             
+            # FPS
+            fps = 25
+            if 'video' in tech_info and tech_info['video']:
+                fps = tech_info['video'].get('fps', 25)
+
+            def durations_match(dur1, dur2):
+                return dur1 and dur2 and int(dur1 * 1000) == int(dur2 * 1000)
+
+            def is_frame_aligned(duration_seconds, fps=25):
+                if duration_seconds <= 0:
+                    return True
+                ms = duration_seconds * 1000
+                frame_ms = 1000.0 / fps
+                nearest_frame = round(ms / frame_ms)
+                return abs(ms - nearest_frame * frame_ms) < 0.5
+
             # Хронометраж
             durations = {}
             for label, key, _ in rows_data:
                 if tech_info and key in tech_info and tech_info[key]:
                     durations[key] = tech_info[key].get('duration', 0)
-            
-            reference_duration = None
-            for key in [audio_20_key, audio_51_key, 'video']:
-                if not key:
-                    continue
+
+            # Проверяем, совпадают ли все аудиофайлы между собой
+            audio_keys = [k for k in [audio_20_key, audio_51_key] if k]
+            audio_durations_ms = []
+            for key in audio_keys:
                 if key in durations and durations[key] > 0:
-                    reference_duration = durations[key]
-                    break
-            
-            def durations_match(dur1, dur2, tolerance=0.1):
-                return dur1 and dur2 and abs(dur1 - dur2) <= tolerance
-            
-            def is_frame_aligned(duration_seconds, fps=25):
-                if duration_seconds == 0:
-                    return True
-                frame_duration = 1.0 / fps
-                remainder = duration_seconds % frame_duration
-                return remainder < 0.001 or remainder > (frame_duration - 0.001)
-            
-            fps = 25
-            if 'video' in tech_info and tech_info['video']:
-                fps = tech_info['video'].get('fps', 25)
-            
+                    audio_durations_ms.append(int(durations[key] * 1000))
+            all_audio_match = len(audio_durations_ms) <= 1 or len(set(audio_durations_ms)) == 1
+            audio_durations_ms_set = set(audio_durations_ms)
+            video_duration_ms = None
+            if durations.get('video', 0) > 0:
+                video_duration_ms = int(durations['video'] * 1000)
+
             for idx, (label, key, pdf_key) in enumerate(rows_data):
                 row = table.rows[3 + idx]
                 # В M&E хронометраж занимает 3 базовые колонки
                 row.cells[2].merge(row.cells[3])
                 row.cells[2].merge(row.cells[4])
                 row.cells[0].text = label
-                self._format_cell(row.cells[0], align="left")
-                
+                self._format_cell(row.cells[0], bg=HEADER_BG, bold=True, align="left")
+
                 has_data = tech_info and key in tech_info and tech_info[key]
                 has_pdf_only = not has_data and pdf_key and pdf_key in tech_info
                 
@@ -897,14 +1102,15 @@ class ExactReportGenerator:
                         true_peak = pdf_data.get('true_peak')
                         if true_peak is not None:
                             sign = "+" if true_peak > 0 else ""
-                            row.cells[5].text = f"{sign}{true_peak:.1f} dBTP"
+                            dp = self._peak_decimals(pdf_data, 1)
+                            row.cells[5].text = f"{sign}{self._fmt_metric(true_peak, decimals=dp)} dBTP"
                             peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
                             self._format_cell(row.cells[5], bg=peak_bg, align="center")
-                            logger.info(f"  TRUE PEAK: {sign}{true_peak:.1f} dBTP")
+                            logger.info(f"  TRUE PEAK: {sign}{self._fmt_metric(true_peak, decimals=dp)} dBTP")
                         else:
                             row.cells[5].text = ""
                             self._format_cell(row.cells[5], bg="FFFFFF", align="center")
-                        
+
                         # Формат файла (если есть данные)
                         sr = pdf_data.get('sample_rate')
                         bd = pdf_data.get('bit_depth')
@@ -951,22 +1157,39 @@ class ExactReportGenerator:
                     
                     # Хронометраж
                     duration = data.get('duration', 0)
-                    hours = int(duration // 3600)
-                    mins = int((duration % 3600) // 60)
-                    secs = int(duration % 60)
-                    millis = round((duration % 1) * 1000)
+                    total_ms = int(duration * 1000)
+                    hours = total_ms // 3600000
+                    mins = (total_ms % 3600000) // 60000
+                    secs = (total_ms % 60000) // 1000
+                    millis = total_ms % 1000
                     row.cells[2].text = f"{hours}:{mins:02d}:{secs:02d}.{millis:03d}"
-                    
+
                     # Цветовая индикация
                     if duration > 0:
-                        if not is_frame_aligned(duration, fps):
-                            chrono_bg = "E83121"
-                        elif reference_duration and durations_match(duration, reference_duration):
-                            chrono_bg = "00FA02"
-                        elif reference_duration:
-                            chrono_bg = "E83121"
+                        if key.startswith('audio'):
+                            # Если есть видео, оцениваем дорожку относительно него.
+                            # Так синхронная с видео дорожка остается зеленой, даже если
+                            # другая аудиодорожка имеет иной хронометраж.
+                            if video_duration_ms is not None:
+                                chrono_bg = "00FA02" if total_ms == video_duration_ms else "E83121"
+                            elif not all_audio_match:
+                                chrono_bg = "E83121"  # Красный - аудиофайлы не совпадают
+                            else:
+                                chrono_bg = "00FA02"  # Зеленый - аудиофайлы совпадают
+                        elif key == 'video':
+                            # Для видео: сравниваем с аудио
+                            if audio_durations_ms:
+                                video_ms = int(duration * 1000)
+                                if video_ms in audio_durations_ms_set:
+                                    chrono_bg = "00FA02"
+                                else:
+                                    chrono_bg = "E83121"
+                            else:
+                                frame_ok = is_frame_aligned(duration, fps)
+                                chrono_bg = "00FA02" if frame_ok else "FBBA18"
                         else:
-                            chrono_bg = "FBBA18"
+                            frame_ok = is_frame_aligned(duration, fps)
+                            chrono_bg = "00FA02" if frame_ok else "FBBA18"
                     else:
                         chrono_bg = "FFFFFF"
                     
@@ -990,10 +1213,14 @@ class ExactReportGenerator:
                             if true_peak is not None:
                                 # Добавляем знак + для положительных значений
                                 sign = "+" if true_peak > 0 else ""
-                                row.cells[5].text = f"{sign}{true_peak:.1f} dBTP"
+                                dp = self._peak_decimals(pdf_data, 1)
+                                row.cells[5].text = f"{sign}{self._fmt_metric(true_peak, decimals=dp)} dBTP"
                                 peak_bg = "00FA02" if true_peak <= target_peak else "E83121"
                                 self._format_cell(row.cells[5], bg=peak_bg, align="center")
-                                logger.info(f"M&E: {label} TRUE PEAK форматирован ({sign}{true_peak:.1f} dBTP)")
+                                logger.info(
+                                    f"M&E: {label} TRUE PEAK форматирован "
+                                    f"({sign}{self._fmt_metric(true_peak, decimals=dp)} dBTP)"
+                                )
                             else:
                                 row.cells[5].text = ""
                                 self._format_cell(row.cells[5], bg="FFFFFF", align="center")
@@ -1014,25 +1241,14 @@ class ExactReportGenerator:
                         co = data.get('channel_order', '')
                         format_text = f"PCM {sr}kHz {bd} bit {co}"
                         row.cells[6].text = format_text
-                        is_complete = co and (',' in co or 'Stereo' in co or '(' in co)
-                        format_bg = "00FA02" if is_complete else "FBBA18"
-                        
-                        expected_channels = 6 if "51" in key else (2 if "20" in key else None)
-                        actual_channels = data.get('channels')
-                        if expected_channels and actual_channels:
-                            try:
-                                actual_channels = int(actual_channels)
-                            except Exception:
-                                actual_channels = None
-                            if actual_channels and ((expected_channels == 6 and actual_channels < 6) or (expected_channels == 2 and actual_channels > 2)):
-                                format_bg = "E83121"
-                        
+
+                        format_bg = self._get_format_bg(sr, bd, co, key, "00FA02", "E83121", "FBBA18")
                         self._format_cell(row.cells[6], bg=format_bg, align="left")
                     elif key == 'video':
                         # Формат видео - только формат и FPS
                         video_format = data.get('format', 'MOV')
                         fps_video = data.get('fps', 25)
-                        format_text = f"{video_format} {fps_video}fps"
+                        format_text = f"{video_format} {format_fps(fps_video)}fps"
                         row.cells[6].text = format_text
                         self._format_cell(row.cells[6], bg="00FA02", align="left")
             
@@ -1100,17 +1316,38 @@ class ExactReportGenerator:
                     run.font.size = Pt(10)
                 paragraph.paragraph_format.line_spacing = 1.5
             
-            self._format_cell(cell, bg=OFFWHITE_BG, align="left")
-            
             logger.info("M&E таблица добавлена")
             
         except Exception as e:
             logger.error(f"Ошибка добавления M&E таблицы: {e}")
 
     def _compose_conclusion_text(self, conclusion_tech: str, conclusion_subj: str) -> str:
-        """Формирует блок заключения как в референсе:
-        заголовок оценки -> пустая строка -> проблемы этой оценки.
+        """Формирует блок заключения (как на референсных скриншотах).
+
+        Вариант A — техн. без проблем:
+            По технической оценке нареканий не обнаружено.
+                                                          ← пустая строка
+            По субъективной оценке выявлены следующие недочеты:
+                                                          ← пустая строка
+            -  проблема 1
+            -  проблема 2
+
+        Вариант B — техн. с проблемами:
+            По техническим характеристикам выявлены следующие недочёты:
+            - Параметр ...                                ← сразу, без пустой строки
+            - Хронометраж ...
+                                                          ← пустая строка
+            По субъективной оценке выявлены следующие недочёты:
+                                                          ← пустая строка
+            [ЗАПОЛНИТЬ ВРУЧНУЮ]
         """
+        def ensure_period(text: str) -> str:
+            """Гарантирует точку в конце строки (кроме двоеточия)."""
+            text = text.rstrip()
+            if text and text[-1] not in '.!:':
+                text += '.'
+            return text
+
         def render_block(text: str) -> str:
             if not text:
                 return ""
@@ -1118,11 +1355,13 @@ class ExactReportGenerator:
             if not lines:
                 return ""
 
-            heading = lines[0]
+            heading = ensure_period(lines[0])
             problems = lines[1:]
 
             if not problems:
+                # Нет проблем — только заголовок
                 return heading
+            # Есть проблемы — пустая строка перед списком
             return heading + "\n\n" + "\n".join(problems)
 
         parts = []
@@ -1134,6 +1373,7 @@ class ExactReportGenerator:
         if subj_block:
             parts.append(subj_block)
 
+        # Между блоками — одна пустая строка (\n\n)
         return "\n\n".join(parts)
     
     def _check_incorrect_audio_type(self, description: str) -> bool:
@@ -1372,7 +1612,36 @@ class ExactReportGenerator:
         except Exception as e:
             logger.error(f"Ошибка добавления заключения: {e}")
     
-    def _format_cell(self, cell, bg="auto", font_name="Helvetica Neue", 
+    @staticmethod
+    def _get_format_bg(sr, bd, co, key, ok_bg, bad_bg, warn_bg) -> str:
+        """Определение цвета фона ячейки формата файла.
+
+        Правила для 5.1:
+        - Нет метаданных порядка каналов ('channels' в co) → RED
+        - Порядок каналов не соответствует стандартному → WARN
+        Для 2.0: порядок каналов НЕ проверяется.
+        Для всех: Sample rate != 48 или bit depth != 24 → RED
+        """
+        STANDARD_51_ORDER = "L R C LFE Ls Rs"
+
+        # 1. Проверка sample rate и bit depth (стандарт 48/24)
+        try:
+            bd_int = int(str(bd).replace('bit', '').strip())
+        except (ValueError, TypeError):
+            bd_int = 0
+        if sr != 48 or bd_int != 24:
+            return bad_bg
+
+        # 2. Порядок каналов — только для 5.1
+        if "51" in key:
+            if not co or "channels" in co.lower() or co.lower() == "unknown":
+                return bad_bg
+            if co.strip() != STANDARD_51_ORDER:
+                return warn_bg
+
+        return ok_bg
+
+    def _format_cell(self, cell, bg="auto", font_name="Helvetica Neue",
                     font_size=None, font_color=None, bold=False, align=None, 
                     border=True, vertical_align="center", text_color=None):
         """Форматирование ячейки

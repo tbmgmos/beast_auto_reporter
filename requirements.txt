@@ -12,6 +12,8 @@ langchain==0.1.0
 langchain-community==0.0.13
 
 # Report Generation
+PyMuPDF==1.26.5
+PyPDF2==3.0.1
 pandas==2.1.4
 matplotlib==3.8.2
 seaborn==0.13.0

@@ -1,0 +1,40 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Inter, sans-serif; background: #F5F5F7; padding: 16px; }
+.row { display: flex; gap: 8px; }
+.swatch { flex: 1; border-radius: 8px; overflow: hidden; }
+.block { height: 56px; }
+.label { padding: 6px 8px; background: white; border: 1px solid #E5E5EA; border-top: none; border-radius: 0 0 8px 8px; }
+.name { font-size: 10px; font-weight: 600; color: #1D1D1F; }
+.hex  { font-size: 9px; color: #86868B; font-family: 'JetBrains Mono', monospace; }
+</style></head><body>
+<div class="row">
+  <div class="swatch">
+    <div class="block" style="background:#EBF5FF;border:1px solid #E5E5EA;border-bottom:none;border-radius:8px 8px 0 0;"></div>
+    <div class="label"><div class="name">50</div><div class="hex">#EBF5FF</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#CCE4FF;border-radius:8px 8px 0 0;"></div>
+    <div class="label"><div class="name">100</div><div class="hex">#CCE4FF</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#66AAFF;border-radius:8px 8px 0 0;"></div>
+    <div class="label"><div class="name">300</div><div class="hex">#66AAFF</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#007AFF;border-radius:8px 8px 0 0;"></div>
+    <div class="label"><div class="name">500 — Primary</div><div class="hex">#007AFF</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#0063D1;border-radius:8px 8px 0 0;"></div>
+    <div class="label"><div class="name">600 — Hover</div><div class="hex">#0063D1</div></div>
+  </div>
+  <div class="swatch">
+    <div class="block" style="background:#004EA3;border-radius:8px 8px 0 0;"></div>
+    <div class="label"><div class="name">700 — Press</div><div class="hex">#004EA3</div></div>
+  </div>
+</div>
+</body></html>

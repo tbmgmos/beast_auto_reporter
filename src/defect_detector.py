@@ -8,15 +8,31 @@ Defect Detector Module
 - Тишина / отсутствие звука
 - Проблемы с каналами
 """
+from __future__ import annotations
 
-import numpy as np
-import soundfile as sf
-import librosa
-from scipy import signal
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
+
+# Lazy imports for fast startup
+np = None
+sf = None
+librosa = None
+signal = None
+
+
+def _ensure_audio_libs():
+    global np, sf, librosa, signal
+    if np is None:
+        import numpy as _np
+        import soundfile as _sf
+        import librosa as _librosa
+        from scipy import signal as _signal
+        np = _np
+        sf = _sf
+        librosa = _librosa
+        signal = _signal
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +503,7 @@ class DefectDetector:
             Список всех найденных дефектов
         """
         all_defects = []
-        
+        _ensure_audio_libs()
         logger.info(f"Запуск детекции для {channel_type}...")
         
         try:
@@ -556,6 +572,7 @@ class DefectDetector:
             Список дефектов
         """
         try:
+            _ensure_audio_libs()
             logger.info(f"Загрузка файла для детекции: {file_path}")
             audio_data, sr = sf.read(file_path)
             

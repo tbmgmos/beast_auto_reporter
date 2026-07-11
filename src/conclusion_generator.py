@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.csv_importer import Issue
 from src.marker_translation_service import MarkerTranslationService
 from src.ollama_service import OllamaService
+from src.technical_info_extractor import format_fps
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,10 @@ class ConclusionGenerator:
     def check_ollama_status(self) -> bool:
         """Проверка доступности Ollama через настроенный host."""
         return self.ollama_service.check_status()
+
+    def get_ollama_status(self) -> dict:
+        """Детальный статус: доступен ли Ollama и установлена ли нужная модель."""
+        return self.ollama_service.get_status()
 
     def _ollama_generate(self, prompt: str, *, model: Optional[str] = None, options: Optional[dict] = None) -> str:
         """Единая обёртка над вызовом Ollama."""
@@ -405,7 +410,7 @@ class ConclusionGenerator:
             if frame_issue_tracks:
                 for track in frame_issue_tracks:
                     problems.append(
-                        f"Хронометраж дорожки {track} не кратен кадру ({fps} fps)"
+                        f"Хронометраж дорожки {track} не кратен кадру ({format_fps(fps)} fps)"
                     )
         
         # Формируем заключение

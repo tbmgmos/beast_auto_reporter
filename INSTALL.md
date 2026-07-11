@@ -1,281 +1,182 @@
-# 🚀 Инструкция по установке Beast Auto Reporter
+# Установка Beast Auto Reporter
 
 ## Системные требования
 
-- **Python**: 3.10 или выше
-- **ОС**: macOS, Linux, или Windows
-- **RAM**: минимум 8 GB (рекомендуется 16 GB для LLM)
-- **Свободное место**: ~10 GB (для моделей Ollama)
+- **Python**: 3.10+
+- **ОС**: macOS (Apple Silicon или Intel)
+- **RAM**: 8 GB (16 GB для LLM)
+- **FFmpeg**: обязателен
+- **Ollama**: опционально (для AI-заключений)
 
-## Шаг 1: Клонирование репозитория
+## Быстрая установка
+
+### ARM (Apple Silicon — M1/M2/M3/M4)
 
 ```bash
 git clone https://github.com/yourusername/Beast_Auto_Reporter.git
 cd Beast_Auto_Reporter
+./scripts/setup_arm.sh
 ```
 
-## Шаг 2: Создание виртуального окружения
-
-### macOS / Linux:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### Windows:
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-## Шаг 3: Установка Python зависимостей
+### Intel (x86_64 — нативный или через Rosetta 2)
 
 ```bash
-pip install --upgrade pip
-pip install -r requirements.txt
+git clone https://github.com/yourusername/Beast_Auto_Reporter.git
+cd Beast_Auto_Reporter
+./scripts/setup_intel.sh
 ```
 
-### Возможные проблемы:
+Скрипт автоматически:
+- Проверит/установит Rosetta 2 (на Apple Silicon)
+- Установит Intel Homebrew в `/usr/local`
+- Установит Intel Python, FFmpeg, libsndfile
+- Создаст отдельный venv (`venv_x86/`) со всеми зависимостями
+- Проверит работоспособность всех компонентов
 
-**Ошибка с librosa:**
+## Запуск
+
+### ARM
 ```bash
-# Установите дополнительные зависимости
-pip install numba==0.58.1
+./scripts/run_arm.sh              # Запуск приложения
+./scripts/run_arm.sh --test       # Тесты
+./scripts/run_arm.sh --verify     # Проверка окружения
 ```
 
-**Ошибка с soundfile:**
+### Intel
 ```bash
-# macOS:
-brew install libsndfile
-
-# Ubuntu/Debian:
-sudo apt-get install libsndfile1
-
-# Windows: обычно работает из коробки
+./scripts/run_intel.sh            # Запуск через Rosetta 2
+./scripts/run_intel.sh --test     # Тесты в x86_64 эмуляции
+./scripts/run_intel.sh --verify   # Проверка Intel окружения
+./scripts/run_intel.sh --shell    # Интерактивный Intel shell
 ```
 
-## Шаг 4: Установка FFmpeg
-
-FFmpeg необходим для работы с различными аудиоформатами.
-
-### macOS:
+### Через Makefile
 ```bash
-brew install ffmpeg
+make help          # Все доступные команды
+
+make setup-arm     # Настроить ARM
+make setup-intel   # Настроить Intel
+
+make run-arm       # Запуск ARM
+make run-intel     # Запуск Intel
+
+make test-arm      # Тесты ARM
+make test-intel    # Тесты Intel
+make test-both     # Тесты на обеих архитектурах
+
+make verify-arm    # Проверка ARM
+make verify-intel  # Проверка Intel
 ```
 
-### Ubuntu/Debian:
-```bash
-sudo apt update
-sudo apt install ffmpeg
+## Архитектура окружений
+
+```
+Beast_Auto_Reporter/
+├── venv/           # ARM (Apple Silicon) — Python + зависимости arm64
+├── venv_x86/       # Intel — Python + зависимости x86_64
+├── scripts/
+│   ├── setup_arm.sh     # Установка ARM окружения
+│   ├── setup_intel.sh   # Установка Intel окружения
+│   ├── run_arm.sh       # Запуск ARM версии
+│   └── run_intel.sh     # Запуск Intel версии (через Rosetta 2)
+└── Makefile             # Единая точка управления
 ```
 
-### Windows:
+### Разделение зависимостей
 
-1. Скачайте FFmpeg: https://ffmpeg.org/download.html
-2. Распакуйте архив
-3. Добавьте путь к `bin` в PATH
-4. Проверьте: `ffmpeg -version`
+| Компонент       | ARM (arm64)                     | Intel (x86_64)                  |
+|-----------------|----------------------------------|---------------------------------|
+| Homebrew        | `/opt/homebrew`                  | `/usr/local`                    |
+| Python          | `/opt/homebrew/bin/python3`      | `/usr/local/bin/python3`        |
+| FFmpeg          | `/opt/homebrew/bin/ffmpeg`       | `/usr/local/bin/ffmpeg`         |
+| venv            | `venv/`                          | `venv_x86/`                     |
+| Запуск          | `./scripts/run_arm.sh`           | `./scripts/run_intel.sh`        |
 
-Или через scoop:
-```bash
-scoop install ffmpeg
+Оба окружения полностью изолированы — разные бинарники Python, разные скомпилированные библиотеки (numpy, scipy, librosa), разные FFmpeg.
+
+## Переменная окружения BEAST_ARCH
+
+При запуске через скрипты устанавливается `BEAST_ARCH=arm64` или `BEAST_ARCH=x86_64`. Приложение может использовать её для диагностики:
+
+```python
+import os
+arch = os.environ.get("BEAST_ARCH", "unknown")
 ```
 
-## Шаг 5: Установка Ollama (для AI заключений)
+## Зависимости
 
-Ollama - это локальный сервер для запуска LLM моделей.
+### Python-пакеты (requirements.txt)
 
-### macOS:
+**Аудио-анализ:**
+- `pyloudnorm` — ITU-R BS.1770-4 (LUFS, LRA, True Peak)
+- `librosa` — анализ аудио
+- `scipy`, `numpy` — числовые вычисления
+- `soundfile` — чтение аудиофайлов
+- `pydub` — обработка аудио
+- `ffmpeg-python` — привязка к FFmpeg
+
+**GUI и отчёты:**
+- `PyQt5` — десктопный интерфейс
+- `python-docx` — генерация DOCX
+- `Pillow` — обработка изображений
+- `reportlab` — генерация PDF (fallback)
+
+**LLM (опционально):**
+- `ollama` — локальный LLM
+- `langchain`, `langchain-community` — оркестрация LLM
+
+**Данные:**
+- `pandas` — CSV/данные
+- `matplotlib`, `seaborn` — графики
+- `pyyaml` — конфигурация
+
+### Системные зависимости
+
+- **FFmpeg/ffprobe** — обязателен для аудио-анализа
+- **libsndfile** — для soundfile
+- **Ollama** — опционально, для AI-заключений
+
+## Установка Ollama (опционально)
+
 ```bash
 brew install ollama
-
-# Или скачайте с сайта:
-# https://ollama.ai/download
+ollama serve              # В отдельном терминале
+ollama pull llama3.2      # Скачать модель
 ```
 
-### Linux:
-```bash
-curl https://ollama.ai/install.sh | sh
-```
-
-### Windows:
-Скачайте установщик с: https://ollama.ai/download
-
-## Шаг 6: Запуск Ollama и установка модели
-
-1. **Запустите Ollama сервер:**
-
-```bash
-ollama serve
-```
-
-Оставьте этот терминал открытым или запустите как службу.
-
-2. **В новом терминале скачайте модель:**
-
-```bash
-# Рекомендуемая модель (меньше размер)
-ollama pull llama3.2
-
-# Или более мощная модель
-ollama pull mistral
-
-# Или для лучшей работы на русском
-ollama pull qwen2.5
-```
-
-3. **Проверьте установленные модели:**
-
-```bash
-ollama list
-```
-
-## Шаг 7: Проверка установки
-
-Запустите тестовый скрипт для проверки всех компонентов:
-
-```bash
-python -c "
-import librosa
-import pyloudnorm
-import soundfile
-import streamlit
-import ollama
-print('✓ Все зависимости установлены успешно!')
-"
-```
-
-## Шаг 8: Первый запуск
-
-```bash
-streamlit run app.py
-```
-
-Приложение откроется в браузере по адресу: `http://localhost:8501`
-
-## Устранение неполадок
-
-### Ollama не подключается
-
-1. Проверьте, что Ollama запущена:
+Проверка:
 ```bash
 curl http://localhost:11434/api/tags
 ```
 
-2. Если не работает, запустите:
+## Устранение неполадок
+
+### librosa не устанавливается
 ```bash
-ollama serve
+pip install numba==0.58.1
+pip install librosa --no-cache-dir
 ```
 
-3. Проверьте настройки в `config/settings.yaml`:
-```yaml
-llm:
-  ollama_host: "http://localhost:11434"
-```
-
-### Ошибки с памятью (RAM)
-
-Если не хватает памяти для LLM:
-
-1. Используйте более легкую модель:
+### soundfile не работает
 ```bash
-ollama pull llama3.2:1b  # 1 миллиард параметров
+brew install libsndfile  # ARM
+# или
+arch -x86_64 /usr/local/bin/brew install libsndfile  # Intel
 ```
 
-2. Отключите AI заключения в настройках приложения (будет использоваться fallback)
-
-### Проблемы с аудио библиотеками
-
+### PyQt5 не находится
+Скрипт запуска автоматически ищет Python с PyQt5. Убедитесь, что PyQt5 установлен в venv:
 ```bash
-# Переустановите ключевые библиотеки
-pip uninstall librosa soundfile
-pip install librosa soundfile --no-cache-dir
+./scripts/run_arm.sh --verify   # или run_intel.sh
 ```
 
-### Streamlit не запускается
+### Тесты падают только на одной архитектуре
+Запустите `make test-both` для сравнения. Числовые результаты (LUFS, True Peak) могут незначительно отличаться между arm64 и x86_64 из-за различий в FPU.
+
+## Очистка
 
 ```bash
-# Очистите кэш Streamlit
-streamlit cache clear
-
-# Проверьте версию
-streamlit --version
-
-# Переустановите
-pip install streamlit --upgrade
+make clean-arm     # Удалить ARM venv
+make clean-intel   # Удалить Intel venv
+make clean-all     # Удалить оба
 ```
-
-## Опциональные шаги
-
-### Настройка как системной службы (Linux/macOS)
-
-Для автоматического запуска Ollama при загрузке системы:
-
-**macOS:**
-```bash
-brew services start ollama
-```
-
-**Linux (systemd):**
-Создайте файл `/etc/systemd/system/ollama.service`:
-```ini
-[Unit]
-Description=Ollama Service
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/ollama serve
-User=yourusername
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Затем:
-```bash
-sudo systemctl enable ollama
-sudo systemctl start ollama
-```
-
-### Ускорение (GPU)
-
-Если у вас есть совместимая GPU:
-
-1. Установите CUDA (NVIDIA) или ROCm (AMD)
-2. Ollama автоматически использует GPU
-3. Проверьте: `ollama run llama3.2` (должно быть быстрее)
-
-## Проверка всей системы
-
-Запустите полный тест:
-
-```bash
-python tests/test_analyzer.py
-```
-
-## Обновление
-
-Для обновления до последней версии:
-
-```bash
-git pull origin main
-pip install -r requirements.txt --upgrade
-ollama pull llama3.2  # Обновить модель
-```
-
-## Получение помощи
-
-- 📖 Документация: [PROJECT_PLAN.md](PROJECT_PLAN.md)
-- 🐛 Issues: https://github.com/yourusername/Beast_Auto_Reporter/issues
-- 💬 Discussions: https://github.com/yourusername/Beast_Auto_Reporter/discussions
-
----
-
-**Готово!** 🎉 Теперь вы можете использовать Beast Auto Reporter.
-
-Запустите приложение:
-```bash
-streamlit run app.py
-```
-

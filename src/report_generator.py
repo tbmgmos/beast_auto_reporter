@@ -7,25 +7,31 @@ Report Generator Module
 - DOCX (итоговый документ)
 """
 
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')  # Для работы без GUI
-import seaborn as sns
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-from docx import Document
-from docx.shared import Inches, Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List
 import logging
 import io
 
+# Lazy imports for fast startup — heavy libraries loaded on first use
+pd = None
+plt = None
+sns = None
+
 logger = logging.getLogger(__name__)
+
+
+def _ensure_report_libs():
+    global pd, plt, sns
+    if pd is None:
+        import pandas as _pd
+        import matplotlib as _mpl
+        _mpl.use('Agg')
+        import matplotlib.pyplot as _plt
+        import seaborn as _sns
+        pd = _pd
+        plt = _plt
+        sns = _sns
 
 
 class ReportGenerator:
@@ -74,8 +80,9 @@ class ReportGenerator:
             Путь к созданному файлу
         """
         try:
+            _ensure_report_libs()
             logger.info(f"Генерация CSV отчета: {output_path}")
-            
+
             # Подготовка данных
             rows = []
             for defect in defects:
@@ -135,8 +142,13 @@ class ReportGenerator:
             Путь к созданному файлу
         """
         try:
+            _ensure_report_libs()
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
             logger.info(f"Генерация PDF отчета: {output_path}")
-            
+
             # Создание документа
             doc = SimpleDocTemplate(output_path, pagesize=A4)
             story = []
@@ -263,10 +275,13 @@ class ReportGenerator:
             Путь к созданному файлу
         """
         try:
+            from docx import Document
+            from docx.shared import Inches, Pt, RGBColor
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
             logger.info(f"Генерация DOCX отчета: {output_path}")
-            
+
             doc = Document()
-            
+
             # Заголовок
             title = doc.add_heading(f'{self.company_name}', 0)
             title.alignment = WD_ALIGN_PARAGRAPH.CENTER

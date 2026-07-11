@@ -9,7 +9,6 @@ Technical Info Extractor Module
 - Порядок каналов (из Параметры.txt)
 """
 
-import soundfile as sf
 import logging
 from pathlib import Path
 from typing import Dict, Optional
@@ -20,6 +19,55 @@ import sys
 import os
 
 logger = logging.getLogger(__name__)
+
+# Известные "вещательные" частоты кадров, включая дробные NTSC-варианты
+# (24000/1001 и т.п.). Сырое значение из ffprobe снэппится к ближайшей
+# из них, чтобы избавиться от погрешности округления контейнера, но не
+# схлопывается в жёсткие 24/25, как раньше.
+KNOWN_FPS_RATES = [
+    23.976, 24.0, 25.0, 29.97, 30.0, 47.952, 48.0, 50.0, 59.94, 60.0,
+]
+FPS_SNAP_TOLERANCE = 0.02
+
+
+def normalize_fps(fps_str: str, default: float = 25.0) -> float:
+    """Преобразует значение r_frame_rate ffprobe (например, '24000/1001')
+    в float FPS, снэппая к ближайшей известной вещательной частоте."""
+    if not fps_str:
+        return default
+    try:
+        if '/' in fps_str:
+            num, denom = fps_str.split('/')
+            raw_fps = float(num) / float(denom)
+        else:
+            raw_fps = float(fps_str)
+    except (ValueError, ZeroDivisionError):
+        return default
+
+    if raw_fps <= 0:
+        return default
+
+    nearest = min(KNOWN_FPS_RATES, key=lambda rate: abs(rate - raw_fps))
+    if abs(nearest - raw_fps) <= FPS_SNAP_TOLERANCE:
+        return nearest
+
+    # Нестандартная частота (например, VFR-артефакт) — оставляем как есть,
+    # округлив до сотых, чтобы не терять точность при проверке кратности кадру.
+    return round(raw_fps, 2)
+
+
+def format_fps(fps) -> str:
+    """Форматирует FPS для отображения: целые значения без дробной части
+    ('25' вместо '25.0'), дробные — с точностью до 3 знаков ('23.976')."""
+    if fps is None:
+        return ""
+    try:
+        fps = float(fps)
+    except (TypeError, ValueError):
+        return str(fps)
+    if fps.is_integer():
+        return str(int(fps))
+    return f"{fps:.3f}".rstrip('0').rstrip('.')
 
 
 class TechnicalInfoExtractor:
@@ -88,18 +136,22 @@ class TechnicalInfoExtractor:
             file_path_obj = Path(file_path)
             
             # Читаем файл через soundfile
+            import soundfile as sf
             info = sf.info(file_path)
             
-            # Определяем порядок каналов
-            channel_order = self._get_channel_order(info.channels)
-            
+            # Определяем порядок каналов из метаданных ffprobe
+            channel_order = self._get_channel_layout_ffprobe(file_path)
+            if not channel_order:
+                # Нет метаданных layout → fallback "N channels"
+                channel_order = self._get_channel_order(info.channels)
+
             tech_info = {
                 'file_name': file_path_obj.name,
                 'format': file_path_obj.suffix.upper().replace('.', ''),  # WAV, MP3, etc.
                 'sample_rate': info.samplerate,  # Hz
                 'bit_depth': info.subtype,  # PCM_16, PCM_24, FLOAT, etc.
                 'channels': info.channels,  # 2, 6, etc.
-                'channel_order': channel_order,  # L, R или L, R, C, LFE, Ls, Rs
+                'channel_order': channel_order,  # L R C LFE Ls Rs или "6 channels"
                 'duration': info.duration,  # seconds
                 'frames': info.frames
             }
@@ -147,8 +199,13 @@ class TechnicalInfoExtractor:
             duration = float(fmt.get('duration', 0) or 0)
             bits = stream.get('bits_per_sample') or stream.get('bits_per_raw_sample')
             bit_depth = f"PCM_{bits}" if bits else "PCM_24"
-            channel_order = self._get_channel_order(channels) if channels else ""
-            
+            # Читаем channel_layout из метаданных ffprobe
+            raw_layout = stream.get('channel_layout', '')
+            if raw_layout and raw_layout.lower() not in ('unknown', '0 channels'):
+                channel_order = self._LAYOUT_MAP.get(raw_layout.lower(), raw_layout)
+            else:
+                channel_order = self._get_channel_order(channels) if channels else ""
+
             tech_info = {
                 'file_name': file_path_obj.name,
                 'format': file_path_obj.suffix.upper().replace('.', ''),
@@ -166,26 +223,53 @@ class TechnicalInfoExtractor:
             logger.warning(f"ffprobe fallback failed: {e}")
             return {}
     
+    # Маппинг ffprobe channel_layout → читаемый порядок каналов
+    _LAYOUT_MAP = {
+        "mono": "M",
+        "stereo": "L R",
+        "5.1": "L R C LFE Ls Rs",
+        "5.1(side)": "L R C LFE Ls Rs",
+        "5.1(back)": "L R C LFE Ls Rs",
+        "7.1": "L R C LFE Ls Rs Lb Rb",
+        "7.1(wide)": "L R C LFE Ls Rs FLc FRc",
+    }
+
+    def _get_channel_layout_ffprobe(self, file_path: str) -> str:
+        """
+        Извлечение channel_layout из метаданных файла через ffprobe.
+        Возвращает строку порядка каналов или '' если метаданных нет.
+        """
+        try:
+            cmd = [
+                self.ffprobe_path,
+                '-v', 'error',
+                '-select_streams', 'a:0',
+                '-show_entries', 'stream=channel_layout',
+                '-of', 'csv=p=0',
+                str(file_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            layout = result.stdout.strip() if result.returncode == 0 else ''
+            if layout and layout.lower() not in ('unknown', '0 channels'):
+                mapped = self._LAYOUT_MAP.get(layout.lower(), layout)
+                logger.info(f"ffprobe channel_layout: '{layout}' → '{mapped}'")
+                return mapped
+            logger.info(f"ffprobe: channel_layout отсутствует в метаданных")
+            return ''
+        except Exception as e:
+            logger.warning(f"ffprobe channel_layout failed: {e}")
+            return ''
+
     def _get_channel_order(self, num_channels: int) -> str:
         """
-        Определение порядка каналов по их количеству
-        
-        Args:
-            num_channels: Количество каналов
-            
-        Returns:
-            Строка с обозначением порядка каналов
+        Fallback когда нет метаданных layout.
+        Для 1/2 каналов порядок однозначный, для остальных — "{N} channels".
         """
         if num_channels == 1:
-            return "M (Mono)"
-        elif num_channels == 2:
-            return "L, R (Stereo)"
-        elif num_channels == 6:
-            return "L, R, C, LFE, Ls, Rs (5.1)"
-        elif num_channels == 8:
-            return "L, R, C, LFE, Ls, Rs, Lb, Rb (7.1)"
-        else:
-            return f"{num_channels} channels"
+            return "M"
+        if num_channels == 2:
+            return "L R"
+        return f"{num_channels} channels"
     
     def extract_video_info(self, file_path: str) -> Dict:
         """
@@ -276,23 +360,13 @@ class TechnicalInfoExtractor:
                     timecode = video_tags['timecode']
             
             # Извлекаем FPS из видео потока СНАЧАЛА
-            fps = 25  # По умолчанию
+            fps = 25.0  # По умолчанию
             if video_stream:
-                # Пытаемся извлечь FPS
-                fps_str = video_stream.get('r_frame_rate', '25/1')
+                # Пытаемся извлечь FPS (учитываем дробные вещательные частоты
+                # вроде 23.976, 29.97, 59.94 — не схлопываем всё в 24/25)
+                fps_str = video_stream.get('r_frame_rate') or video_stream.get('avg_frame_rate') or '25/1'
                 logger.info(f"🎞️  FPS (raw): {fps_str}")
-                if '/' in fps_str:
-                    num, denom = fps_str.split('/')
-                    fps = round(float(num) / float(denom))
-                else:
-                    fps = round(float(fps_str))
-                
-                # Определяем, 24 или 25 fps (округляем к ближайшему)
-                if abs(fps - 24) < abs(fps - 25):
-                    fps = 24
-                else:
-                    fps = 25
-                
+                fps = normalize_fps(fps_str)
                 logger.info(f"🎞️  FPS (итоговый): {fps}")
             
             # Если таймкода нет, используем start_time
@@ -309,7 +383,21 @@ class TechnicalInfoExtractor:
                     # Используем 01:00:00:00 по умолчанию
                     timecode = "01:00:00:00"
             
-            duration = float(format_data.get('duration', 0))
+            # Приоритет: stream duration → nb_frames/fps → format duration
+            # format.duration на Intel Mac может включать контейнерный паддинг
+            duration = 0.0
+            if video_stream:
+                stream_dur = video_stream.get('duration')
+                nb_frames = video_stream.get('nb_frames')
+                if stream_dur and float(stream_dur) > 0:
+                    duration = float(stream_dur)
+                    logger.info(f"📏 Duration из видеопотока: {duration}")
+                elif nb_frames and int(nb_frames) > 0 and fps > 0:
+                    duration = int(nb_frames) / fps
+                    logger.info(f"📏 Duration из nb_frames ({nb_frames}) / fps ({fps}): {duration}")
+            if duration == 0.0:
+                duration = float(format_data.get('duration', 0))
+                logger.info(f"📏 Duration из format (fallback): {duration}")
             video_format = file_path_obj.suffix.upper().replace('.', '')
             
             tech_info = {

@@ -5,8 +5,12 @@ __pycache__/
 *.so
 .Python
 build/
+build_intel/
+build_debug/
 develop-eggs/
 dist/
+dist_intel/
+dist_debug/
 downloads/
 eggs/
 .eggs/
@@ -25,6 +29,8 @@ MANIFEST
 
 # Virtual environments
 venv/
+venv_x86/
+venv_py313/
 env/
 ENV/
 env.bak/
@@ -33,6 +39,11 @@ venv.bak/
 # IDEs
 .vscode/
 .idea/
+.cursor/
+.continue/
+.kilocode/
+.roo/
+.codex/
 *.swp
 *.swo
 *~
@@ -82,6 +93,9 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+# Claude Code local state / worktrees
+.claude/
+
 # Streamlit
 .streamlit/
 
@@ -94,4 +108,3 @@ dmypy.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-

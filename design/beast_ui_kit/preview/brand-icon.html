@@ -1,0 +1,40 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Inter, sans-serif; background: #F5F5F7; padding: 20px; display: flex; align-items: center; justify-content: center; gap: 24px; }
+.icon-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.icon-frame { width: 80px; height: 80px; border-radius: 18px; overflow: hidden; background: #E8E8ED; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+.icon-frame img { width: 100%; height: 100%; object-fit: cover; }
+.icon-sm { width: 48px; height: 48px; border-radius: 10px; }
+.icon-xs { width: 28px; height: 28px; border-radius: 6px; }
+.name { font-size: 11px; color: #86868B; text-align: center; }
+.cat-placeholder { font-size: 40px; line-height: 1; }
+</style></head><body>
+  <div class="icon-wrap">
+    <div class="icon-frame">
+      <img src="../assets/app_icon.png" alt="Beast Auto Reporter icon" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="cat-placeholder" style="display:none;">🐱</div>
+    </div>
+    <div class="name">App Icon<br>80×80</div>
+  </div>
+  <div class="icon-wrap">
+    <div class="icon-frame icon-sm">
+      <img src="../assets/app_icon.png" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div style="font-size:24px;display:none;">🐱</div>
+    </div>
+    <div class="name">48×48</div>
+  </div>
+  <div class="icon-wrap">
+    <div class="icon-frame icon-xs">
+      <img src="../assets/app_icon.png" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div style="font-size:14px;display:none;">🐱</div>
+    </div>
+    <div class="name">28×28</div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px;max-width:200px;">
+    <div style="font-size:11px;color:#1D1D1F;font-weight:600;">Beast Auto Reporter</div>
+    <div style="font-size:10px;color:#86868B;">Серый кот — маскот бренда. Используется как иконка macOS-приложения. Символизирует внимательность, точность и контроль качества.</div>
+    <div style="font-size:10px;color:#AEAEB2;">assets/app_icon.png</div>
+  </div>
+</body></html>
