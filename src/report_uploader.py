@@ -210,6 +210,20 @@ def remember_uploaded_report(local_folder: str, remote_path: str, path: Path = U
     save_uploaded_reports(entries[:_MAX_REMEMBERED_UPLOADS], path)
 
 
+def forget_uploaded_reports(entries_to_forget: list[dict], path: Path = UPLOADED_REPORTS_FILE) -> None:
+    """Убирает записи (по remote_path) из списка отправленных отчётов.
+
+    Вызывается после уведомления «отчёты пропали с Диска»: без этого те же
+    протухшие записи находились бы проверкой целостности заново при каждом
+    запуске, и одно и то же уведомление всплывало бы каждую сессию.
+    """
+    forget_paths = {e.get("remote_path") for e in entries_to_forget}
+    entries = load_uploaded_reports(path)
+    remaining = [e for e in entries if e.get("remote_path") not in forget_paths]
+    if len(remaining) != len(entries):
+        save_uploaded_reports(remaining, path)
+
+
 _EPISODE_FOLDER_NAME = re.compile(r"^e\d{2}$")
 
 
@@ -453,6 +467,9 @@ class DocumentSummary:
     new_marker_count: int = 0
     parameters: dict = field(default_factory=dict)  # {"2.0 cens": {"LOUDNESS": "-23.1 LUFS", ...}, ...}
     parameter_status: dict = field(default_factory=dict)  # {"2.0 cens": {"LOUDNESS": "bad"|"warn"}, ...}
+    # Содержимое строк MARKER LIST для попозиционного diff'а между версиями:
+    # [{"tc_in", "tc_out", "description", "blocker": bool, "comments"}, ...]
+    markers: list = field(default_factory=list)
 
 
 # Цвета заливки, которыми ExactReportGenerator подсвечивает несоответствие
@@ -512,6 +529,32 @@ def _summarize_document(doc) -> DocumentSummary:
                 if comments_idx < len(row.cells)
                 and "НОВЫЙ МАРКЕР" in row.cells[comments_idx].text.strip().upper()
             )
+
+        def _column_index(*names):
+            for i, text in enumerate(header_cells):
+                if text.upper() in names:
+                    return i
+            return None
+
+        tc_in_idx = _column_index("TIMECODE IN")
+        tc_out_idx = _column_index("TIMECODE OUT")
+        description_idx = _column_index("DESCRIPTION", "ОПИСАНИЕ ПРОБЛЕМЫ", "ОПИСАНИЕ")
+
+        def _cell_text(row, idx):
+            if idx is None or idx >= len(row.cells):
+                return ""
+            return row.cells[idx].text.strip()
+
+        summary.markers = [
+            {
+                "tc_in": _cell_text(row, tc_in_idx),
+                "tc_out": _cell_text(row, tc_out_idx),
+                "description": _cell_text(row, description_idx),
+                "blocker": _cell_text(row, blocker_idx) == "*",
+                "comments": _cell_text(row, comments_idx),
+            }
+            for row in data_rows
+        ]
         break
 
     for table in doc.tables:
@@ -600,6 +643,62 @@ def _format_parameter_changes(old_params: dict, new_params: dict, new_status: di
     return result
 
 
+def diff_markers(old_markers: list, new_markers: list) -> dict:
+    """Попозиционный diff маркеров двух версий отчёта по таймкодам.
+
+    Ключ сопоставления — Timecode In (дубли одного таймкода внутри версии
+    различаются порядковым номером появления). Возвращает
+    {"added": [маркер, ...], "removed": [маркер, ...],
+     "changed": [{"tc_in", "changes": [{"field", "old", "new"}, ...]}, ...]}
+    — added/removed в порядке таймкодов новой/старой версии соответственно.
+    """
+    def _keyed(markers):
+        occurrences: dict = {}
+        result = {}
+        for marker in markers:
+            tc = marker.get("tc_in", "")
+            occurrences[tc] = occurrences.get(tc, 0) + 1
+            result[(tc, occurrences[tc])] = marker
+        return result
+
+    old_by_key = _keyed(old_markers)
+    new_by_key = _keyed(new_markers)
+
+    added = [marker for key, marker in new_by_key.items() if key not in old_by_key]
+    removed = [marker for key, marker in old_by_key.items() if key not in new_by_key]
+
+    _FIELD_LABELS = [
+        ("description", "Описание"),
+        ("tc_out", "Timecode Out"),
+        ("blocker", "Блокер"),
+        ("comments", "Комментарии"),
+    ]
+
+    def _display(field_name, value):
+        if field_name == "blocker":
+            return "да" if value else "нет"
+        return value or "—"
+
+    changed = []
+    for key, new_marker in new_by_key.items():
+        old_marker = old_by_key.get(key)
+        if old_marker is None:
+            continue
+        field_changes = [
+            {
+                "field": label,
+                "old": _display(field_name, old_marker.get(field_name)),
+                "new": _display(field_name, new_marker.get(field_name)),
+            }
+            for field_name, label in _FIELD_LABELS
+            if old_marker.get(field_name) != new_marker.get(field_name)
+        ]
+        if field_changes:
+            changed.append({"tc_in": key[0], "changes": field_changes})
+
+    return {"added": added, "removed": removed, "changed": changed}
+
+
 @dataclass
 class ReportComparison:
     marker_count_old: int
@@ -609,6 +708,9 @@ class ReportComparison:
     new_marker_count_old: int
     new_marker_count_new: int
     parameter_changes: list
+    # Результат diff_markers (added/removed/changed) либо None, если
+    # таблицы маркеров не найдены ни в одной из версий.
+    marker_diff: dict = None
 
 
 def _find_docx_in_report_folder(client: YandexDiskClient, report_folder_path: str) -> str | None:
@@ -637,6 +739,9 @@ def _resolve_docx_path(client: YandexDiskClient, report_path: str) -> str | None
 
 
 def _build_comparison(old_summary: DocumentSummary, new_summary: DocumentSummary) -> ReportComparison:
+    marker_diff = None
+    if old_summary.markers or new_summary.markers:
+        marker_diff = diff_markers(old_summary.markers, new_summary.markers)
     return ReportComparison(
         marker_count_old=old_summary.marker_count,
         marker_count_new=new_summary.marker_count,
@@ -647,6 +752,7 @@ def _build_comparison(old_summary: DocumentSummary, new_summary: DocumentSummary
         parameter_changes=_format_parameter_changes(
             old_summary.parameters, new_summary.parameters, new_summary.parameter_status
         ),
+        marker_diff=marker_diff,
     )
 
 

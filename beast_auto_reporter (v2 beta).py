@@ -6600,6 +6600,10 @@ class BeastApp(QMainWindow):
             "Проверка на Диске",
             f"{len(missing)} отчёт(ов) пропали с Диска — подробности в логе приложения",
         )
+        # Уведомили один раз — забываем эти записи, иначе то же самое
+        # уведомление всплывало бы при каждом запуске приложения.
+        from src.report_uploader import forget_uploaded_reports
+        forget_uploaded_reports(missing)
 
     def _send_report_to_disk(self):
         """Сравнивает отчёт с предыдущей версией и отправляет его на Яндекс.Диск."""

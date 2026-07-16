@@ -10,7 +10,9 @@ from src.report_filename import parse_report_filename
 from src.report_uploader import (
     compare_two_versions,
     compare_with_previous,
+    diff_markers,
     fallback_series_key,
+    forget_uploaded_reports,
     find_latest_report_in_folder,
     find_previous_report,
     find_series_folder,
@@ -296,20 +298,28 @@ def _make_report_docx(path, *, markers, track_params, track_cell_bg=None):
     """Собирает .docx с таблицей маркеров (как MARKER LIST) и таблицей
 
     параметров (как в _add_technical_table_with_conclusion), для тестов
-    подсчёта маркеров/параметров. track_cell_bg — необязательная заливка
-    конкретных ячеек параметров: {"2.0 cens": {"LOUDNESS": "E73322"}}.
+    подсчёта маркеров/параметров. markers — либо число (строки только с
+    таймкодом), либо список словарей {tc_in, tc_out, description, blocker,
+    comments}. track_cell_bg — необязательная заливка конкретных ячеек
+    параметров: {"2.0 cens": {"LOUDNESS": "E73322"}}.
     """
     doc = Document()
     track_cell_bg = track_cell_bg or {}
 
-    marker_table = doc.add_table(rows=1 + markers, cols=8)
+    marker_rows = ([{"tc_in": f"00:00:{i:02d}"} for i in range(markers)]
+                   if isinstance(markers, int) else markers)
+    marker_table = doc.add_table(rows=1 + len(marker_rows), cols=8)
     headers = ["Timecode In", "Timecode Out", "Description", "2.0 C",
                "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"]
     for col, header in enumerate(headers):
         marker_table.rows[0].cells[col].text = header
-    for row_idx in range(markers):
+    for row_idx, marker in enumerate(marker_rows):
         row = marker_table.rows[1 + row_idx]
-        row.cells[0].text = f"00:00:{row_idx:02d}"
+        row.cells[0].text = marker.get("tc_in", "")
+        row.cells[1].text = marker.get("tc_out", "")
+        row.cells[2].text = marker.get("description", "")
+        row.cells[4].text = "*" if marker.get("blocker") else ""
+        row.cells[7].text = marker.get("comments", "")
 
     param_headers = ["ДОРОЖКА", "НАЗВАНИЕ ФАЙЛОВ", "ХРОНОМЕТРАЖ", "LOUDNESS", "TRUE PEAK", "LRA", "ФОРМАТ ФАЙЛА"]
     param_table = doc.add_table(rows=1 + len(track_params), cols=len(param_headers))
@@ -501,6 +511,105 @@ def test_upload_folder_uploads_all_files_non_recursively(tmp_path):
         "отчеты/Show/e48/Show.pdf",
         "отчеты/Show/e48/отчет_Show.docx",
     ]
+
+
+def test_diff_markers_detects_added_removed_and_changed():
+    old = [
+        {"tc_in": "01:00:05", "tc_out": "01:00:07", "description": "провал громкости", "blocker": False, "comments": ""},
+        {"tc_in": "01:02:00", "tc_out": "01:02:03", "description": "щелчок", "blocker": False, "comments": ""},
+    ]
+    new = [
+        {"tc_in": "01:00:05", "tc_out": "01:00:07", "description": "провал громкости", "blocker": True, "comments": ""},
+        {"tc_in": "01:05:00", "tc_out": "01:05:02", "description": "рассинхрон", "blocker": False, "comments": ""},
+    ]
+
+    diff = diff_markers(old, new)
+
+    assert [m["tc_in"] for m in diff["added"]] == ["01:05:00"]
+    assert [m["tc_in"] for m in diff["removed"]] == ["01:02:00"]
+    assert len(diff["changed"]) == 1
+    change = diff["changed"][0]
+    assert change["tc_in"] == "01:00:05"
+    assert change["changes"] == [{"field": "Блокер", "old": "нет", "new": "да"}]
+
+
+def test_diff_markers_handles_duplicate_timecodes_positionally():
+    # Два маркера на одном таймкоде: удаление одного из них — это
+    # «удалён», а не ложное «изменён» для оставшегося.
+    old = [
+        {"tc_in": "01:00:00", "tc_out": "", "description": "первый", "blocker": False, "comments": ""},
+        {"tc_in": "01:00:00", "tc_out": "", "description": "второй", "blocker": False, "comments": ""},
+    ]
+    new = [
+        {"tc_in": "01:00:00", "tc_out": "", "description": "первый", "blocker": False, "comments": ""},
+    ]
+
+    diff = diff_markers(old, new)
+
+    assert diff["changed"] == []
+    assert [m["description"] for m in diff["removed"]] == ["второй"]
+    assert diff["added"] == []
+
+
+def test_diff_markers_no_changes_returns_empty_sections():
+    markers = [{"tc_in": "01:00:00", "tc_out": "", "description": "шум", "blocker": False, "comments": ""}]
+    assert diff_markers(markers, markers) == {"added": [], "removed": [], "changed": []}
+
+
+def test_compare_with_previous_builds_marker_diff(tmp_path):
+    new_docx_path = tmp_path / "отчет_Show.docx"
+    _make_report_docx(
+        new_docx_path,
+        markers=[
+            {"tc_in": "01:00:05", "description": "провал громкости стал глубже"},
+            {"tc_in": "01:09:00", "description": "новый щелчок"},
+        ],
+        track_params={},
+    )
+
+    old_bytes_io = io.BytesIO()
+    _make_report_docx(
+        old_bytes_io,
+        markers=[{"tc_in": "01:00:05", "description": "провал громкости"}],
+        track_params={},
+    )
+
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "отчет_Show_s01_e02_2025_06_23_rus.docx", "type": "file",
+         "path": "disk:/e02/v1/отчет_Show_s01_e02_2025_06_23_rus.docx"},
+    ]
+    client.download_bytes.return_value = old_bytes_io.getvalue()
+
+    comparison = compare_with_previous(client, "disk:/e02/v1", new_docx_path)
+
+    assert [m["tc_in"] for m in comparison.marker_diff["added"]] == ["01:09:00"]
+    assert comparison.marker_diff["removed"] == []
+    change = comparison.marker_diff["changed"][0]
+    assert change["tc_in"] == "01:00:05"
+    assert change["changes"] == [
+        {"field": "Описание", "old": "провал громкости", "new": "провал громкости стал глубже"},
+    ]
+
+
+def test_forget_uploaded_reports_removes_only_listed_entries(tmp_path):
+    path = tmp_path / "uploaded.json"
+    remember_uploaded_report("/local/a", "/отчеты/a", path)
+    remember_uploaded_report("/local/b", "/отчеты/b", path)
+
+    forget_uploaded_reports([{"remote_path": "/отчеты/a"}], path)
+
+    remaining = load_uploaded_reports(path)
+    assert [e["remote_path"] for e in remaining] == ["/отчеты/b"]
+
+
+def test_forget_uploaded_reports_noop_for_unknown_paths(tmp_path):
+    path = tmp_path / "uploaded.json"
+    remember_uploaded_report("/local/a", "/отчеты/a", path)
+
+    forget_uploaded_reports([{"remote_path": "/отчеты/нет_такого"}], path)
+
+    assert len(load_uploaded_reports(path)) == 1
 
 
 def test_series_aliases_round_trip(tmp_path):

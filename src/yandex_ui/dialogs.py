@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import shutil
 import subprocess
 import tempfile
@@ -84,31 +85,45 @@ class YandexUploadDiffDialog(QDialog):
         ))
         layout.addWidget(card)
 
-        params_title = QLabel("Параметры")
-        params_title.setFont(QFont(".AppleSystemUIFont", 12, QFont.DemiBold))
-        params_title.setStyleSheet("color: #1D1D1F;")
-        layout.addWidget(params_title)
+        # Маркеры (diff по таймкодам) и параметры — в одном скролле,
+        # чтобы длинные списки не спорили друг с другом за высоту диалога.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
 
+        marker_diff = getattr(comparison, "marker_diff", None) or {}
+        added = marker_diff.get("added", [])
+        removed = marker_diff.get("removed", [])
+        changed = marker_diff.get("changed", [])
+        if added or removed or changed:
+            content_layout.addWidget(self._section_title("Маркеры"))
+            if added:
+                content_layout.addWidget(self._marker_group_card(
+                    f"Добавлены ({len(added)})", added, bg="#EDFAF0", border="#C9EED3"))
+            if removed:
+                content_layout.addWidget(self._marker_group_card(
+                    f"Удалены ({len(removed)})", removed, bg="#FFF1F0", border="#FFD4D1", strike=True))
+            if changed:
+                content_layout.addWidget(self._marker_changed_card(changed))
+
+        content_layout.addWidget(self._section_title("Параметры"))
         if comparison.parameter_changes:
-            params_scroll = QScrollArea()
-            params_scroll.setWidgetResizable(True)
-            params_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-            params_content = QWidget()
-            params_content.setStyleSheet("background: transparent;")
-            params_layout = QVBoxLayout(params_content)
-            params_layout.setContentsMargins(0, 0, 0, 0)
-            params_layout.setSpacing(10)
             for change in comparison.parameter_changes:
-                params_layout.addWidget(self._parameter_card(change))
-            params_layout.addStretch()
-            params_scroll.setWidget(params_content)
-            layout.addWidget(params_scroll, 1)
+                content_layout.addWidget(self._parameter_card(change))
         else:
             no_changes = QLabel("Без изменений.")
             no_changes.setFont(QFont(".AppleSystemUIFont", 12))
             no_changes.setStyleSheet("color: #86868B;")
-            layout.addWidget(no_changes)
-            layout.addStretch()
+            content_layout.addWidget(no_changes)
+
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
 
         buttons_row = QHBoxLayout()
         buttons_row.setSpacing(8)
@@ -212,6 +227,90 @@ class YandexUploadDiffDialog(QDialog):
             row_layout.addWidget(delta_widget)
 
         return row
+
+    @staticmethod
+    def _section_title(text: str) -> QLabel:
+        title = QLabel(text)
+        title.setFont(QFont(".AppleSystemUIFont", 12, QFont.DemiBold))
+        title.setStyleSheet("color: #1D1D1F; background: transparent; border: none;")
+        return title
+
+    @staticmethod
+    def _marker_group_card(title: str, markers: list, *, bg: str, border: str, strike: bool = False) -> QWidget:
+        """Карточка «Добавлены (N)»/«Удалены (N)»: строка на маркер —
+
+        таймкод + описание (+ пометка «блокер»). strike=True перечёркивает
+        текст (удалённые маркеры).
+        """
+        card = QWidget()
+        card.setStyleSheet(f"""
+            QWidget {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+        """)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        header = QLabel(title)
+        header.setFont(QFont(".AppleSystemUIFont", 11, QFont.DemiBold))
+        header.setStyleSheet("color: #1D1D1F; background: transparent; border: none;")
+        layout.addWidget(header)
+
+        for marker in markers:
+            description = marker.get("description") or "—"
+            blocker_suffix = "  ⛔ блокер" if marker.get("blocker") else ""
+            text = f'{marker.get("tc_in", "")}  {description}{blocker_suffix}'
+            row = QLabel(f"<s>{html.escape(text)}</s>" if strike else html.escape(text))
+            row.setTextFormat(Qt.RichText)
+            row.setFont(QFont(".AppleSystemUIFont", 11))
+            row.setStyleSheet("color: #1D1D1F; background: transparent; border: none;")
+            row.setWordWrap(True)
+            layout.addWidget(row)
+
+        return card
+
+    @classmethod
+    def _marker_changed_card(cls, changed: list) -> QWidget:
+        """Карточка «Изменены (N)»: таймкод + построчно «поле: было → стало»."""
+        card = QWidget()
+        card.setStyleSheet("""
+            QWidget {
+                background: #F0F6FF;
+                border: 1px solid #D6E6FF;
+                border-radius: 8px;
+            }
+        """)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        header = QLabel(f"Изменены ({len(changed)})")
+        header.setFont(QFont(".AppleSystemUIFont", 11, QFont.DemiBold))
+        header.setStyleSheet("color: #1D1D1F; background: transparent; border: none;")
+        layout.addWidget(header)
+
+        for entry in changed:
+            tc_label = QLabel(entry.get("tc_in", ""))
+            tc_label.setFont(QFont(".AppleSystemUIFont", 11, QFont.DemiBold))
+            tc_label.setStyleSheet("color: #1D1D1F; background: transparent; border: none;")
+            layout.addWidget(tc_label)
+            for item in entry.get("changes", []):
+                row = QLabel(
+                    f'<span style="color:#86868B;">{html.escape(item["field"])}:</span> '
+                    f'<span style="color:#B3B3BA;">{html.escape(item["old"])}</span>'
+                    f'&nbsp;→&nbsp;'
+                    f'<b style="color:#007AFF;">{html.escape(item["new"])}</b>'
+                )
+                row.setTextFormat(Qt.RichText)
+                row.setFont(QFont(".AppleSystemUIFont", 11))
+                row.setStyleSheet("background: transparent; border: none; margin-left: 10px;")
+                row.setWordWrap(True)
+                layout.addWidget(row)
+
+        return card
 
     @staticmethod
     def _parameter_card(change: dict) -> QWidget:
