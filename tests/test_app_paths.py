@@ -1,4 +1,30 @@
-from src.app_paths import ensure_parent_dir, migrate_legacy_config_file
+from src.app_paths import atomic_write_text, ensure_parent_dir, migrate_legacy_config_file
+
+
+def test_atomic_write_text_writes_content_and_leaves_no_tmp(tmp_path):
+    target = tmp_path / "state.json"
+
+    atomic_write_text(target, '{"a": 1}')
+
+    assert target.read_text(encoding="utf-8") == '{"a": 1}'
+    assert list(tmp_path.iterdir()) == [target]  # временный файл убран
+
+
+def test_atomic_write_text_overwrites_existing_file(tmp_path):
+    target = tmp_path / "state.json"
+    target.write_text("старое", encoding="utf-8")
+
+    atomic_write_text(target, "новое")
+
+    assert target.read_text(encoding="utf-8") == "новое"
+
+
+def test_atomic_write_text_creates_missing_parent(tmp_path):
+    target = tmp_path / "missing" / "state.json"
+
+    atomic_write_text(target, "x")
+
+    assert target.read_text(encoding="utf-8") == "x"
 
 
 def test_ensure_parent_dir_creates_missing_directories(tmp_path):

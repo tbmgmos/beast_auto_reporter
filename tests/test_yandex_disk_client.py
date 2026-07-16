@@ -1,3 +1,4 @@
+import io
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 from urllib.error import HTTPError
@@ -66,12 +67,49 @@ def test_get_meta_raises_on_missing_resource():
 
 def test_list_folder_returns_items():
     client = YandexDiskClient("test-token")
-    payload = '{"_embedded": {"items": [{"name": "e01", "type": "dir", "path": "disk:/отчеты/Show/e01"}]}}'.encode("utf-8")
+    payload = '{"_embedded": {"items": [{"name": "e01", "type": "dir", "path": "disk:/отчеты/Show/e01"}], "total": 1}}'.encode("utf-8")
 
     with patch("src.yandex_disk_client.urlopen", return_value=DummyResponse(payload)):
         items = client.list_folder("отчеты/Show")
 
     assert items == [{"name": "e01", "type": "dir", "path": "disk:/отчеты/Show/e01"}]
+
+
+def test_list_folder_paginates_beyond_first_page():
+    # Папка с числом элементов больше limit одного запроса: раньше
+    # результат молча обрезался, и элементы со второй страницы «не
+    # находились» (например, папка сериала при поиске по корню).
+    client = YandexDiskClient("test-token")
+    page1 = ('{"_embedded": {"items": ['
+             + ",".join(f'{{"name": "s{i}", "type": "dir"}}' for i in range(1000))
+             + '], "total": 1002}}').encode("utf-8")
+    page2 = ('{"_embedded": {"items": ['
+             '{"name": "хвост_1", "type": "dir"}, {"name": "хвост_2", "type": "dir"}'
+             '], "total": 1002}}').encode("utf-8")
+    captured_urls = []
+
+    def fake_urlopen(request, timeout=None):
+        captured_urls.append(request.full_url)
+        return DummyResponse(page1 if len(captured_urls) == 1 else page2)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=fake_urlopen):
+        items = client.list_folder("отчеты")
+
+    assert len(items) == 1002
+    assert items[-1]["name"] == "хвост_2"
+    assert "offset=0" in captured_urls[0]
+    assert "offset=1000" in captured_urls[1]
+    assert len(captured_urls) == 2
+
+
+def test_list_folder_stops_on_empty_page_even_if_total_lies():
+    # Защита от зацикливания, если API вернёт total больше фактического
+    # числа элементов (или страница окажется пустой по любой причине).
+    client = YandexDiskClient("test-token")
+    payload = b'{"_embedded": {"items": [], "total": 10}}'
+
+    with patch("src.yandex_disk_client.urlopen", return_value=DummyResponse(payload)):
+        assert client.list_folder("отчеты") == []
 
 
 def test_list_folder_does_not_percent_encode_colon_in_disk_path():
@@ -99,6 +137,29 @@ def test_mkdir_ignores_existing_folder_conflict():
 
     with patch("src.yandex_disk_client.urlopen", side_effect=error):
         client.mkdir("отчеты/Show/e01")  # не должно поднимать исключение
+
+
+def test_mkdir_ignores_409_when_folder_already_exists():
+    client = YandexDiskClient("test-token")
+    body = io.BytesIO(b'{"error": "DiskPathPointsToExistentDirectoryError"}')
+    error = HTTPError(url="x", code=409, msg="Conflict", hdrs=None, fp=body)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=error):
+        client.mkdir("отчеты/Show/e01")  # папка уже есть — mkdir идемпотентен
+
+
+def test_mkdir_raises_409_when_parent_path_missing():
+    # У API Диска 409 означает и «папка уже есть», и «родительский путь
+    # не существует» — второе глотать нельзя, иначе ошибка всплывёт позже
+    # в непонятном месте (при загрузке файлов в несозданную папку).
+    client = YandexDiskClient("test-token")
+    body = io.BytesIO(b'{"error": "DiskPathDoesntExistsError"}')
+    error = HTTPError(url="x", code=409, msg="Conflict", hdrs=None, fp=body)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=error):
+        with pytest.raises(YandexDiskError) as exc_info:
+            client.mkdir("отчеты/Нет_такого_родителя/e01")
+    assert exc_info.value.error_code == "DiskPathDoesntExistsError"
 
 
 def test_mkdir_raises_on_other_errors():

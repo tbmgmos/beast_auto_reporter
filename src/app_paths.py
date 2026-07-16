@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -26,6 +27,20 @@ def ensure_parent_dir(path: Path) -> None:
     (включая токен Яндекс.Диска) никогда бы не сохранялись.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Атомарная запись текстового файла: сначала во временный файл в той же
+
+    директории, затем os.replace (атомарен в пределах одной ФС). Обрыв
+    процесса или параллельная запись из другого потока не оставят
+    полузаписанный/битый файл — читатель всегда видит либо старую, либо
+    новую версию целиком.
+    """
+    ensure_parent_dir(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def migrate_legacy_config_file(old_path: Path, new_path: Path) -> None:

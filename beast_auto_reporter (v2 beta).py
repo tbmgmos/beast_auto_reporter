@@ -368,7 +368,7 @@ def _matching_base_name(name: str) -> str:
     return base
 
 
-from src.app_paths import CONFIG_DIR, ensure_parent_dir, migrate_legacy_config_file  # noqa: E402
+from src.app_paths import CONFIG_DIR, atomic_write_text, migrate_legacy_config_file  # noqa: E402
 from src import secret_store  # noqa: E402
 from src.file_matching import _levenshtein, _bases_match  # noqa: E402
 from src.report_filename import parse_report_filename  # noqa: E402
@@ -2212,10 +2212,9 @@ class SettingsDialog(QDialog):
         """Сохранение настроек в JSON-файл"""
         import json
         try:
-            ensure_parent_dir(cls.CONFIG_FILE)
-            cls.CONFIG_FILE.write_text(
+            atomic_write_text(
+                cls.CONFIG_FILE,
                 json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
             )
         except Exception as e:
             logger.warning(f"Не удалось сохранить настройки: {e}")

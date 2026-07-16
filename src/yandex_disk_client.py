@@ -20,11 +20,18 @@ API_BASE = "https://cloud-api.yandex.net/v1/disk"
 
 
 class YandexDiskError(Exception):
-    """Ошибка при обращении к API Яндекс.Диска."""
+    """Ошибка при обращении к API Яндекс.Диска.
 
-    def __init__(self, message: str, status_code: int | None = None):
+    error_code — машиночитаемое поле "error" из тела ответа API
+    (например, "DiskPathDoesntExistsError"), если его удалось разобрать:
+    один и тот же HTTP-статус у Диска означает разные ситуации
+    (409 — и «папка уже есть», и «родительский путь не существует»).
+    """
+
+    def __init__(self, message: str, status_code: int | None = None, error_code: str | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.error_code = error_code
 
 
 class YandexDiskClient:
@@ -51,9 +58,14 @@ class YandexDiskClient:
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
             logger.warning(f"Yandex.Disk API {method} {url} -> HTTP {exc.code}: {body}")
+            try:
+                error_code = json.loads(body).get("error")
+            except (ValueError, AttributeError):
+                error_code = None
             raise YandexDiskError(
                 f"Яндекс.Диск вернул ошибку {exc.code}: {body}\nЗапрос: {method} {url}",
                 status_code=exc.code,
+                error_code=error_code,
             ) from exc
         except URLError as exc:
             logger.warning(f"Yandex.Disk API {method} {url} -> {exc}")
@@ -76,18 +88,38 @@ class YandexDiskClient:
         return self._request("GET", url)
 
     def list_folder(self, path: str) -> list[dict]:
-        """Возвращает список элементов (файлов и папок) в указанной папке."""
-        url = f"{API_BASE}/resources?path={quote(path, safe='/:')}&limit=1000"
-        result = self._request("GET", url)
-        return result.get("_embedded", {}).get("items", [])
+        """Возвращает список элементов (файлов и папок) в указанной папке.
+
+        Постранично (limit=1000 за запрос): раньше папка с более чем 1000
+        элементами молча обрезалась, и, например, папка сериала «не
+        находилась» при поиске по корню.
+        """
+        items: list[dict] = []
+        limit = 1000
+        while True:
+            url = (f"{API_BASE}/resources?path={quote(path, safe='/:')}"
+                   f"&limit={limit}&offset={len(items)}")
+            result = self._request("GET", url)
+            embedded = result.get("_embedded", {})
+            page = embedded.get("items", [])
+            items.extend(page)
+            total = embedded.get("total")
+            if not page or total is None or len(items) >= total:
+                return items
 
     def mkdir(self, path: str) -> None:
-        """Создаёт папку. Не поднимает ошибку, если папка уже существует."""
+        """Создаёт папку. Не поднимает ошибку, если папка уже существует.
+
+        Важно: 409 у API Диска означает и «папка уже существует» (это
+        глотаем — mkdir идемпотентен), и «родительский путь не существует»
+        (DiskPathDoesntExistsError — это настоящая ошибка, глотать её
+        нельзя, иначе она всплывёт позже в непонятном месте при загрузке).
+        """
         url = f"{API_BASE}/resources?path={quote(path, safe='/:')}"
         try:
             self._request("PUT", url)
         except YandexDiskError as exc:
-            if exc.status_code != 409:
+            if exc.status_code != 409 or exc.error_code == "DiskPathDoesntExistsError":
                 raise
 
     def move(self, from_path: str, to_path: str) -> None:

@@ -18,7 +18,7 @@ from pathlib import Path
 from docx import Document
 from docx.oxml.ns import qn
 
-from src.app_paths import CONFIG_DIR, ensure_parent_dir, migrate_legacy_config_file
+from src.app_paths import CONFIG_DIR, atomic_write_text, migrate_legacy_config_file
 from src.file_matching import _bases_match
 from src.report_filename import ReportMeta, parse_report_filename
 from src.yandex_disk_client import YandexDiskClient, YandexDiskError
@@ -127,10 +127,9 @@ def load_series_aliases(path: Path = SERIES_ALIASES_FILE) -> dict:
 
 def save_series_aliases(aliases: dict, path: Path = SERIES_ALIASES_FILE) -> None:
     try:
-        ensure_parent_dir(path)
-        path.write_text(
+        atomic_write_text(
+            path,
             json.dumps(aliases, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
         )
     except OSError as exc:
         logger.warning(f"Не удалось сохранить алиасы серий: {exc}")
@@ -189,11 +188,7 @@ def load_uploaded_reports(path: Path = UPLOADED_REPORTS_FILE) -> list[dict]:
 
 def save_uploaded_reports(entries: list[dict], path: Path = UPLOADED_REPORTS_FILE) -> None:
     try:
-        ensure_parent_dir(path)
-        path.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_text(path, json.dumps(entries, ensure_ascii=False, indent=2))
     except OSError as exc:
         logger.warning(f"Не удалось сохранить список отправленных отчётов: {exc}")
 
@@ -836,11 +831,7 @@ class UploadQueue:
 def save_queue_state(queue: UploadQueue, path: Path) -> None:
     """Сохраняет состояние очереди автозагрузки в JSON-файл."""
     try:
-        ensure_parent_dir(path)
-        path.write_text(
-            json.dumps(queue.to_dicts(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_text(path, json.dumps(queue.to_dicts(), ensure_ascii=False, indent=2))
     except OSError as exc:
         logger.warning(f"Не удалось сохранить состояние очереди Яндекс.Диска: {exc}")
 
