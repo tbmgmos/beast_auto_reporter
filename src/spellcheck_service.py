@@ -179,9 +179,13 @@ class SpellcheckService:
         return False
 
     @classmethod
-    def correct_text(cls, text: str) -> Tuple[str, List[Tuple[str, str]]]:
+    def correct_text(cls, text: str, approved=None) -> Tuple[str, List[Tuple[str, str]]]:
         """
         Проверяет и по возможности исправляет опечатки в тексте.
+
+        approved: None — применять все уверенные исправления (автоматический
+        режим); иначе — множество пар (было, стало), одобренных пользователем
+        в диалоге ревью: исправление вне множества не применяется.
 
         Returns:
             (исправленный_текст, [(было, стало), ...])
@@ -215,6 +219,8 @@ class SpellcheckService:
 
             fixed = _apply_case(stripped, suggestion)
             if fixed == stripped:
+                return word
+            if approved is not None and (word, fixed) not in approved:
                 return word
 
             corrections.append((word, fixed))

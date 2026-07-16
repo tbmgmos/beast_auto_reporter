@@ -370,6 +370,7 @@ def _matching_base_name(name: str) -> str:
 
 from src.app_paths import CONFIG_DIR, atomic_write_text, migrate_legacy_config_file  # noqa: E402
 from src import secret_store  # noqa: E402
+from src.spellcheck_review import SpellcheckReviewDialog, SpellcheckScanThread  # noqa: E402
 from src.file_matching import _levenshtein, _bases_match  # noqa: E402
 from src.report_filename import parse_report_filename  # noqa: E402
 from src.report_uploader import (  # noqa: E402
@@ -2717,7 +2718,7 @@ class ProcessingThread(QThread):
     true_peak_results_ready = pyqtSignal(list)  # результаты измерений для диалога
 
     def __init__(self, app, files_data, report_type, output_folder, pyloudnorm_enabled=False,
-                 tp_verify_enabled=False, delete_sources=False):
+                 tp_verify_enabled=False, delete_sources=False, spell_approved=None):
         super().__init__()
         self.app = app
         self.files_data = files_data
@@ -2726,6 +2727,10 @@ class ProcessingThread(QThread):
         self.pyloudnorm_enabled = pyloudnorm_enabled
         self.tp_verify_enabled = tp_verify_enabled
         self.delete_sources = delete_sources
+        # Одобренные в диалоге ревью замены орфографии: множество пар
+        # (было, стало); None — применять все уверенные автоматически
+        # (путь без диалога, например если скан не удался).
+        self.spell_approved = spell_approved
         self._tp_verify_loop = None
         self._tp_verify_results = None
     
@@ -3567,7 +3572,7 @@ class ProcessingThread(QThread):
                 csv_file = csv_files[0]
                 logger.info(f"Импорт CSV: {csv_file}")
                 importer = CSVImporter()
-                issues = importer.import_issues(csv_file)
+                issues = importer.import_issues(csv_file, approved_corrections=self.spell_approved)
                 logger.info(f"✅ Импортировано проблем: {len(issues)}")
             
             self.progress_update.emit(70)
@@ -4238,6 +4243,7 @@ class BeastApp(QMainWindow):
         self._closing = True
 
         _stop_thread(getattr(self, "preview_thread", None))
+        _stop_thread(getattr(self, "_spell_scan_thread", None))
         _stop_thread(getattr(self, "_yandex_find_thread", None))
         _stop_thread(getattr(self, "_yandex_versions_thread", None))
         _stop_thread(getattr(self, "_yandex_compare_thread", None))
@@ -6334,7 +6340,41 @@ class BeastApp(QMainWindow):
 
         if getattr(self, "auto_report_type_checkbox", None) and self.auto_report_type_checkbox.isChecked():
             self._apply_auto_detected_report_type(self._get_all_loaded_files())
-        
+
+        # Перед генерацией — фоновый скан CSV на опечатки и диалог ревью
+        # «было → стало»: в отчёт попадают только одобренные замены
+        # (см. src/spellcheck_review.py). Кнопки блокируются сразу, чтобы
+        # повторный клик «Создать» не запустил второй скан/генерацию.
+        csv_files_for_scan = self.files_data.get('csv', [])
+        if csv_files_for_scan:
+            self._processing_active = True
+            self._set_generate_button_processing(True)
+            self._update_action_buttons()
+            self.progress_card.setVisible(True)
+            self._set_progress_status_text("Проверка орфографии маркер-листа…")
+            self._spell_scan_thread = SpellcheckScanThread(csv_files_for_scan[0])
+            self._spell_scan_thread.finished_scan.connect(self._on_spell_scan_finished)
+            self._spell_scan_thread.start()
+            return
+
+        self._start_processing_stage2(spell_approved=None)
+
+    def _on_spell_scan_finished(self, proposals: list):
+        if getattr(self, "_closing", False):
+            return
+        if not proposals:
+            # Опечаток не найдено (или словари недоступны) — диалог не нужен.
+            self._start_processing_stage2(spell_approved=set())
+            return
+        dialog = SpellcheckReviewDialog(proposals, parent=self)
+        dialog.exec_()
+        # «Применить выбранные» -> одобренные пары; «Без исправлений»/Esc ->
+        # пустое множество (текст маркер-листа попадёт в отчёт как есть).
+        # Генерация продолжается в любом случае.
+        self._start_processing_stage2(spell_approved=dialog.approved_corrections)
+
+    def _start_processing_stage2(self, spell_approved):
+        """Продолжение start_processing после (возможного) ревью орфографии."""
         # Получаем базовое имя для папки
         audio_files = self.files_data.get('audio', [])
         video_files = self.files_data.get('video', [])
@@ -6385,6 +6425,7 @@ class BeastApp(QMainWindow):
         self.thread = ProcessingThread(
             self, self.files_data, report_type, str(output_folder),
             pyloudnorm_enabled, tp_verify_enabled, delete_sources,
+            spell_approved=spell_approved,
         )
         self.thread.status_update.connect(self.on_thread_status_update)
         self.thread.progress_update.connect(self.on_thread_progress_update)
