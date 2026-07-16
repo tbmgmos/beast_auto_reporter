@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 
 # Зарегистрировано на https://oauth.yandex.ru/client/new для Beast Auto Reporter
 # (платформа "Приложение для устройств без браузера" / Device Flow).
-CLIENT_ID = ""
-CLIENT_SECRET = ""
+CLIENT_ID = "6affbeffcfe8495dbcbb49679ec308fa"
+CLIENT_SECRET = "1b5e47ea9f934fffbf6a9a5e1e36bbaf"
 
 DEVICE_CODE_URL = "https://oauth.yandex.ru/device/code"
 TOKEN_URL = "https://oauth.yandex.ru/token"
