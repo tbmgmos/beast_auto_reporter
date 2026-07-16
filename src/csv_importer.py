@@ -6,9 +6,15 @@ CSV Importer Module
 
 import csv
 import logging
+import sys
 from pathlib import Path
 from typing import List, Dict
 from dataclasses import dataclass
+
+# Добавляем корневую директорию в путь
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.spellcheck_service import SpellcheckService
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +76,25 @@ class CSVImporter:
         try:
             logger.info(f"Импорт проблем из CSV: {csv_path}")
             
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                # Определяем разделитель (может быть табуляция или запятая)
+            # utf-8-sig прозрачно отбрасывает BOM, который Excel ставит в
+            # начало файла при экспорте «CSV UTF-8» — с обычным utf-8 BOM
+            # прилипает к первому заголовку ('﻿Timecode In'), колонка
+            # не находится, и все строки пропускаются как «нет таймкода».
+            # Для файлов без BOM ведёт себя как обычный utf-8.
+            with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                # Определяем разделитель: табуляция, точка с запятой
+                # (стандартный разделитель русской локали Excel) или запятая.
                 first_line = f.readline()
                 f.seek(0)
-                
-                delimiter = '\t' if '\t' in first_line else ','
-                logger.info(f"Разделитель CSV: {'табуляция' if delimiter == chr(9) else 'запятая'}")
+
+                if '\t' in first_line:
+                    delimiter = '\t'
+                elif ';' in first_line:
+                    delimiter = ';'
+                else:
+                    delimiter = ','
+                delimiter_names = {'\t': 'табуляция', ';': 'точка с запятой', ',': 'запятая'}
+                logger.info(f"Разделитель CSV: {delimiter_names[delimiter]}")
                 
                 reader = csv.DictReader(f, delimiter=delimiter)
                 
@@ -86,21 +104,34 @@ class CSVImporter:
                     logger.info(f"Названия колонок: {reader.fieldnames}")
                 
                 row_count = 0
+                spelling_fixes_count = 0
                 for row in reader:
                     row_count += 1
-                    
+
                     # Получаем таймкод (пробуем английский и русский варианты)
                     timecode_in = self._get_column_value(row, 'Timecode In', 'TC IN', 'TC_IN')
-                    
+
                     # Пропускаем пустые строки
                     if not timecode_in:
                         logger.debug(f"Строка {row_count}: пропущена (нет таймкода)")
                         continue
-                    
+
+                    raw_description = self._get_column_value(row, 'Description', 'ОПИСАНИЕ ПРОБЛЕМЫ', 'ОПИСАНИЕ')
+                    raw_comments = self._get_column_value(row, 'КОММЕНТАРИИ', 'COMMENTS')
+
+                    # Проверка орфографии (RU/EN) и автоисправление опечаток
+                    description, description_fixes = SpellcheckService.correct_text(raw_description)
+                    comments, comments_fixes = SpellcheckService.correct_text(raw_comments)
+
+                    for old, new in description_fixes + comments_fixes:
+                        spelling_fixes_count += 1
+                        logger.info(f"  Строка {row_count}: орфография '{old}' → '{new}'")
+
                     issue = Issue(
                         timecode_in=timecode_in,
                         timecode_out=self._get_column_value(row, 'Timecode Out', 'TC OUT', 'TC_OUT'),
-                        description=self._get_column_value(row, 'Description', 'ОПИСАНИЕ ПРОБЛЕМЫ', 'ОПИСАНИЕ'),
+                        description=description,
+                        description_original=raw_description,
                         audio_20_c=self._get_column_value(row, '2.0 C') == '*',
                         audio_20_uc=self._get_column_value(row, '2.0 UC') == '*',
                         audio_51_c=self._get_column_value(row, '5.1 C') == '*',
@@ -108,13 +139,15 @@ class CSVImporter:
                         blocker=self._get_column_value(row, 'БЛОКЕР', 'BLOCKER') == '*',
                         fix_required=self._get_column_value(row, 'ТРЕБУЕТ ИСПРАВЛЕНИЯ', 'FIX REQUIRED') == '*',
                         comment_required=self._get_column_value(row, 'ТРЕБУЕТ КОММЕНТАРИЯ', 'COMMENT REQUIRED') == '*',
-                        comments=self._get_column_value(row, 'КОММЕНТАРИИ', 'COMMENTS')
+                        comments=comments
                     )
-                    
+
                     issues.append(issue)
                     logger.debug(f"Строка {row_count}: {timecode_in} - {issue.description[:30]}...")
-            
+
             logger.info(f"✅ Импортировано {len(issues)} проблем из {row_count} строк CSV")
+            if spelling_fixes_count:
+                logger.info(f"✅ Автоисправлено опечаток (орфография RU/EN): {spelling_fixes_count}")
             
             if len(issues) == 0:
                 logger.warning("⚠️  CSV файл пустой или не содержит корректных данных!")
