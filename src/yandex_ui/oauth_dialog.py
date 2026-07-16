@@ -109,7 +109,14 @@ class YandexOAuthDialog(QDialog):
         layout.addWidget(self.status_label)
 
         self.code_label = QLabel("")
-        self.code_label.setFont(QFont(".AppleSystemUIFont", 28, QFont.DemiBold))
+        code_font = QFont("Menlo", 26, QFont.DemiBold)
+        # Моноширинный шрифт с интервалом между буквами — код нужно вручную
+        # перепечатать на странице Яндекса, а пропорциональный системный
+        # шрифт визуально путает похожие символы (0/O, 1/l, b/6) и слипает
+        # соседние буквы без интервала. setLetterSpacing не меняет сам текст
+        # (Qt.TextSelectableByMouse copy/paste по-прежнему даёт исходный код).
+        code_font.setLetterSpacing(QFont.PercentageSpacing, 160)
+        self.code_label.setFont(code_font)
         self.code_label.setStyleSheet("color: #007AFF; background: #F0F6FF; "
                                        "border-radius: 8px; padding: 10px;")
         self.code_label.setAlignment(Qt.AlignCenter)
