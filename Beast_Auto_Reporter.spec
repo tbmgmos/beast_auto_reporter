@@ -8,6 +8,8 @@ import os
 import sys
 import shutil
 
+from PyInstaller.utils.hooks import collect_data_files
+
 block_cipher = None
 
 ROOT = os.path.abspath('.')
@@ -50,6 +52,9 @@ datas = [
     (os.path.join(ROOT, 'app_icon_new.png'), '.'),
     (docx_templates_dir, os.path.join('docx', 'templates')),
 ]
+# Словари орфографии (RU морфология pymorphy3 + EN частотный словарь)
+datas += collect_data_files('pymorphy3_dicts_ru')
+datas += collect_data_files('spellchecker')
 
 # ── Hidden imports ────────────────────────────────────────────────────────
 hidden_imports = [
@@ -69,6 +74,8 @@ hidden_imports = [
     'yaml', 'csv', 'json', 'tqdm',
     # Python 3.13 compat — removed stdlib modules re-packaged as PyPI packages
     'audioop_lts', 'standard_aifc', 'standard_sunau', 'standard_chunk',
+    # Spellcheck (маркер-листы, RU/EN)
+    'spellchecker', 'pymorphy3', 'pymorphy3.analyzer', 'pymorphy3_dicts_ru', 'dawg_python',
     # src modules
     'src.exact_report_generator', 'src.technical_info_extractor',
     'src.csv_importer', 'src.pdf_extractor', 'src.conclusion_generator',
@@ -77,7 +84,7 @@ hidden_imports = [
     'src.template_report_generator', 'src.table_parser',
     'src.marker_list_from_template', 'src.template_processor',
     'src.diagnostics', 'src.youlean_integration',
-    'src.audio_analyzer_extended',
+    'src.audio_analyzer_extended', 'src.spellcheck_service', 'src.secret_store',
 ]
 
 a = Analysis(

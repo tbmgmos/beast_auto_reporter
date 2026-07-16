@@ -25,7 +25,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 
 def load_app_config() -> dict:
@@ -170,9 +170,10 @@ from PyQt5.QtWidgets import (
     QCheckBox, QListWidget, QListWidgetItem, QFrame, QMessageBox, QFileDialog,
     QGroupBox, QScrollArea, QSizePolicy, QGraphicsDropShadowEffect,
     QDialog, QDialogButtonBox, QFormLayout, QPlainTextEdit, QComboBox,
-    QTableWidget, QTableWidgetItem, QProgressDialog
+    QTableWidget, QTableWidgetItem, QProgressDialog, QLineEdit,
+    QTreeWidget, QTreeWidgetItem, QInputDialog, QCompleter, QAbstractButton
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QEventLoop, QMetaObject, Q_ARG, QTimer, QRectF, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QEventLoop, QMetaObject, Q_ARG, QTimer, QRectF, QSize, QObject, QEvent, QFileSystemWatcher
 from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor, QIcon, QPainter, QPainterPath, QBrush, QPen, QPixmap, QRadialGradient, QImage
 
 import fitz
@@ -190,6 +191,7 @@ from src.update_checker import (
     load_skipped_version,
     save_skipped_version,
 )
+from src.icons import make_icon, make_icon_pixmap
 
 # Настройка логирования
 logging.basicConfig(
@@ -240,182 +242,6 @@ CAT_STATE_ASSETS = {
     "working": ROOT_DIR / "assets" / "cat-states" / "cat-working.png",
     "done": ROOT_DIR / "assets" / "cat-states" / "cat-done.png",
 }
-
-_ICON_CACHE = {}
-
-
-def make_icon_pixmap(name: str, color="#86868B", size: int = 16, stroke: float = 1.6) -> QPixmap:
-    qcolor = QColor(color)
-    cache_key = (name, qcolor.rgba(), size, round(stroke, 2))
-    cached = _ICON_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setRenderHint(QPainter.SmoothPixmapTransform)
-    pen = QPen(qcolor)
-    pen.setWidthF(stroke)
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-
-    s = size / 16.0
-    def rect(x, y, w, h):
-        return QRectF(x * s, y * s, w * s, h * s)
-
-    if name == "doc":
-        painter.drawRoundedRect(rect(2, 1.5, 12, 13), 1.5 * s, 1.5 * s)
-        painter.drawLine(QPoint(int(5 * s), int(5.5 * s)), QPoint(int(11 * s), int(5.5 * s)))
-        painter.drawLine(QPoint(int(5 * s), int(8 * s)), QPoint(int(11 * s), int(8 * s)))
-        painter.drawLine(QPoint(int(5 * s), int(10.5 * s)), QPoint(int(8.5 * s), int(10.5 * s)))
-    elif name == "speaker":
-        path = QPainterPath()
-        path.moveTo(3 * s, 6 * s)
-        path.lineTo(4.5 * s, 6 * s)
-        path.lineTo(7.5 * s, 3 * s)
-        path.lineTo(7.5 * s, 13 * s)
-        path.lineTo(4.5 * s, 10 * s)
-        path.lineTo(3 * s, 10 * s)
-        path.closeSubpath()
-        painter.drawPath(path)
-        painter.drawArc(rect(8.7, 4.6, 3.1, 6.8), -45 * 16, 90 * 16)
-    elif name == "tv":
-        painter.drawRoundedRect(rect(1.2, 3, 13.6, 9.4), 1.5 * s, 1.5 * s)
-        painter.drawEllipse(rect(6.2, 5.8, 3.6, 3.6))
-        painter.drawLine(QPoint(int(8 * s), int(12.5 * s)), QPoint(int(8 * s), int(14.5 * s)))
-        painter.drawLine(QPoint(int(5 * s), int(14.5 * s)), QPoint(int(11 * s), int(14.5 * s)))
-    elif name == "film":
-        painter.drawEllipse(rect(1.5, 1.5, 13, 13))
-        painter.drawEllipse(rect(6, 6, 4, 4))
-        path = QPainterPath()
-        path.moveTo(6.6 * s, 5.3 * s)
-        path.lineTo(11 * s, 8 * s)
-        path.lineTo(6.6 * s, 10.7 * s)
-        path.closeSubpath()
-        painter.fillPath(path, qcolor)
-    elif name == "sparkle":
-        path = QPainterPath()
-        path.moveTo(8 * s, 1.5 * s)
-        path.lineTo(9.6 * s, 6.1 * s)
-        path.lineTo(14.2 * s, 8 * s)
-        path.lineTo(9.6 * s, 9.9 * s)
-        path.lineTo(8 * s, 14.5 * s)
-        path.lineTo(6.4 * s, 9.9 * s)
-        path.lineTo(1.8 * s, 8 * s)
-        path.lineTo(6.4 * s, 6.1 * s)
-        path.closeSubpath()
-        painter.drawPath(path)
-    elif name == "target":
-        painter.drawEllipse(rect(3, 3, 10, 10))
-        painter.drawEllipse(rect(7, 7, 2, 2))
-        painter.drawLine(QPoint(int(8 * s), int(1.5 * s)), QPoint(int(8 * s), int(4 * s)))
-    elif name == "user":
-        painter.drawEllipse(rect(5.2, 2.7, 5.6, 5.6))
-        path = QPainterPath()
-        path.moveTo(3 * s, 13.3 * s)
-        path.cubicTo(3.5 * s, 10.5 * s, 5.7 * s, 9.2 * s, 8 * s, 9.2 * s)
-        path.cubicTo(10.3 * s, 9.2 * s, 12.5 * s, 10.5 * s, 13 * s, 13.3 * s)
-        painter.drawPath(path)
-    elif name == "folder":
-        path = QPainterPath()
-        path.moveTo(1.5 * s, 4.8 * s)
-        path.cubicTo(1.5 * s, 3.5 * s, 2.6 * s, 2.5 * s, 3.9 * s, 2.5 * s)
-        path.lineTo(6.2 * s, 2.5 * s)
-        path.lineTo(7.7 * s, 4.3 * s)
-        path.lineTo(12.3 * s, 4.3 * s)
-        path.cubicTo(13.7 * s, 4.3 * s, 14.5 * s, 5.2 * s, 14.5 * s, 6.5 * s)
-        path.lineTo(14.5 * s, 11.8 * s)
-        path.cubicTo(14.5 * s, 13.2 * s, 13.4 * s, 14.2 * s, 12.1 * s, 14.2 * s)
-        path.lineTo(3.9 * s, 14.2 * s)
-        path.cubicTo(2.6 * s, 14.2 * s, 1.5 * s, 13.2 * s, 1.5 * s, 11.8 * s)
-        path.closeSubpath()
-        painter.drawPath(path)
-    elif name == "trash":
-        painter.drawLine(QPoint(int(3 * s), int(5 * s)), QPoint(int(13 * s), int(5 * s)))
-        painter.drawLine(QPoint(int(5 * s), int(5 * s)), QPoint(int(4.3 * s), int(13.5 * s)))
-        painter.drawLine(QPoint(int(11 * s), int(5 * s)), QPoint(int(11.7 * s), int(13.5 * s)))
-        painter.drawLine(QPoint(int(7 * s), int(8 * s)), QPoint(int(7 * s), int(12 * s)))
-        painter.drawLine(QPoint(int(9 * s), int(8 * s)), QPoint(int(9 * s), int(12 * s)))
-        painter.drawRoundedRect(rect(5.5, 2.7, 5, 2.2), 0.8 * s, 0.8 * s)
-    elif name == "gear":
-        painter.drawEllipse(rect(5.4, 5.4, 5.2, 5.2))
-        for x1, y1, x2, y2 in (
-            (8, 1.8, 8, 4.0), (8, 12, 8, 14.2), (1.8, 8, 4.0, 8), (12, 8, 14.2, 8),
-            (3.2, 3.2, 4.6, 4.6), (11.4, 11.4, 12.8, 12.8), (3.2, 12.8, 4.6, 11.4), (11.4, 4.6, 12.8, 3.2),
-        ):
-            painter.drawLine(QPoint(int(x1 * s), int(y1 * s)), QPoint(int(x2 * s), int(y2 * s)))
-    elif name == "search":
-        painter.drawEllipse(rect(2.5, 2.5, 9, 9))
-        painter.drawLine(QPoint(int(10.2 * s), int(10.2 * s)), QPoint(int(14 * s), int(14 * s)))
-    elif name == "check":
-        painter.drawEllipse(rect(2, 2, 12, 12))
-        painter.drawLine(QPoint(int(5 * s), int(8 * s)), QPoint(int(7 * s), int(10.5 * s)))
-        painter.drawLine(QPoint(int(7 * s), int(10.5 * s)), QPoint(int(11 * s), int(6 * s)))
-    elif name == "copy":
-        painter.drawRoundedRect(rect(5.2, 5, 8, 9), 1.4 * s, 1.4 * s)
-        painter.drawRoundedRect(rect(2.5, 2, 8, 9), 1.4 * s, 1.4 * s)
-    elif name == "music":
-        painter.drawLine(QPoint(int(6 * s), int(3 * s)), QPoint(int(6 * s), int(11 * s)))
-        painter.drawLine(QPoint(int(6 * s), int(3 * s)), QPoint(int(12 * s), int(1.8 * s)))
-        painter.drawLine(QPoint(int(12 * s), int(1.8 * s)), QPoint(int(12 * s), int(9.4 * s)))
-        painter.drawEllipse(rect(2, 10, 3.2, 3.2))
-        painter.drawEllipse(rect(10, 8.2, 3.2, 3.2))
-    elif name == "video":
-        painter.drawRoundedRect(rect(1.5, 3.5, 9.5, 8.5), 1.4 * s, 1.4 * s)
-        path = QPainterPath()
-        path.moveTo(10.8 * s, 6.3 * s)
-        path.lineTo(14.2 * s, 4.8 * s)
-        path.lineTo(14.2 * s, 10.7 * s)
-        path.lineTo(10.8 * s, 9.2 * s)
-        path.closeSubpath()
-        painter.drawPath(path)
-    elif name == "csv":
-        painter.drawRoundedRect(rect(2, 1.5, 12, 13), 1.5 * s, 1.5 * s)
-        painter.drawLine(QPoint(int(4.5 * s), int(6 * s)), QPoint(int(11.5 * s), int(6 * s)))
-        painter.drawLine(QPoint(int(4.5 * s), int(8.5 * s)), QPoint(int(11.5 * s), int(8.5 * s)))
-        painter.drawLine(QPoint(int(4.5 * s), int(11 * s)), QPoint(int(8 * s), int(11 * s)))
-    elif name == "pdf":
-        painter.drawRoundedRect(rect(2, 1.5, 12, 13), 1.5 * s, 1.5 * s)
-        painter.drawLine(QPoint(int(5 * s), int(10.8 * s)), QPoint(int(5 * s), int(6.2 * s)))
-        painter.drawLine(QPoint(int(5 * s), int(6.2 * s)), QPoint(int(7.2 * s), int(6.2 * s)))
-        painter.drawArc(rect(6.2, 6.2, 2.2, 2.0), 90 * 16, -180 * 16)
-        painter.drawLine(QPoint(int(9.1 * s), int(6.2 * s)), QPoint(int(9.1 * s), int(10.8 * s)))
-        painter.drawArc(rect(9.0, 6.2, 2.5, 2.8), 90 * 16, -180 * 16)
-    elif name == "params":
-        painter.drawLine(QPoint(int(3 * s), int(4.5 * s)), QPoint(int(13 * s), int(4.5 * s)))
-        painter.drawLine(QPoint(int(3 * s), int(8 * s)), QPoint(int(13 * s), int(8 * s)))
-        painter.drawLine(QPoint(int(3 * s), int(11.5 * s)), QPoint(int(13 * s), int(11.5 * s)))
-        painter.drawEllipse(rect(5.1, 3.1, 2.8, 2.8))
-        painter.drawEllipse(rect(9.1, 6.6, 2.8, 2.8))
-        painter.drawEllipse(rect(6.7, 10.1, 2.8, 2.8))
-    elif name == "x":
-        painter.drawLine(QPoint(int(4 * s), int(4 * s)), QPoint(int(12 * s), int(12 * s)))
-        painter.drawLine(QPoint(int(12 * s), int(4 * s)), QPoint(int(4 * s), int(12 * s)))
-    elif name == "folder_open":
-        path = QPainterPath()
-        path.moveTo(1.5 * s, 5.2 * s)
-        path.lineTo(5.8 * s, 5.2 * s)
-        path.lineTo(7.2 * s, 3.4 * s)
-        path.lineTo(14.4 * s, 3.4 * s)
-        path.lineTo(12.7 * s, 13.2 * s)
-        path.lineTo(2.7 * s, 13.2 * s)
-        path.closeSubpath()
-        painter.drawPath(path)
-    else:
-        painter.drawEllipse(rect(2, 2, 12, 12))
-
-    painter.end()
-    _ICON_CACHE[cache_key] = pixmap
-    return pixmap
-
-
-def make_icon(name: str, color="#86868B", size: int = 16, stroke: float = 1.6) -> QIcon:
-    return QIcon(make_icon_pixmap(name, color, size, stroke))
-
 
 _CHANNEL_51_RE = re.compile(
     r'(^|[^0-9])(?:5\.1|5_1|5-1|5\.0|51)([^0-9]|$)|(^|[^a-z0-9])(?:surround|6\s*ch|6ch|6\s*channel)([^a-z0-9]|$)',
@@ -542,32 +368,30 @@ def _matching_base_name(name: str) -> str:
     return base
 
 
-def _levenshtein(a: str, b: str) -> int:
-    """Расстояние Левенштейна (число правок для превращения a в b)."""
-    if a == b:
-        return 0
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = cur
-    return prev[-1]
-
-
-def _bases_match(a: str, b: str, min_len_for_fuzzy: int = 10, max_typo_distance: int = 2) -> bool:
-    """Считает две базы «одним материалом»: точное совпадение, либо
-
-    небольшая опечатка (расстояние Левенштейна <= 2) — но только для
-    достаточно длинных имён. На коротких именах (< 10 симв.) даже один
-    отличающийся символ обычно означает *другой* материал (например,
-    "movie_a" / "movie_b"), поэтому там разрешено только точное совпадение.
-    """
-    if a == b:
-        return True
-    if min(len(a), len(b)) < min_len_for_fuzzy:
-        return False
-    return _levenshtein(a, b) <= max_typo_distance
+from src.app_paths import CONFIG_DIR, ensure_parent_dir, migrate_legacy_config_file  # noqa: E402
+from src import secret_store  # noqa: E402
+from src.file_matching import _levenshtein, _bases_match  # noqa: E402
+from src.report_filename import parse_report_filename  # noqa: E402
+from src.report_uploader import (  # noqa: E402
+    save_queue_state, load_queue_state, REPORTS_ROOT,
+    fallback_series_key, remember_series_alias, remember_uploaded_report, resolve_manual_pick_target,
+)
+from src.yandex_ui.helpers import (  # noqa: E402
+    _stop_thread, _quick_look_preview, _format_disk_modified_date, _send_system_notification,
+    _play_sound,
+)
+from src.yandex_ui.threads import (  # noqa: E402
+    _FallbackFolderFindThread, _IntegrityCheckThread, _MkdirThread,
+    YandexDiskFindVersionsThread, YandexDiskFolderVersionsThread,
+    YandexDiskCompareThread, YandexDiskUploadThread,
+    YandexDiskTokenCheckThread,
+)
+from src.yandex_ui.edit_sync import YandexEditSyncController  # noqa: E402
+from src.yandex_ui.dialogs import (  # noqa: E402
+    YandexUploadDiffDialog, YandexVersionPickerDialog, YandexFolderPickerDialog,
+    YandexDiskBrowserDialog, YandexUploadQueueDialog, SeriesAliasesDialog,
+)
+from src.yandex_ui.queue_manager import YandexUploadQueueManager  # noqa: E402
 
 
 def validate_file_consistency(files_data: dict) -> list:
@@ -1237,6 +1061,7 @@ class DropZone(QFrame):
     """Stateful design-system drag and drop zone with mascot."""
 
     files_dropped = pyqtSignal(list)
+    folder_dropped = pyqtSignal(str)  # путь папки готового отчёта — для отправки на Яндекс.Диск
 
     _STATE_COPY = {
         "sleeping": ("Перетащите файлы сюда", "аудио, видео, CSV, PDF", "#3D3D3D", "#86868B", "rgba(0, 0, 0, 0.015)", "1.5px dashed rgba(0, 0, 0, 0.13)"),
@@ -1380,10 +1205,20 @@ class DropZone(QFrame):
         self._sync_state()
 
         files = []
+        folders = []
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
             if os.path.isfile(file_path):
                 files.append(file_path)
+            elif os.path.isdir(file_path):
+                folders.append(file_path)
+
+        if not files and len(folders) == 1:
+            # Перетащили ровно одну папку без файлов — трактуем как папку
+            # уже готового отчёта для отправки на Диск, а не источники для
+            # генерации нового отчёта (для этого — files_dropped ниже).
+            self.folder_dropped.emit(folders[0])
+            return
 
         if files:
             self.files_dropped.emit(files)
@@ -2315,12 +2150,14 @@ class TruePeakResultsDialog(QDialog):
 class SettingsDialog(QDialog):
     """Диалог настроек приложения"""
 
-    CONFIG_FILE = Path.home() / ".beast_auto_reporter_settings.json"
+    CONFIG_FILE = CONFIG_DIR / "settings.json"
+    _LEGACY_CONFIG_FILE = Path.home() / ".beast_auto_reporter_settings.json"
 
     @classmethod
     def load_settings(cls) -> dict:
         """Загрузка настроек из JSON-файла (с совместимостью со старым .txt)"""
         import json
+        migrate_legacy_config_file(cls._LEGACY_CONFIG_FILE, cls.CONFIG_FILE)
         defaults = {
             "name": "",
             "delete_sources_after_copy": False,
@@ -2328,15 +2165,38 @@ class SettingsDialog(QDialog):
             "check_file_consistency": True,
             "auto_reset_after_done": True,
             "extended_analysis_enabled": False,
+            "yandex_disk_token": "",
+            "yandex_auto_upload": False,
+            "yandex_disk_roots": [REPORTS_ROOT],
         }
 
         if cls.CONFIG_FILE.exists():
             try:
                 data = json.loads(cls.CONFIG_FILE.read_text(encoding="utf-8"))
                 defaults.update(data)
+                if "yandex_disk_roots" not in data and data.get("yandex_disk_root"):
+                    # Миграция с предыдущей версии (один корень, до введения
+                    # поддержки нескольких) — переносим как единственный
+                    # элемент нового списка.
+                    defaults["yandex_disk_roots"] = [data["yandex_disk_root"]]
                 return defaults
-            except Exception:
-                pass
+            except Exception as e:
+                # Битый файл настроек: сохраняем копию для ручного
+                # восстановления — раньше он молча заменялся дефолтами и
+                # затирался при следующем сохранении (пользователь терял
+                # токен и настройки без единого сообщения).
+                backup = cls.CONFIG_FILE.with_name(cls.CONFIG_FILE.name + ".bak")
+                try:
+                    shutil.copy2(cls.CONFIG_FILE, backup)
+                    logger.warning(
+                        f"Файл настроек повреждён ({e}) — копия сохранена в {backup}, "
+                        f"используются настройки по умолчанию"
+                    )
+                except OSError as backup_error:
+                    logger.warning(
+                        f"Файл настроек повреждён ({e}), сделать резервную копию "
+                        f"не удалось: {backup_error}"
+                    )
 
         # Обратная совместимость: читаем старый .txt с именем
         old_file = Path.home() / ".beast_auto_reporter_config.txt"
@@ -2352,12 +2212,55 @@ class SettingsDialog(QDialog):
         """Сохранение настроек в JSON-файл"""
         import json
         try:
+            ensure_parent_dir(cls.CONFIG_FILE)
             cls.CONFIG_FILE.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8"
             )
         except Exception as e:
             logger.warning(f"Не удалось сохранить настройки: {e}")
+
+    @classmethod
+    def get_yandex_token(cls) -> str:
+        """OAuth-токен Яндекс.Диска (пустая строка, если не задан).
+
+        Основное хранилище — Связка ключей macOS (см. src/secret_store.py);
+        токен, сохранённый прошлой версией в settings.json открытым текстом,
+        при первом чтении прозрачно переносится в Связку и вычищается из
+        файла. Если Связка недоступна (ошибка утилиты security) — прежнее
+        поведение, токен читается/остаётся в settings.json.
+        """
+        token = secret_store.load_token()
+        if token:
+            return token
+        legacy = cls.load_settings().get("yandex_disk_token", "").strip()
+        if legacy and token == "":
+            # Связка доступна, но записи в ней нет — мигрируем токен из
+            # файла. Из settings.json вычищаем только после успешной записи.
+            if secret_store.save_token(legacy):
+                settings = cls.load_settings()
+                settings["yandex_disk_token"] = ""
+                cls.save_settings(settings)
+        return legacy
+
+    @classmethod
+    def get_yandex_roots(cls) -> list:
+        """Список корневых папок на Диске для отчётов (минимум одна — /отчеты по умолчанию).
+
+        Приложение ищет и создаёт папки серий сразу во всех перечисленных
+        корнях — см. find_series_folder/resolve_target_path в report_uploader.py.
+        """
+        raw = cls.load_settings().get("yandex_disk_roots") or []
+        cleaned = []
+        for r in raw:
+            r = str(r).strip().rstrip("/")
+            if not r:
+                continue
+            if not r.startswith("/"):
+                r = f"/{r}"
+            if r not in cleaned:
+                cleaned.append(r)
+        return cleaned or [REPORTS_ROOT]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2482,6 +2385,165 @@ class SettingsDialog(QDialog):
 
         layout.addSpacing(8)
 
+        # Токен Яндекс.Диска
+        yandex_label = QLabel("Токен Яндекс.Диска")
+        yandex_label.setFont(QFont(".AppleSystemUIFont", 12))
+        yandex_label.setStyleSheet("color: #1D1D1F;")
+        layout.addWidget(yandex_label)
+
+        self.yandex_token_edit = QLineEdit(self.get_yandex_token())
+        self.yandex_token_edit.setEchoMode(QLineEdit.Password)
+        self.yandex_token_edit.setPlaceholderText("OAuth-токен для отправки отчётов на Диск")
+        self.yandex_token_edit.setFont(QFont(".AppleSystemUIFont", 12))
+        self.yandex_token_edit.setStyleSheet("""
+            QLineEdit {
+                background: #F5F5F7;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #1D1D1F;
+            }
+            QLineEdit:focus { border: 1px solid #007AFF; }
+        """)
+        self.yandex_token_edit.setToolTip(
+            "OAuth-токен приложения на oauth.yandex.ru с правами disk:write/disk:read.\n"
+            "Нужен для кнопки «Отправить на Диск» в главном окне."
+        )
+        layout.addWidget(self.yandex_token_edit)
+
+        yandex_hint = QLabel("Используется для отправки отчёта на Диск\nи сравнения с предыдущей версией серии.")
+        yandex_hint.setFont(QFont(".AppleSystemUIFont", 10))
+        yandex_hint.setStyleSheet("color: #86868B;")
+        layout.addWidget(yandex_hint)
+
+        yandex_check_row = QHBoxLayout()
+        yandex_check_row.setSpacing(8)
+        self.yandex_check_status_label = QLabel("")
+        self.yandex_check_status_label.setFont(QFont(".AppleSystemUIFont", 10))
+        self.yandex_check_status_label.setWordWrap(True)
+        yandex_check_row.addWidget(self.yandex_check_status_label, 1)
+        self.yandex_check_token_btn = QPushButton("Проверить")
+        self.yandex_check_token_btn.setFont(QFont(".AppleSystemUIFont", 11))
+        self.yandex_check_token_btn.setStyleSheet("""
+            QPushButton {
+                background: #FFFFFF;
+                color: #007AFF;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                padding: 5px 12px;
+            }
+            QPushButton:hover { background: #F5F5F7; }
+        """)
+        self.yandex_check_token_btn.clicked.connect(self._on_check_yandex_token_clicked)
+        yandex_check_row.addWidget(self.yandex_check_token_btn)
+        layout.addLayout(yandex_check_row)
+
+        self._yandex_check_thread = None
+
+        layout.addSpacing(8)
+
+        # Корневые папки на Диске для отчётов
+        yandex_roots_label = QLabel("Папки на Диске для отчётов")
+        yandex_roots_label.setFont(QFont(".AppleSystemUIFont", 12))
+        yandex_roots_label.setStyleSheet("color: #1D1D1F;")
+        layout.addWidget(yandex_roots_label)
+
+        self.yandex_roots_list = QListWidget()
+        self.yandex_roots_list.setMaximumHeight(84)
+        self.yandex_roots_list.setFont(QFont(".AppleSystemUIFont", 12))
+        self.yandex_roots_list.setStyleSheet("""
+            QListWidget {
+                background: #F5F5F7;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                color: #1D1D1F;
+            }
+        """)
+        self.yandex_roots_list.setToolTip(
+            "Папки на Яндекс.Диске, внутри которых ищутся/создаются папки\n"
+            "серий и куда отправляются отчёты. Поиск идёт сразу по всем."
+        )
+        for root in (self._settings.get("yandex_disk_roots") or [REPORTS_ROOT]):
+            self.yandex_roots_list.addItem(root)
+        layout.addWidget(self.yandex_roots_list)
+
+        yandex_roots_row = QHBoxLayout()
+        yandex_roots_row.setSpacing(8)
+        self.yandex_new_root_edit = QLineEdit()
+        self.yandex_new_root_edit.setPlaceholderText("/новая папка")
+        self.yandex_new_root_edit.setFont(QFont(".AppleSystemUIFont", 12))
+        self.yandex_new_root_edit.setStyleSheet("""
+            QLineEdit {
+                background: #F5F5F7;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #1D1D1F;
+            }
+            QLineEdit:focus { border: 1px solid #007AFF; }
+        """)
+        self.yandex_new_root_edit.returnPressed.connect(self._on_add_yandex_root)
+        yandex_roots_row.addWidget(self.yandex_new_root_edit, 1)
+
+        yandex_add_root_btn = QPushButton("Добавить")
+        yandex_add_root_btn.setFont(QFont(".AppleSystemUIFont", 11))
+        yandex_add_root_btn.setStyleSheet("""
+            QPushButton {
+                background: #FFFFFF;
+                color: #007AFF;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                padding: 5px 12px;
+            }
+            QPushButton:hover { background: #F5F5F7; }
+        """)
+        yandex_add_root_btn.clicked.connect(self._on_add_yandex_root)
+        yandex_roots_row.addWidget(yandex_add_root_btn)
+        layout.addLayout(yandex_roots_row)
+
+        yandex_remove_root_btn = QPushButton("Удалить выбранную")
+        yandex_remove_root_btn.setFont(QFont(".AppleSystemUIFont", 11))
+        yandex_remove_root_btn.setStyleSheet("""
+            QPushButton {
+                background: #FFFFFF;
+                color: #FF3B30;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                padding: 5px 12px;
+            }
+            QPushButton:hover { background: #FFF1F0; }
+        """)
+        yandex_remove_root_btn.clicked.connect(self._on_remove_yandex_root)
+        layout.addWidget(yandex_remove_root_btn)
+
+        yandex_roots_hint = QLabel("Приложение ищет и создаёт папки отчётов\nсразу во всех перечисленных папках.")
+        yandex_roots_hint.setFont(QFont(".AppleSystemUIFont", 10))
+        yandex_roots_hint.setStyleSheet("color: #86868B;")
+        layout.addWidget(yandex_roots_hint)
+
+        layout.addSpacing(8)
+
+        # Автоматическая отправка на Диск после генерации
+        self.yandex_auto_upload_cb = QCheckBox("Автоматически отправлять на Диск после генерации")
+        self.yandex_auto_upload_cb.setFont(QFont(".AppleSystemUIFont", 12))
+        self.yandex_auto_upload_cb.setStyleSheet(checkbox_style)
+        self.yandex_auto_upload_cb.setIcon(make_icon("folder_open", "#86868B", 14))
+        self.yandex_auto_upload_cb.setIconSize(QSize(14, 14))
+        self.yandex_auto_upload_cb.setChecked(self._settings.get("yandex_auto_upload", False))
+        self.yandex_auto_upload_cb.setToolTip(
+            "Готовый отчёт сам уходит в очередь на Диск, без нажатия «Отправить».\n"
+            "Если папка сериала на Диске ещё не найдена — отчёт останется\n"
+            "в очереди, дожидаясь ручного решения (диалог не всплывает сам)."
+        )
+        layout.addWidget(self.yandex_auto_upload_cb)
+
+        yandex_auto_hint = QLabel("Если папка сериала не найдена — отчёт\nостанется в очереди для ручного действия.")
+        yandex_auto_hint.setFont(QFont(".AppleSystemUIFont", 10))
+        yandex_auto_hint.setStyleSheet("color: #86868B; margin-left: 24px;")
+        layout.addWidget(yandex_auto_hint)
+
+        layout.addSpacing(8)
+
         # Версия приложения + ручная проверка обновлений
         update_row = QHBoxLayout()
         update_row.setSpacing(8)
@@ -2548,13 +2610,76 @@ class SettingsDialog(QDialog):
         self._settings["check_file_consistency"] = self.check_files_cb.isChecked()
         self._settings["auto_reset_after_done"] = self.auto_reset_cb.isChecked()
         self._settings["extended_analysis_enabled"] = self.extended_analysis_cb.isChecked()
+        token = self.yandex_token_edit.text().strip()
+        if secret_store.save_token(token):
+            # Токен ушёл в Связку ключей — в файле настроек его не храним.
+            self._settings["yandex_disk_token"] = ""
+        else:
+            # Связка недоступна — прежнее поведение (открытым текстом в файле).
+            self._settings["yandex_disk_token"] = token
+        self._settings["yandex_auto_upload"] = self.yandex_auto_upload_cb.isChecked()
+        roots = [self.yandex_roots_list.item(i).text() for i in range(self.yandex_roots_list.count())]
+        self._settings["yandex_disk_roots"] = roots or [REPORTS_ROOT]
+        self._settings.pop("yandex_disk_root", None)  # устаревший одиночный ключ прошлой версии
         self.save_settings(self._settings)
         self.accept()
+
+    def _on_add_yandex_root(self):
+        text = self.yandex_new_root_edit.text().strip().rstrip("/")
+        if not text:
+            return
+        if not text.startswith("/"):
+            text = f"/{text}"
+        existing = [self.yandex_roots_list.item(i).text() for i in range(self.yandex_roots_list.count())]
+        if text not in existing:
+            self.yandex_roots_list.addItem(text)
+        self.yandex_new_root_edit.clear()
+
+    def _on_remove_yandex_root(self):
+        row = self.yandex_roots_list.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Не выбрано", "Выберите папку в списке, чтобы удалить.")
+            return
+        if self.yandex_roots_list.count() <= 1:
+            QMessageBox.warning(self, "Нельзя удалить", "Должна остаться хотя бы одна папка.")
+            return
+        self.yandex_roots_list.takeItem(row)
+
+    def done(self, r):
+        # accept()/reject() (Save/Cancel/titlebar-крестик — все три пути идут
+        # через done()) — останавливаем фоновую проверку токена, иначе при
+        # закрытии диалога до её завершения PyQt валит процесс
+        # "QThread: Destroyed while thread is still running".
+        _stop_thread(getattr(self, "_yandex_check_thread", None))
+        super().done(r)
 
     def _on_check_updates_clicked(self):
         parent = self.parent()
         if parent is not None:
             parent._check_for_updates(silent=False)
+
+    def _on_check_yandex_token_clicked(self):
+        token = self.yandex_token_edit.text().strip()
+        if not token:
+            self.yandex_check_status_label.setStyleSheet("color: #FF3B30;")
+            self.yandex_check_status_label.setText("Введите токен перед проверкой.")
+            return
+
+        self.yandex_check_token_btn.setEnabled(False)
+        self.yandex_check_status_label.setStyleSheet("color: #86868B;")
+        self.yandex_check_status_label.setText("Проверяем...")
+
+        self._yandex_check_thread = YandexDiskTokenCheckThread(token)
+        self._yandex_check_thread.finished_check.connect(self._on_yandex_token_check_finished)
+        self._yandex_check_thread.start()
+
+    def _on_yandex_token_check_finished(self, success: bool, message: str):
+        self.yandex_check_token_btn.setEnabled(True)
+        if success:
+            self.yandex_check_status_label.setStyleSheet("color: #34C759;")
+        else:
+            self.yandex_check_status_label.setStyleSheet("color: #FF3B30;")
+        self.yandex_check_status_label.setText(message)
 
 
 class PreviewAnalysisThread(QThread):
@@ -4023,6 +4148,7 @@ class BeastApp(QMainWindow):
         # Путь к автоматически созданному пустому CSV (если был сгенерирован)
         self._auto_created_csv_path = None
         self.last_output_folder = None
+        self.last_report_docx_path = None
         self.preview_data = None
         self.preview_thread = None
         self._preview_busy = False
@@ -4045,7 +4171,89 @@ class BeastApp(QMainWindow):
         self.auto_reset_timer.setSingleShot(True)
         self.auto_reset_timer.timeout.connect(self._auto_reset_after_done)
 
+        self._yandex_queue = YandexUploadQueueManager(
+            get_token=SettingsDialog.get_yandex_token, get_roots=SettingsDialog.get_yandex_roots,
+        )
+        self._yandex_queue.queue_changed.connect(self._update_yandex_queue_badge)
+        self._yandex_queue_offline = False
+        self._yandex_queue.queue_paused_offline.connect(self._on_yandex_queue_offline_changed)
+
+        # Куда именно уже отправлен отчёт (local_output_folder -> remote_folder_path) —
+        # нужно, чтобы «Правка» знала, куда заливать изменения после сохранения.
+        self._yandex_remote_by_local = {}
+        self._yandex_queue.job_uploaded.connect(self._on_yandex_queue_job_uploaded)
+        self._edit_sync = YandexEditSyncController(
+            get_token=SettingsDialog.get_yandex_token,
+            resolve_remote_path=self._resolve_edited_report_remote_path,
+            parent=self,
+        )
+        self._edit_sync.status_changed.connect(self._on_edit_sync_status_changed)
+        self._edit_sync.conflict.connect(self._on_edit_sync_conflict)
+
+        # Пробел (как Quick Look в Finder) открывает превью последнего
+        # сгенерированного отчёта — но только пока это окно активно и
+        # фокус не в текстовом поле/на кнопке (чтобы не мешать обычному вводу).
+        QApplication.instance().installEventFilter(self)
+
+        self._integrity_check_thread = None
+        self._integrity_checked = False
+        QTimer.singleShot(5000, self._check_uploaded_reports_integrity)
+
         self.init_ui()
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Space:
+            if QApplication.activeWindow() is self:
+                focus_widget = QApplication.focusWidget()
+                editable_types = (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractButton, QComboBox)
+                if not isinstance(focus_widget, editable_types):
+                    if self.last_report_docx_path and self.last_report_docx_path.exists():
+                        _quick_look_preview(self.last_report_docx_path)
+                        return True
+        return super().eventFilter(obj, event)
+
+    def closeEvent(self, event):
+        # self.thread шадовит встроенный QObject.thread() только когда
+        # уже был назначен как атрибут экземпляра — до первой генерации
+        # отчёта getattr(self, "thread", ...) вернул бы этот метод, а не
+        # None, поэтому здесь читаем строго из instance __dict__.
+        processing_thread = self.__dict__.get("thread")
+        if isinstance(processing_thread, QThread) and processing_thread.isRunning():
+            reply = QMessageBox.question(
+                self, "Идёт генерация отчёта",
+                "Отчёт ещё формируется. Закрыть приложение и прервать генерацию?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
+            _stop_thread(processing_thread)
+
+        # Флаг ставится ДО остановки потоков: пока _stop_thread ждёт, поток
+        # успевает эмитнуть финальный сигнал (queued), и его обработчик
+        # исполнится уже после closeEvent — без флага он запустил бы новый
+        # поток, который никто не остановит, и при teardown интерпретатора
+        # процесс упал бы с "QThread: Destroyed while thread is still
+        # running". То же с отложенными QTimer-колбэками (retry, проверка
+        # целостности через 5с после старта).
+        self._closing = True
+
+        _stop_thread(getattr(self, "preview_thread", None))
+        _stop_thread(getattr(self, "_yandex_find_thread", None))
+        _stop_thread(getattr(self, "_yandex_versions_thread", None))
+        _stop_thread(getattr(self, "_yandex_compare_thread", None))
+        _stop_thread(getattr(self, "_yandex_upload_thread", None))
+        _stop_thread(getattr(self, "_folder_picker_mkdir_thread", None))
+        _stop_thread(getattr(self, "_yandex_fallback_find_thread", None))
+        _stop_thread(getattr(self, "_integrity_check_thread", None))
+        edit_sync = getattr(self, "_edit_sync", None)
+        if edit_sync is not None:
+            edit_sync.stop_all()
+        queue_manager = getattr(self, "_yandex_queue", None)
+        if queue_manager is not None:
+            queue_manager.shutdown()
+
+        super().closeEvent(event)
 
     def init_ui(self):
         self.setWindowTitle("Beast Auto Reporter")
@@ -4154,6 +4362,15 @@ class BeastApp(QMainWindow):
         settings_btn.setIconSize(QSize(15, 15))
         settings_btn.clicked.connect(self.open_settings)
         layout.addWidget(settings_btn)
+
+        yandex_browse_btn = QPushButton()
+        yandex_browse_btn.setFixedSize(30, 30)
+        yandex_browse_btn.setToolTip("Файлы на Яндекс.Диске")
+        yandex_browse_btn.setStyleSheet(icon_btn_style)
+        yandex_browse_btn.setIcon(make_icon("folder_open", "#86868B", 15))
+        yandex_browse_btn.setIconSize(QSize(15, 15))
+        yandex_browse_btn.clicked.connect(self._open_yandex_disk_browser)
+        layout.addWidget(yandex_browse_btn)
 
         layout.addStretch()
 
@@ -5276,6 +5493,7 @@ class BeastApp(QMainWindow):
 
         self.drop_zone = DropZone()
         self.drop_zone.files_dropped.connect(self.handle_dropped_files)
+        self.drop_zone.folder_dropped.connect(self._on_report_folder_dropped)
         layout.addWidget(self.drop_zone)
 
         self.files_empty_label = QLabel("")
@@ -5308,17 +5526,13 @@ class BeastApp(QMainWindow):
         """)
         layout.addWidget(self.files_list)
 
-        self.open_folder_btn = QPushButton("Открыть папку с отчётом")
-        self.open_folder_btn.setVisible(True)
-        self.open_folder_btn.setEnabled(False)
-        self.open_folder_btn.setFixedHeight(30)
-        self.open_folder_btn.setStyleSheet("""
+        action_btn_style = """
             QPushButton {
                 background-color: #F5F5F7;
                 border: 1px solid #E5E5EA;
                 border-radius: 8px;
                 color: #86868B;
-                padding: 4px 10px;
+                padding: 4px 6px;
             }
             QPushButton:hover {
                 background-color: #EBF5FF;
@@ -5330,12 +5544,87 @@ class BeastApp(QMainWindow):
                 border-color: #E9E9ED;
                 color: #B3B3BA;
             }
-        """)
+        """
+
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(6)
+
+        self.open_folder_btn = QPushButton("Папка")
+        self.open_folder_btn.setToolTip("Открыть папку с отчётом")
+        self.open_folder_btn.setVisible(True)
+        self.open_folder_btn.setEnabled(False)
+        self.open_folder_btn.setFixedHeight(30)
+        self.open_folder_btn.setStyleSheet(action_btn_style)
         self.open_folder_btn.setIcon(make_icon("folder_open", "#86868B", 13))
         self.open_folder_btn.setIconSize(QSize(13, 13))
         self.open_folder_btn.clicked.connect(self.open_report_folder)
-        layout.addWidget(self.open_folder_btn)
+        actions_row.addWidget(self.open_folder_btn)
         self._update_open_folder_button_state()
+
+        self.send_to_disk_btn = QPushButton("Отправить")
+        self.send_to_disk_btn.setToolTip("Отправить на Яндекс.Диск")
+        self.send_to_disk_btn.setVisible(True)
+        self.send_to_disk_btn.setEnabled(False)
+        self.send_to_disk_btn.setFixedHeight(30)
+        self.send_to_disk_btn.setStyleSheet(action_btn_style)
+        self.send_to_disk_btn.setIcon(make_icon("folder_open", "#86868B", 13))
+        self.send_to_disk_btn.setIconSize(QSize(13, 13))
+        self.send_to_disk_btn.clicked.connect(self._send_report_to_disk)
+        actions_row.addWidget(self.send_to_disk_btn)
+
+        self.compare_with_disk_btn = QPushButton("Сравнить")
+        self.compare_with_disk_btn.setToolTip("Сравнить с версией на Яндекс.Диске")
+        self.compare_with_disk_btn.setVisible(True)
+        self.compare_with_disk_btn.setEnabled(False)
+        self.compare_with_disk_btn.setFixedHeight(30)
+        self.compare_with_disk_btn.setStyleSheet(action_btn_style)
+        self.compare_with_disk_btn.setIcon(make_icon("search", "#86868B", 13))
+        self.compare_with_disk_btn.setIconSize(QSize(13, 13))
+        self.compare_with_disk_btn.clicked.connect(self._compare_report_with_disk)
+        actions_row.addWidget(self.compare_with_disk_btn)
+
+        self.edit_report_btn = QPushButton("Правка")
+        self.edit_report_btn.setToolTip(
+            "Открыть отчёт для редактирования — после каждого сохранения\n"
+            "правки автоматически уедут на Яндекс.Диск (если он уже был отправлен)."
+        )
+        self.edit_report_btn.setVisible(True)
+        self.edit_report_btn.setEnabled(False)
+        self.edit_report_btn.setFixedHeight(30)
+        self.edit_report_btn.setStyleSheet(action_btn_style)
+        self.edit_report_btn.setIcon(make_icon("doc", "#86868B", 13))
+        self.edit_report_btn.setIconSize(QSize(13, 13))
+        self.edit_report_btn.clicked.connect(self._edit_report)
+        actions_row.addWidget(self.edit_report_btn)
+
+        layout.addLayout(actions_row)
+
+        # Отдельная строка под тремя кнопками — чтобы не ломать их ряд по
+        # ширине узкого окна. Видна, только когда в очереди что-то есть.
+        self.yandex_queue_btn = QPushButton("Очередь")
+        self.yandex_queue_btn.setToolTip("Очередь автозагрузки на Яндекс.Диск")
+        self.yandex_queue_btn.setVisible(False)
+        self.yandex_queue_btn.setFixedHeight(26)
+        self.yandex_queue_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FFF6E5;
+                border: 1px solid #FFE2A8;
+                border-radius: 8px;
+                color: #C77700;
+                padding: 3px 6px;
+            }
+            QPushButton:hover { background-color: #FFEFCC; }
+        """)
+        self.yandex_queue_btn.setIcon(make_icon("folder_open", "#C77700", 12))
+        self.yandex_queue_btn.setIconSize(QSize(12, 12))
+        self.yandex_queue_btn.clicked.connect(self._open_yandex_queue_dialog)
+        layout.addWidget(self.yandex_queue_btn)
+
+        self.edit_sync_status_label = QLabel("")
+        self.edit_sync_status_label.setVisible(False)
+        self.edit_sync_status_label.setFont(QFont(".AppleSystemUIFont", 10))
+        self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
+        layout.addWidget(self.edit_sync_status_label)
 
         widget.setLayout(layout)
         return widget
@@ -5656,6 +5945,45 @@ class BeastApp(QMainWindow):
         if not self.progress_card.isVisible():
             self._set_progress_status_text(" | ".join(stats) if stats else "Нет файлов")
 
+    def _adopt_report_folder(self, folder: Path, docx_path: Path) -> None:
+        """Принимает готовую папку отчёта как текущую — общая логика для
+
+        обычной генерации (processing_finished) и для перетащенной готовой
+        папки отчёта (_on_report_folder_dropped): включает кнопки
+        отправки/сравнения/правки и запускает слежение за файлами папки
+        для автосинхронизации правок.
+        """
+        self.last_output_folder = folder
+        self.last_report_docx_path = docx_path
+        self._update_open_folder_button_state()
+        self._edit_sync.watch_many(str(p) for p in folder.iterdir() if p.is_file())
+        if getattr(self, "send_to_disk_btn", None):
+            self.send_to_disk_btn.setEnabled(True)
+        if getattr(self, "compare_with_disk_btn", None):
+            self.compare_with_disk_btn.setEnabled(True)
+        if getattr(self, "edit_report_btn", None):
+            self.edit_report_btn.setEnabled(True)
+
+    def _on_report_folder_dropped(self, folder_path: str):
+        """Перетащили папку уже готового отчёта прямо в окно — принимаем её
+
+        и сразу запускаем тот же поток, что кнопка «Отправить» (сравнение
+        с предыдущей версией + отправка на Диск). Работает и для отчётов
+        из прошлых сессий, не только для только что сгенерированного.
+        """
+        if self._processing_active:
+            return
+        folder = Path(folder_path)
+        docx_candidates = sorted(folder.glob("отчет_*.docx"))
+        if not docx_candidates:
+            QMessageBox.warning(
+                self, "Не похоже на отчёт",
+                "В перетащенной папке не найден файл отчёта (отчет_*.docx)."
+            )
+            return
+        self._adopt_report_folder(folder, docx_candidates[0])
+        self._send_report_to_disk()
+
     # Заголовки пустого маркер-листа (совпадают с шапкой таблицы в exact_report_generator)
     _EMPTY_CSV_HEADERS = [
         "Timecode In", "Timecode Out", "Description",
@@ -5758,7 +6086,18 @@ class BeastApp(QMainWindow):
         self.drop_zone.set_files_loaded(False)
         self._set_report_type_hint("")
         self.last_output_folder = None
+        self.last_report_docx_path = None
         self._update_open_folder_button_state()
+        if getattr(self, "send_to_disk_btn", None):
+            self.send_to_disk_btn.setEnabled(False)
+        if getattr(self, "compare_with_disk_btn", None):
+            self.compare_with_disk_btn.setEnabled(False)
+        if getattr(self, "edit_report_btn", None):
+            self.edit_report_btn.setEnabled(False)
+        if getattr(self, "_edit_sync", None):
+            self._edit_sync.unwatch_all()
+        if getattr(self, "edit_sync_status_label", None):
+            self.edit_sync_status_label.setVisible(False)
         self._processing_active = False
         self.reset_preview_card()
     
@@ -6018,7 +6357,8 @@ class BeastApp(QMainWindow):
             output_folder = self.create_output_folder(base_name)
             logger.info(f"Папка отчета на Desktop: {output_folder}")
         self.last_output_folder = output_folder
-        
+        self.last_report_docx_path = Path(output_folder) / f"отчет_{base_name}.docx"
+
         # Отключаем кнопки
         self.auto_reset_timer.stop()
         self._processing_active = True
@@ -6118,10 +6458,25 @@ class BeastApp(QMainWindow):
             self.progress_card.setVisible(True)
             self.progress_value_label.setText("100%")
             self._update_open_folder_button_state()
+            report_ready = bool(self.last_report_docx_path and self.last_report_docx_path.exists())
+            if report_ready:
+                self._adopt_report_folder(Path(self.last_output_folder), self.last_report_docx_path)
+            else:
+                if getattr(self, "send_to_disk_btn", None):
+                    self.send_to_disk_btn.setEnabled(False)
+                if getattr(self, "compare_with_disk_btn", None):
+                    self.compare_with_disk_btn.setEnabled(False)
+                if getattr(self, "edit_report_btn", None):
+                    self.edit_report_btn.setEnabled(False)
             logger.info(f"=== SUCCESS ===")
             logger.info(f"{message}")
 
-            if SettingsDialog.load_settings().get("auto_reset_after_done", True):
+            _settings = SettingsDialog.load_settings()
+            if report_ready and _settings.get("yandex_auto_upload", False) and SettingsDialog.get_yandex_token():
+                meta = parse_report_filename(self.last_report_docx_path.name)
+                self._yandex_queue.enqueue(self.last_output_folder, meta)
+
+            if _settings.get("auto_reset_after_done", True):
                 self.auto_reset_timer.start(5000)
         else:
             error_text = message if isinstance(message, str) else "Неизвестная ошибка"
@@ -6136,10 +6491,406 @@ class BeastApp(QMainWindow):
             self.drop_zone.set_completed_state(False)
             self.drop_zone.set_files_loaded(self.files_list.count() > 0)
             self._update_open_folder_button_state()
+            if getattr(self, "send_to_disk_btn", None):
+                self.send_to_disk_btn.setEnabled(False)
+            if getattr(self, "compare_with_disk_btn", None):
+                self.compare_with_disk_btn.setEnabled(False)
+            if getattr(self, "edit_report_btn", None):
+                self.edit_report_btn.setEnabled(False)
             logger.error(f"=== ERROR ===")
             logger.error(f"{error_text}")
             QMessageBox.critical(self, "Ошибка", error_text)
-    
+
+    def _update_yandex_queue_badge(self):
+        if not getattr(self, "yandex_queue_btn", None):
+            return
+        jobs = self._yandex_queue.queue.jobs
+        pending = [j for j in jobs if j.status != "done"]
+        if not pending:
+            self.yandex_queue_btn.setVisible(False)
+            return
+        self.yandex_queue_btn.setVisible(True)
+        if getattr(self, "_yandex_queue_offline", False):
+            self.yandex_queue_btn.setText("Очередь: нет сети")
+        else:
+            self.yandex_queue_btn.setText(f"Очередь ({len(pending)})")
+
+    def _on_yandex_queue_offline_changed(self, offline: bool):
+        self._yandex_queue_offline = offline
+        self._update_yandex_queue_badge()
+
+    def _on_yandex_queue_job_uploaded(self, local_folder: str, remote_path: str):
+        self._yandex_remote_by_local[local_folder] = remote_path
+        _play_sound()
+
+    def _open_yandex_queue_dialog(self):
+        dialog = YandexUploadQueueDialog(self._yandex_queue, parent=self)
+        dialog.exec_()
+
+    def _check_uploaded_reports_integrity(self):
+        """Тихая проверка (раз в сессию), что недавно отправленные отчёты
+
+        всё ещё на месте на Диске — если что-то пропало мимо приложения,
+        предупреждаем уведомлением, не блокирующим диалогом.
+        """
+        if getattr(self, "_closing", False) or self._integrity_checked:
+            return
+        self._integrity_checked = True
+
+        token = SettingsDialog.get_yandex_token()
+        if not token:
+            return
+        from src.report_uploader import load_uploaded_reports
+        entries = load_uploaded_reports()
+        if not entries:
+            return
+
+        self._integrity_check_thread = _IntegrityCheckThread(token, entries)
+        self._integrity_check_thread.finished_check.connect(self._on_integrity_check_finished)
+        self._integrity_check_thread.start()
+
+    def _on_integrity_check_finished(self, missing: list):
+        if not missing:
+            return
+        logger.warning(
+            "Проверка целостности: %d отчёт(ов) пропали с Яндекс.Диска: %s",
+            len(missing), [e.get("remote_path") for e in missing],
+        )
+        _send_system_notification(
+            "Проверка на Диске",
+            f"{len(missing)} отчёт(ов) пропали с Диска — подробности в логе приложения",
+        )
+
+    def _send_report_to_disk(self):
+        """Сравнивает отчёт с предыдущей версией и отправляет его на Яндекс.Диск."""
+        self._start_yandex_flow(action="send")
+
+    def _compare_report_with_disk(self):
+        """Только сравнивает отчёт с версией на Яндекс.Диске, без отправки."""
+        self._start_yandex_flow(action="compare")
+
+    def _open_yandex_disk_browser(self):
+        """Открывает просмотрщик файлов на Яндекс.Диске (папка «отчеты»)."""
+        token = SettingsDialog.get_yandex_token()
+        if not token:
+            QMessageBox.warning(
+                self, "Нет токена",
+                "Укажите OAuth-токен Яндекс.Диска в настройках (кнопка «Настройки»)."
+            )
+            return
+        dialog = YandexDiskBrowserDialog(token, roots=SettingsDialog.get_yandex_roots(), parent=self)
+        dialog.exec_()
+
+    def _set_yandex_buttons_enabled(self, enabled: bool):
+        if getattr(self, "send_to_disk_btn", None):
+            self.send_to_disk_btn.setEnabled(enabled)
+        if getattr(self, "compare_with_disk_btn", None):
+            self.compare_with_disk_btn.setEnabled(enabled)
+
+    def _start_yandex_flow(self, action: str):
+        """action: "send" (сравнить и отправить) или "compare" (только сравнить)."""
+        if not self.last_report_docx_path or not self.last_report_docx_path.exists():
+            QMessageBox.warning(self, "Нет отчёта", "Сначала сгенерируйте отчёт.")
+            return
+
+        token = SettingsDialog.get_yandex_token()
+        if not token:
+            QMessageBox.warning(
+                self, "Нет токена",
+                "Укажите OAuth-токен Яндекс.Диска в настройках (кнопка «Настройки»)."
+            )
+            return
+
+        self._yandex_token = token
+        self._yandex_action = action
+        self._yandex_meta = parse_report_filename(self.last_report_docx_path.name)
+        self._set_yandex_buttons_enabled(False)
+
+        if self._yandex_meta is None:
+            # Имя файла не содержит распознаваемых season/episode-меток —
+            # прежде чем требовать ручного выбора папки, проверяем алиас/
+            # нечёткое совпадение по имени файла отчёта (fallback_series_key),
+            # чтобы повторная отправка того же ролика не заставляла выбирать
+            # папку заново каждый раз.
+            self._yandex_fallback_key = fallback_series_key(self.last_report_docx_path.name)
+            self._yandex_fallback_find_thread = _FallbackFolderFindThread(
+                token, self._yandex_fallback_key, series_roots=SettingsDialog.get_yandex_roots(),
+            )
+            self._yandex_fallback_find_thread.resolved.connect(self._on_yandex_fallback_folder_found)
+            self._yandex_fallback_find_thread.failed.connect(self._on_yandex_failed)
+            self._yandex_fallback_find_thread.start()
+            return
+
+        self._yandex_find_thread = YandexDiskFindVersionsThread(
+            token, self._yandex_meta, series_roots=SettingsDialog.get_yandex_roots(),
+        )
+        self._yandex_find_thread.resolved.connect(self._on_yandex_versions_found)
+        self._yandex_find_thread.failed.connect(self._on_yandex_failed)
+        self._yandex_find_thread.start()
+
+    def _on_yandex_failed(self, error_text: str):
+        self._set_yandex_buttons_enabled(True)
+        QMessageBox.critical(self, "Ошибка Яндекс.Диска", error_text)
+
+    def _on_yandex_versions_found(self, result: dict):
+        if getattr(self, "_closing", False):
+            return
+        series_path = result.get("series_path")
+        episode_path = result.get("episode_path")
+        versions = result.get("versions") or []
+
+        if series_path is None:
+            self._set_yandex_buttons_enabled(True)
+            if self._yandex_action == "compare":
+                QMessageBox.information(
+                    self, "Сравнение",
+                    f"Папка «{self._yandex_meta.series}» не найдена на Диске — сравнивать не с чем."
+                )
+                return
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Папка не найдена")
+            msg.setText(
+                f"Папка «{self._yandex_meta.series}» не найдена на Диске.\n"
+                "Создать автоматически по имени файла или выбрать папку вручную?"
+            )
+            auto_btn = msg.addButton("Создать автоматически", QMessageBox.AcceptRole)
+            manual_btn = msg.addButton("Выбрать вручную", QMessageBox.ActionRole)
+            msg.addButton("Отмена", QMessageBox.RejectRole)
+            msg.exec_()
+            clicked = msg.clickedButton()
+            if clicked is auto_btn:
+                self._start_yandex_upload(create_if_missing=True)
+            elif clicked is manual_btn:
+                self._open_yandex_folder_picker()
+            return
+
+        self._yandex_target_folder = episode_path
+        remember_series_alias(self._yandex_meta.series, series_path)
+
+        if self._yandex_action == "send":
+            # Отправка — без сравнения, просто загрузка в найденную папку.
+            self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
+            return
+
+        self._handle_yandex_versions(versions)
+
+    def _open_yandex_folder_picker(self):
+        """Открывает диалог ручного выбора/создания папки на Диске."""
+        from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+
+        try:
+            client = YandexDiskClient(self._yandex_token)
+            dialog = YandexFolderPickerDialog(client, roots=SettingsDialog.get_yandex_roots(), parent=self)
+        except YandexDiskError as exc:
+            self._set_yandex_buttons_enabled(True)
+            QMessageBox.critical(self, "Ошибка Яндекс.Диска", str(exc))
+            return
+
+        if dialog.exec_() != QDialog.Accepted or not dialog.selected_path:
+            self._set_yandex_buttons_enabled(True)
+            return
+
+        episode_path, series_path = resolve_manual_pick_target(dialog.selected_path, self._yandex_meta)
+        # Создание папки эпизода — асинхронно, чтобы не блокировать GUI-
+        # поток на медленной сети.
+        self._folder_picker_mkdir_thread = _MkdirThread(client, episode_path)
+        self._folder_picker_mkdir_thread.finished_mkdir.connect(
+            lambda success, message: self._on_folder_picker_mkdir_done(success, message, episode_path, series_path)
+        )
+        self._folder_picker_mkdir_thread.start()
+
+    def _on_folder_picker_mkdir_done(self, success: bool, message: str, episode_path: str, series_path: str) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if not success:
+            self._set_yandex_buttons_enabled(True)
+            QMessageBox.critical(self, "Ошибка Яндекс.Диска", message)
+            return
+
+        self._yandex_target_folder = episode_path
+        if self._yandex_meta is not None:
+            remember_series_alias(self._yandex_meta.series, series_path)
+        elif getattr(self, "_yandex_fallback_key", None):
+            # Имя файла не распознано — запоминаем выбор по ключу на основе
+            # имени файла отчёта (см. _start_yandex_flow), чтобы повторная
+            # отправка того же ролика не требовала ручного выбора снова.
+            remember_series_alias(self._yandex_fallback_key, series_path)
+
+        if self._yandex_action == "send":
+            # Отправка — без сравнения, просто загрузка в выбранную папку.
+            self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
+            return
+
+        self._yandex_versions_thread = YandexDiskFolderVersionsThread(self._yandex_token, episode_path)
+        self._yandex_versions_thread.resolved.connect(self._handle_yandex_versions)
+        self._yandex_versions_thread.failed.connect(self._on_yandex_failed)
+        self._yandex_versions_thread.start()
+
+    def _on_yandex_fallback_folder_found(self, episode_path: str):
+        if getattr(self, "_closing", False):
+            return
+        if not episode_path:
+            # Алиаса нет и нечёткий поиск не нашёл совпадений — как раньше,
+            # ручной выбор папки.
+            self._open_yandex_folder_picker()
+            return
+
+        self._yandex_target_folder = episode_path
+        if self._yandex_action == "send":
+            self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
+            return
+
+        self._yandex_versions_thread = YandexDiskFolderVersionsThread(self._yandex_token, episode_path)
+        self._yandex_versions_thread.resolved.connect(self._handle_yandex_versions)
+        self._yandex_versions_thread.failed.connect(self._on_yandex_failed)
+        self._yandex_versions_thread.start()
+
+    def _handle_yandex_versions(self, versions: list):
+        """Только для действия «Сравнить». Быстрый путь: сразу сравниваем
+
+        текущий черновик с последней версией на Диске, без диалога выбора.
+        В итоговом окне есть кнопка «Выбрать другую версию» — тогда
+        открывается полный выбор (любые две версии между собой, например
+        первую с четвёртой).
+        """
+        self._set_yandex_buttons_enabled(True)
+        self._yandex_versions_cache = versions
+
+        if not versions:
+            QMessageBox.information(self, "Сравнение", "Предыдущих версий этого эпизода не найдено.")
+            return
+
+        latest = versions[-1]
+        date_text = latest["date"].strftime("%d.%m.%Y") if latest["date"] else ""
+        latest_label = f"{date_text}  {latest['label']}" if date_text else latest["label"]
+        self._run_yandex_compare(
+            latest["path"], YandexVersionPickerDialog.CURRENT_DRAFT,
+            latest_label, "Текущий черновик (ещё не отправлен)",
+        )
+
+    def _open_yandex_version_picker(self):
+        """Полный выбор двух версий — открывается по кнопке «Выбрать другую версию»."""
+        versions = getattr(self, "_yandex_versions_cache", [])
+        dialog = YandexVersionPickerDialog(versions, parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._run_yandex_compare(
+            dialog.selection_old, dialog.selection_new,
+            dialog.selection_old_label, dialog.selection_new_label,
+        )
+
+    def _run_yandex_compare(self, old_path: str, new_path: str, old_label: str, new_label: str):
+        self._yandex_old_label = old_label
+        self._yandex_new_label = new_label
+        self._set_yandex_buttons_enabled(False)
+        self._yandex_compare_thread = YandexDiskCompareThread(
+            self._yandex_token, old_path, new_path, self.last_report_docx_path,
+        )
+        self._yandex_compare_thread.resolved.connect(self._on_yandex_comparison_ready)
+        self._yandex_compare_thread.failed.connect(self._on_yandex_failed)
+        self._yandex_compare_thread.start()
+
+    def _on_yandex_comparison_ready(self, comparison):
+        self._set_yandex_buttons_enabled(True)
+
+        if comparison is None:
+            QMessageBox.warning(self, "Сравнение", "Не удалось прочитать выбранную версию отчёта.")
+            return
+
+        dialog = YandexUploadDiffDialog(
+            comparison, parent=self, upload_mode=False,
+            old_label=getattr(self, "_yandex_old_label", None),
+            new_label=getattr(self, "_yandex_new_label", None),
+            allow_pick_another=True,
+        )
+        result_code = dialog.exec_()
+
+        if result_code == YandexUploadDiffDialog.PICK_ANOTHER:
+            self._open_yandex_version_picker()
+
+    def _start_yandex_upload(self, create_if_missing: bool, target_folder_path: str = None):
+        if getattr(self, "_closing", False):
+            return
+        self._set_yandex_buttons_enabled(False)
+        self.edit_sync_status_label.setText("Отправка на Диск: 0%")
+        self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
+        self.edit_sync_status_label.setVisible(True)
+        self._yandex_upload_thread = YandexDiskUploadThread(
+            self._yandex_token, self.last_output_folder,
+            meta=self._yandex_meta, create_if_missing=create_if_missing,
+            series_roots=SettingsDialog.get_yandex_roots(),
+            target_folder_path=target_folder_path,
+        )
+        self._yandex_upload_thread.progress.connect(self._on_yandex_upload_progress)
+        self._yandex_upload_thread.finished_upload.connect(self._on_yandex_upload_finished)
+        # На практике недостижимо в этом вызове (create_if_missing уже решён
+        # выше по потоку, либо target_folder_path уже известен) — подключено
+        # для отказоустойчивости, чтобы кнопки не остались заблокированными
+        # молча, если сюда всё же попадёт SeriesFolderNotFoundError.
+        self._yandex_upload_thread.needs_folder.connect(lambda message: self._on_yandex_upload_finished(False, message))
+        self._yandex_upload_thread.start()
+
+    def _on_yandex_upload_progress(self, sent: int, total: int):
+        percent = int(sent * 100 / total) if total else 0
+        self.edit_sync_status_label.setText(f"Отправка на Диск: {percent}%")
+        self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
+        self.edit_sync_status_label.setVisible(True)
+
+    def _on_yandex_upload_finished(self, success: bool, message: str):
+        self._set_yandex_buttons_enabled(True)
+        self.edit_sync_status_label.setVisible(False)
+        if success:
+            if self.last_output_folder:
+                self._yandex_remote_by_local[str(self.last_output_folder)] = message
+                remember_uploaded_report(str(self.last_output_folder), message)
+            _play_sound()
+            QMessageBox.information(self, "Готово", f"Папка с отчётом отправлена на Диск:\n{message}")
+        else:
+            QMessageBox.critical(self, "Ошибка Яндекс.Диска", message)
+
+    def _edit_report(self):
+        """Открывает отчёт во внешнем редакторе; после каждого сохранения,
+
+        если отчёт уже был отправлен на Диск, правки автоматически уедут
+        туда же (перезапись того же файла). Слежение за файлами папки отчёта
+        уже включено с момента генерации (см. processing_finished) — здесь
+        только открываем файл, watch() заново не переподписываем, чтобы не
+        сбросить слежение за остальными файлами папки.
+        """
+        if not self.last_report_docx_path or not self.last_report_docx_path.exists():
+            QMessageBox.warning(self, "Нет отчёта", "Сначала сгенерируйте отчёт.")
+            return
+        subprocess.Popen(["open", str(self.last_report_docx_path)])
+        self.edit_sync_status_label.setText("Отслеживаем изменения — сохраните файл в редакторе, чтобы обновить на Диске")
+        self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
+        self.edit_sync_status_label.setVisible(True)
+
+    def _resolve_edited_report_remote_path(self, path: str) -> str | None:
+        remote_folder = self._yandex_remote_by_local.get(str(self.last_output_folder))
+        if not remote_folder:
+            return None
+        return f"{remote_folder}/{Path(path).name}"
+
+    def _on_edit_sync_status_changed(self, status: str):
+        is_error = status.startswith("Не удалось") or status.startswith("Правки НЕ")
+        is_warning = "повтор через" in status or status.startswith("Конфликт")
+        color = "#FF3B30" if is_error else ("#FF9500" if is_warning else (
+            "#34C759" if status.startswith("Обновлено") else "#86868B"
+        ))
+        self.edit_sync_status_label.setText(status)
+        self.edit_sync_status_label.setStyleSheet(f"color: {color}; background: transparent;")
+        self.edit_sync_status_label.setVisible(True)
+
+    def _on_edit_sync_conflict(self, path: str, actual_modified: str):
+        choice = QMessageBox.question(
+            self, "Конфликт версий",
+            f"Файл на Яндекс.Диске был изменён после последней синхронизации "
+            f"({_format_disk_modified_date(actual_modified)}).\n\n"
+            "Перезаписать его вашей версией?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        self._edit_sync.resolve_conflict(path, overwrite=(choice == QMessageBox.Yes))
+
     def extract_base_name(self, filename: str) -> str:
         """Извлечение базового названия из имени файла (из v5.11)"""
         return sanitize_base_name(filename)

@@ -108,7 +108,9 @@ def _links_from_release_notes(body: str) -> dict:
     """
     result = {"arm": "", "intel": "", "universal": ""}
     for line in (body or "").splitlines():
-        m = re.match(r"\s*[-*]?\s*([\w .]{2,30}?)\s*:\s*(https?://\S+)", line, re.UNICODE)
+        # Только https: скачанный файл открывается автоматически, и ссылка
+        # по http позволила бы подменить его по пути (MITM).
+        m = re.match(r"\s*[-*]?\s*([\w .]{2,30}?)\s*:\s*(https://\S+)", line, re.UNICODE)
         if not m:
             continue
         label, url = m.group(1).strip().lower(), m.group(2).strip()
@@ -177,9 +179,15 @@ def _filename_from_download(resp, fallback_url: str) -> str:
     content_disposition = resp.headers.get("Content-Disposition", "") if resp.headers else ""
     m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)\"?", content_disposition)
     if m:
-        return urllib.parse.unquote(m.group(1))
+        # Только базовое имя: заголовок приходит с сервера, и без этого
+        # "../../x" или абсолютный путь в filename записали бы файл за
+        # пределами dest_dir (у pathlib абсолютная правая часть при
+        # соединении вообще заменяет левую).
+        name = Path(urllib.parse.unquote(m.group(1))).name
+        if name and name not in (".", ".."):
+            return name
 
-    name = urllib.parse.urlparse(fallback_url).path.rstrip("/").split("/")[-1]
+    name = Path(urllib.parse.urlparse(fallback_url).path.rstrip("/")).name
     if name and "." in name:
         return name
     return "Beast_Auto_Reporter_update.dmg"
