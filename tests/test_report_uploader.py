@@ -21,6 +21,7 @@ from src.report_uploader import (
     list_series_aliases,
     load_series_aliases,
     load_uploaded_reports,
+    NPR_ALIASES_FILE,
     remember_series_alias,
     remember_uploaded_report,
     resolve_manual_pick_target,
@@ -793,6 +794,32 @@ def test_fallback_series_key_without_report_prefix():
 
 def test_fallback_series_key_handles_other_extensions():
     assert fallback_series_key("отчет_preroll.pdf") == "preroll"
+
+
+def test_fallback_series_key_strips_npr_extension():
+    assert fallback_series_key("ShowName_season01.npr") == "ShowName_season01"
+
+
+def test_fallback_series_key_strips_npr_extension_with_date_suffix():
+    assert fallback_series_key("ShowName_2026_03_27_v1.npr") == "ShowName"
+
+
+def test_npr_aliases_use_separate_file_from_series_aliases(tmp_path):
+    # NPR_ALIASES_FILE — отдельный файл от SERIES_ALIASES_FILE: одинаковый
+    # ключ в двух местах не должен пересекаться.
+    series_path = tmp_path / "series_aliases.json"
+    npr_path = tmp_path / "npr_aliases.json"
+    key = fallback_series_key("ShowName_season01.npr")
+
+    remember_series_alias(key, "/отчеты/ShowName", series_path)
+    remember_series_alias(key, "/ПРОЕКТЫ NUENDO/ShowName", npr_path)
+
+    client = MagicMock()
+    client.list_folder.return_value = []
+
+    assert find_series_folder(client, key, aliases_path=series_path) == "/отчеты/ShowName"
+    assert find_series_folder(client, key, aliases_path=npr_path) == "/ПРОЕКТЫ NUENDO/ShowName"
+    assert NPR_ALIASES_FILE.name == "npr_aliases.json"
 
 
 def test_fallback_series_key_strips_trailing_date_and_version():

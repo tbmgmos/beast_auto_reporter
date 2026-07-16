@@ -18,8 +18,48 @@ logger = logging.getLogger(__name__)
 # (dialogs.py и так импортирует threads.py — цикл иначе неизбежен).
 CURRENT_DRAFT = "__current_draft__"
 
+# Сильные ссылки на все запущенные и ещё не завершившиеся потоки —
+# см. _KeepAliveThread.
+_RUNNING_THREADS: set = set()
 
-class _YandexWorkerThread(QThread):
+
+class _KeepAliveThread(QThread):
+    """QThread, который нельзя случайно уничтожить, пока он ещё работает.
+
+    Все фоновые потоки в этом модуле создаются без Qt-родителя и живут
+    только за счёт Python-ссылки владельца (self._expand_threads[path],
+    self._yandex_upload_thread и т.п.). Владельцы сбрасывают эту ссылку
+    прямо в слоте финального сигнала потока (resolved/failed/finished_*),
+    но сигнал эмитится из run() ДО фактической остановки потока: C++-часть
+    QThread ещё завершает работу, а sip ждёт GIL, который в этот момент
+    держит главный поток, исполняющий слот. Если сброшенная ссылка была
+    последней, вместе с обёрткой уничтожается и C++-объект — Qt валит
+    процесс с "QThread: Destroyed while thread is still running"
+    (реальный краш: _ListFolderThread при ленивом листинге папок).
+
+    Поэтому start() регистрирует поток в модульном реестре (вторая
+    сильная ссылка), а слот на finished снимает регистрацию. Слот
+    доставляется queued в главный поток (объект QThread живёт в нём),
+    т.е. выполняется уже после эмита finished; остаточную микро-щель до
+    фактической остановки закрывает wait() — PyQt отпускает GIL внутри
+    него, давая потоку дозавершиться.
+    """
+
+    def start(self, *args, **kwargs):
+        if self not in _RUNNING_THREADS:
+            _RUNNING_THREADS.add(self)
+            self.finished.connect(self._forget_self)
+        super().start(*args, **kwargs)
+
+    def _forget_self(self):
+        try:
+            self.wait()
+        except RuntimeError:
+            pass  # C++-обёртка уже уничтожена — держать больше нечего
+        _RUNNING_THREADS.discard(self)
+
+
+class _YandexWorkerThread(_KeepAliveThread):
     """Общий каркас для фоновых операций с Яндекс.Диском.
 
     run() вызывает self._work() и одинаково ловит ошибки, диспатчя
@@ -284,7 +324,7 @@ class YandexDiskCompareThread(_YandexWorkerThread):
         self.failed.emit(message)
 
 
-class YandexDiskUploadThread(QThread):
+class YandexDiskUploadThread(_KeepAliveThread):
     """Фоновая загрузка папки готового отчёта (все файлы) на Яндекс.Диск.
 
     Либо путь папки на Диске определяется автоматически по meta
@@ -348,6 +388,63 @@ class YandexDiskUploadThread(QThread):
             self.finished_upload.emit(False, str(exc))
 
 
+class NprUploadThread(_KeepAliveThread):
+    """Загрузка .npr-файлов проекта Nuendo в папку сезона на отдельном
+
+    корне Диска (NPR_ROOT из настроек) — в отличие от YandexDiskUploadThread,
+    без под-папки на эпизод (весь сезон в одной папке отдельно от
+    /отчеты). Папка резолвится тем же механизмом алиасов, что и отчёты
+    с нераспознанным именем файла (см. fallback_series_key,
+    NPR_ALIASES_FILE в src/report_uploader.py) — из-за отдельного корня и
+    несвязанной с meta.series схемы имени алиасы хранятся отдельно от
+    алиасов серий отчётов.
+    """
+
+    finished_upload = pyqtSignal(bool, str)
+    needs_folder = pyqtSignal(str)  # папка сезона не найдена ни по алиасу, ни нечётким поиском
+    network_unavailable = pyqtSignal(str)
+
+    def __init__(
+        self, token: str, npr_root: str, npr_key: str, local_paths, *,
+        target_folder_path: str = None,
+    ):
+        super().__init__()
+        self.token = token
+        self.npr_root = npr_root
+        self.npr_key = npr_key
+        self.local_paths = list(local_paths)
+        self.target_folder_path = target_folder_path
+
+    def run(self):
+        from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+        from src.report_uploader import NPR_ALIASES_FILE, find_series_folder, remember_series_alias
+
+        try:
+            client = YandexDiskClient(self.token)
+            if self.target_folder_path is not None:
+                folder = self.target_folder_path
+            else:
+                folder = find_series_folder(
+                    client, self.npr_key, roots=[self.npr_root], aliases_path=NPR_ALIASES_FILE,
+                )
+                if folder is None:
+                    self.needs_folder.emit(f"Папка для проекта «{self.npr_key}» не найдена на Диске")
+                    return
+            for local_path in self.local_paths:
+                remote_path = f"{folder}/{Path(local_path).name}"
+                client.upload(Path(local_path), remote_path)
+            remember_series_alias(self.npr_key, folder, NPR_ALIASES_FILE)
+            self.finished_upload.emit(True, folder)
+        except YandexDiskError as exc:
+            if exc.status_code is None:
+                self.network_unavailable.emit(str(exc))
+            else:
+                self.finished_upload.emit(False, str(exc))
+        except Exception as exc:
+            logger.error("Ошибка отправки npr-файлов на Яндекс.Диск: %s", exc, exc_info=True)
+            self.finished_upload.emit(False, str(exc))
+
+
 class YandexDiskDownloadThread(_YandexWorkerThread):
     """Фоновое скачивание одного файла с Яндекс.Диска на локальный путь."""
 
@@ -377,7 +474,7 @@ class YandexDiskDownloadThread(_YandexWorkerThread):
         self.finished_download.emit(False, message)
 
 
-class YandexDiskSyncUploadThread(QThread):
+class YandexDiskSyncUploadThread(_KeepAliveThread):
     """Заливает один локальный файл на уже известный путь на Диске
 
     (перезапись открытого/правленого файла) — в отличие от

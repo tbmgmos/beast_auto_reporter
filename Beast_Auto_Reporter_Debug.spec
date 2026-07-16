@@ -84,7 +84,7 @@ hidden_imports = [
     'src.template_report_generator', 'src.table_parser',
     'src.marker_list_from_template', 'src.template_processor',
     'src.diagnostics', 'src.youlean_integration',
-    'src.audio_analyzer_extended', 'src.spellcheck_service', 'src.secret_store', 'src.spellcheck_review',
+    'src.audio_analyzer_extended', 'src.spellcheck_service', 'src.secret_store', 'src.spellcheck_review', 'src.yandex_oauth', 'src.yandex_ui.oauth_dialog',
 ]
 
 a = Analysis(

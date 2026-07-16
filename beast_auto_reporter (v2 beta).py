@@ -370,7 +370,9 @@ def _matching_base_name(name: str) -> str:
 
 from src.app_paths import CONFIG_DIR, atomic_write_text, migrate_legacy_config_file  # noqa: E402
 from src import secret_store  # noqa: E402
+from src import yandex_oauth  # noqa: E402
 from src.spellcheck_review import SpellcheckReviewDialog, SpellcheckScanThread  # noqa: E402
+from src.yandex_ui.oauth_dialog import YandexOAuthDialog  # noqa: E402
 from src.file_matching import _levenshtein, _bases_match  # noqa: E402
 from src.report_filename import parse_report_filename  # noqa: E402
 from src.report_uploader import (  # noqa: E402
@@ -385,7 +387,7 @@ from src.yandex_ui.threads import (  # noqa: E402
     _FallbackFolderFindThread, _IntegrityCheckThread, _MkdirThread,
     YandexDiskFindVersionsThread, YandexDiskFolderVersionsThread,
     YandexDiskCompareThread, YandexDiskUploadThread,
-    YandexDiskTokenCheckThread,
+    YandexDiskTokenCheckThread, NprUploadThread,
 )
 from src.yandex_ui.edit_sync import YandexEditSyncController  # noqa: E402
 from src.yandex_ui.dialogs import (  # noqa: E402
@@ -2169,6 +2171,7 @@ class SettingsDialog(QDialog):
             "yandex_disk_token": "",
             "yandex_auto_upload": False,
             "yandex_disk_roots": [REPORTS_ROOT],
+            "yandex_npr_root": "",
         }
 
         if cls.CONFIG_FILE.exists():
@@ -2261,6 +2264,16 @@ class SettingsDialog(QDialog):
             if r not in cleaned:
                 cleaned.append(r)
         return cleaned or [REPORTS_ROOT]
+
+    @classmethod
+    def get_yandex_npr_root(cls) -> str:
+        """Папка на Диске для .npr-проектов Nuendo (пустая строка, если не задана).
+
+        Отдельный корень от отчётов (yandex_disk_roots) — весь сезон
+        Nuendo-проектов складывается в одну папку внутри него, без
+        под-папки на эпизод (см. NprUploadThread).
+        """
+        return cls.load_settings().get("yandex_npr_root", "").strip().rstrip("/")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2422,6 +2435,25 @@ class SettingsDialog(QDialog):
         self.yandex_check_status_label.setFont(QFont(".AppleSystemUIFont", 10))
         self.yandex_check_status_label.setWordWrap(True)
         yandex_check_row.addWidget(self.yandex_check_status_label, 1)
+        if yandex_oauth.is_configured():
+            self.yandex_login_btn = QPushButton("Войти в Яндекс")
+            self.yandex_login_btn.setFont(QFont(".AppleSystemUIFont", 11))
+            self.yandex_login_btn.setStyleSheet("""
+                QPushButton {
+                    background: #FFFFFF;
+                    color: #007AFF;
+                    border: 1px solid #D2D2D7;
+                    border-radius: 8px;
+                    padding: 5px 12px;
+                }
+                QPushButton:hover { background: #F5F5F7; }
+            """)
+            self.yandex_login_btn.setToolTip(
+                "Войти через браузер — токен будет получен и сохранён\n"
+                "автоматически, без ручного создания и вставки."
+            )
+            self.yandex_login_btn.clicked.connect(self._on_yandex_login_clicked)
+            yandex_check_row.addWidget(self.yandex_login_btn)
         self.yandex_check_token_btn = QPushButton("Проверить")
         self.yandex_check_token_btn.setFont(QFont(".AppleSystemUIFont", 11))
         self.yandex_check_token_btn.setStyleSheet("""
@@ -2523,6 +2555,44 @@ class SettingsDialog(QDialog):
 
         layout.addSpacing(8)
 
+        # Папка для .npr-проектов Nuendo
+        yandex_npr_label = QLabel("Папка на Диске для проектов Nuendo (.npr)")
+        yandex_npr_label.setFont(QFont(".AppleSystemUIFont", 12))
+        yandex_npr_label.setStyleSheet("color: #1D1D1F;")
+        layout.addWidget(yandex_npr_label)
+
+        self.yandex_npr_root_edit = QLineEdit(self._settings.get("yandex_npr_root", ""))
+        self.yandex_npr_root_edit.setPlaceholderText("/ПРОЕКТЫ NUENDO")
+        self.yandex_npr_root_edit.setFont(QFont(".AppleSystemUIFont", 12))
+        self.yandex_npr_root_edit.setStyleSheet("""
+            QLineEdit {
+                background: #F5F5F7;
+                border: 1px solid #D2D2D7;
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #1D1D1F;
+            }
+            QLineEdit:focus { border: 1px solid #007AFF; }
+        """)
+        self.yandex_npr_root_edit.setToolTip(
+            "Отдельная папка на Диске для .npr-файлов проектов Nuendo —\n"
+            "не смешивается с папками отчётов. Внутри нужной папки сезона\n"
+            "лежат все .npr сразу, без деления на эпизоды."
+        )
+        layout.addWidget(self.yandex_npr_root_edit)
+
+        yandex_npr_hint = QLabel(
+            ".npr-файлы, перетащенные в окно вместе с исходниками отчёта,\n"
+            "уйдут на Диск по кнопке «Отправить» — папку сезона нужно будет\n"
+            "выбрать вручную при первой отправке, дальше она запомнится."
+        )
+        yandex_npr_hint.setFont(QFont(".AppleSystemUIFont", 10))
+        yandex_npr_hint.setStyleSheet("color: #86868B;")
+        yandex_npr_hint.setWordWrap(True)
+        layout.addWidget(yandex_npr_hint)
+
+        layout.addSpacing(8)
+
         # Автоматическая отправка на Диск после генерации
         self.yandex_auto_upload_cb = QCheckBox("Автоматически отправлять на Диск после генерации")
         self.yandex_auto_upload_cb.setFont(QFont(".AppleSystemUIFont", 12))
@@ -2621,6 +2691,10 @@ class SettingsDialog(QDialog):
         roots = [self.yandex_roots_list.item(i).text() for i in range(self.yandex_roots_list.count())]
         self._settings["yandex_disk_roots"] = roots or [REPORTS_ROOT]
         self._settings.pop("yandex_disk_root", None)  # устаревший одиночный ключ прошлой версии
+        npr_root = self.yandex_npr_root_edit.text().strip().rstrip("/")
+        if npr_root and not npr_root.startswith("/"):
+            npr_root = f"/{npr_root}"
+        self._settings["yandex_npr_root"] = npr_root
         self.save_settings(self._settings)
         self.accept()
 
@@ -2657,6 +2731,14 @@ class SettingsDialog(QDialog):
         parent = self.parent()
         if parent is not None:
             parent._check_for_updates(silent=False)
+
+    def _on_yandex_login_clicked(self):
+        dialog = YandexOAuthDialog(parent=self)
+        if dialog.exec_() == QDialog.Accepted and dialog.token:
+            secret_store.save_token(dialog.token)
+            self.yandex_token_edit.setText(dialog.token)
+            self.yandex_check_status_label.setStyleSheet("color: #34C759;")
+            self.yandex_check_status_label.setText("Вход выполнен, токен сохранён.")
 
     def _on_check_yandex_token_clicked(self):
         token = self.yandex_token_edit.text().strip()
@@ -4146,8 +4228,13 @@ class BeastApp(QMainWindow):
             'video': [],
             'csv': [],
             'pdf': [],
-            'params': []
+            'params': [],
+            'npr': [],
         }
+        # Снимок files_data['npr'] на момент успешного завершения генерации
+        # (см. processing_finished/_start_npr_upload_flow) — None означает
+        # "снимка ещё не было в этой сессии".
+        self._pending_npr_files = None
 
         # Путь к автоматически созданному пустому CSV (если был сгенерирован)
         self._auto_created_csv_path = None
@@ -4250,6 +4337,7 @@ class BeastApp(QMainWindow):
         _stop_thread(getattr(self, "_yandex_upload_thread", None))
         _stop_thread(getattr(self, "_folder_picker_mkdir_thread", None))
         _stop_thread(getattr(self, "_yandex_fallback_find_thread", None))
+        _stop_thread(getattr(self, "_npr_upload_thread", None))
         _stop_thread(getattr(self, "_integrity_check_thread", None))
         edit_sync = getattr(self, "_edit_sync", None)
         if edit_sync is not None:
@@ -5579,7 +5667,8 @@ class BeastApp(QMainWindow):
 
         self.compare_with_disk_btn = QPushButton("Сравнить")
         self.compare_with_disk_btn.setToolTip("Сравнить с версией на Яндекс.Диске")
-        self.compare_with_disk_btn.setVisible(True)
+        # TODO: вернуть setVisible(True), когда функция сравнения будет полностью готова.
+        self.compare_with_disk_btn.setVisible(False)
         self.compare_with_disk_btn.setEnabled(False)
         self.compare_with_disk_btn.setFixedHeight(30)
         self.compare_with_disk_btn.setStyleSheet(action_btn_style)
@@ -5884,6 +5973,12 @@ class BeastApp(QMainWindow):
             elif file_ext == '.txt' and ('параметры' in filename_lower or 'parametry' in filename_lower):
                 self.files_data['params'].append(file_path)
                 icon_name = "params"
+            elif file_ext == '.npr':
+                # Проект Nuendo — не участвует в генерации отчёта, едет
+                # на Диск отдельно (в свою папку сезона) по кнопке
+                # «Отправить» вместе с отчётом, см. _start_npr_upload_flow.
+                self.files_data['npr'].append(file_path)
+                icon_name = "doc"
             elif file_ext == '.pdf':
                 self.files_data['pdf'].append(file_path)
                 # Определяем тип PDF для отображения
@@ -5946,7 +6041,9 @@ class BeastApp(QMainWindow):
             stats.append(f"PDF {len(self.files_data['pdf'])}")
         if self.files_data['params']:
             stats.append(f"Параметры {len(self.files_data['params'])}")
-        
+        if self.files_data['npr']:
+            stats.append(f"Nuendo {len(self.files_data['npr'])}")
+
         if not self.progress_card.isVisible():
             self._set_progress_status_text(" | ".join(stats) if stats else "Нет файлов")
 
@@ -6069,7 +6166,8 @@ class BeastApp(QMainWindow):
             'video': [],
             'csv': [],
             'pdf': [],
-            'params': []
+            'params': [],
+            'npr': [],
         }
         self.files_list.clear()
         self._update_files_list_height()
@@ -6501,6 +6599,11 @@ class BeastApp(QMainWindow):
             report_ready = bool(self.last_report_docx_path and self.last_report_docx_path.exists())
             if report_ready:
                 self._adopt_report_folder(Path(self.last_output_folder), self.last_report_docx_path)
+                # Снимок сейчас, а не в момент клика «Отправить» — иначе
+                # 5-секундный auto_reset_after_done (clear_files) успевает
+                # опустошить files_data['npr'] раньше, чем пользователь
+                # вообще нажмёт кнопку.
+                self._pending_npr_files = list(self.files_data.get('npr', []))
             else:
                 if getattr(self, "send_to_disk_btn", None):
                     self.send_to_disk_btn.setEnabled(False)
@@ -6515,6 +6618,7 @@ class BeastApp(QMainWindow):
             if report_ready and _settings.get("yandex_auto_upload", False) and SettingsDialog.get_yandex_token():
                 meta = parse_report_filename(self.last_report_docx_path.name)
                 self._yandex_queue.enqueue(self.last_output_folder, meta)
+                self._start_npr_upload_flow()
 
             if _settings.get("auto_reset_after_done", True):
                 self.auto_reset_timer.start(5000)
@@ -6608,10 +6712,103 @@ class BeastApp(QMainWindow):
     def _send_report_to_disk(self):
         """Сравнивает отчёт с предыдущей версией и отправляет его на Яндекс.Диск."""
         self._start_yandex_flow(action="send")
+        self._start_npr_upload_flow()
 
     def _compare_report_with_disk(self):
         """Только сравнивает отчёт с версией на Яндекс.Диске, без отправки."""
         self._start_yandex_flow(action="compare")
+
+    def _start_npr_upload_flow(self):
+        """Отправляет .npr-файлы (проекты Nuendo), перетащенные вместе с
+
+        исходниками отчёта, на отдельный корень Диска — своей папкой на
+        весь сезон, без деления на эпизоды (см. NprUploadThread). Идёт
+        параллельно с обычной отправкой отчёта (_start_yandex_flow), не
+        блокируя и не блокируясь ею.
+        """
+        if getattr(self, "_closing", False):
+            return
+        # _pending_npr_files — снимок, сделанный сразу при завершении
+        # генерации (processing_finished), а не files_data['npr'] напрямую:
+        # к моменту клика «Отправить» files_data уже может быть очищен
+        # автосбросом (auto_reset_after_done, 5с после готовности отчёта).
+        # Явное None (снимка ещё не было — например, папка отчёта
+        # перетащена, а не сгенерирована в этой сессии) — тогда fallback
+        # на текущий files_data.
+        npr_files = getattr(self, "_pending_npr_files", None)
+        if npr_files is None:
+            npr_files = self.files_data.get('npr') or []
+        if not npr_files:
+            return
+
+        token = SettingsDialog.get_yandex_token()
+        if not token:
+            return  # об отсутствии токена уже предупредили в _start_yandex_flow
+
+        npr_root = SettingsDialog.get_yandex_npr_root()
+        if not npr_root:
+            QMessageBox.warning(
+                self, "Не задана папка для Nuendo-проектов",
+                "В настройках не указана папка на Диске для .npr-файлов — "
+                "укажите её в разделе «Папка на Диске для проектов Nuendo»."
+            )
+            return
+
+        self._npr_root = npr_root
+        self._npr_key = fallback_series_key(Path(npr_files[0]).name)
+        self._npr_files_pending = list(npr_files)
+        self._npr_upload_thread = NprUploadThread(token, npr_root, self._npr_key, npr_files)
+        self._npr_upload_thread.finished_upload.connect(self._on_npr_upload_finished)
+        self._npr_upload_thread.needs_folder.connect(self._on_npr_needs_folder)
+        self._npr_upload_thread.network_unavailable.connect(self._on_npr_network_unavailable)
+        self._npr_upload_thread.start()
+
+    def _on_npr_upload_finished(self, success: bool, message: str):
+        if getattr(self, "_closing", False):
+            return
+        if success:
+            _play_sound()
+            logger.info("Npr-файлы отправлены на Диск: %s", message)
+        else:
+            QMessageBox.critical(self, "Ошибка отправки Nuendo-проекта", message)
+
+    def _on_npr_needs_folder(self, message: str):
+        if getattr(self, "_closing", False):
+            return
+        from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+
+        token = SettingsDialog.get_yandex_token()
+        try:
+            client = YandexDiskClient(token)
+            # Отдельные заголовок/подсказка от пикера папки ОТЧЁТА — это
+            # второй, независимый выбор папки (сезона Nuendo-проекта, не
+            # серии отчёта), легко спутать с уже показанным диалогом для
+            # отчёта, если оба всплывают в одном цикле «Отправить».
+            dialog = YandexFolderPickerDialog(
+                client, roots=[self._npr_root], parent=self,
+                window_title="Папка для Nuendo-проекта (.npr)",
+                prompt_text=f"Выберите или создайте папку сезона для «{self._npr_key}»",
+                hint_text=(
+                    "Все .npr-файлы этого сезона будут лежать в выбранной\n"
+                    "папке одним списком, без деления на эпизоды."
+                ),
+            )
+        except YandexDiskError as exc:
+            QMessageBox.critical(self, "Ошибка Яндекс.Диска", str(exc))
+            return
+
+        if dialog.exec_() != QDialog.Accepted or not dialog.selected_path:
+            return
+
+        self._npr_upload_thread = NprUploadThread(
+            token, self._npr_root, self._npr_key, self._npr_files_pending,
+            target_folder_path=dialog.selected_path,
+        )
+        self._npr_upload_thread.finished_upload.connect(self._on_npr_upload_finished)
+        self._npr_upload_thread.start()
+
+    def _on_npr_network_unavailable(self, message: str):
+        logger.warning("Нет сети при отправке npr-файлов: %s", message)
 
     def _open_yandex_disk_browser(self):
         """Открывает просмотрщик файлов на Яндекс.Диске (папка «отчеты»)."""

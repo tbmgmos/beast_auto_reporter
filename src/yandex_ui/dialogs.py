@@ -96,20 +96,21 @@ class YandexUploadDiffDialog(QDialog):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(10)
 
-        marker_diff = getattr(comparison, "marker_diff", None) or {}
-        added = marker_diff.get("added", [])
-        removed = marker_diff.get("removed", [])
-        changed = marker_diff.get("changed", [])
-        if added or removed or changed:
-            content_layout.addWidget(self._section_title("Маркеры"))
-            if added:
-                content_layout.addWidget(self._marker_group_card(
-                    f"Добавлены ({len(added)})", added, bg="#EDFAF0", border="#C9EED3"))
-            if removed:
-                content_layout.addWidget(self._marker_group_card(
-                    f"Удалены ({len(removed)})", removed, bg="#FFF1F0", border="#FFD4D1", strike=True))
-            if changed:
-                content_layout.addWidget(self._marker_changed_card(changed))
+        # TODO: Включить вывод marker_diff когда функция сравнения будет полностью готова.
+        # marker_diff = getattr(comparison, "marker_diff", None) or {}
+        # added = marker_diff.get("added", [])
+        # removed = marker_diff.get("removed", [])
+        # changed = marker_diff.get("changed", [])
+        # if added or removed or changed:
+        #     content_layout.addWidget(self._section_title("Маркеры"))
+        #     if added:
+        #         content_layout.addWidget(self._marker_group_card(
+        #             f"Добавлены ({len(added)})", added, bg="#EDFAF0", border="#C9EED3"))
+        #     if removed:
+        #         content_layout.addWidget(self._marker_group_card(
+        #             f"Удалены ({len(removed)})", removed, bg="#FFF1F0", border="#FFD4D1", strike=True))
+        #     if changed:
+        #         content_layout.addWidget(self._marker_changed_card(changed))
 
         content_layout.addWidget(self._section_title("Параметры"))
         if comparison.parameter_changes:
@@ -498,7 +499,16 @@ class YandexFolderPickerDialog(QDialog):
     распознаётся корректно, без задваивания eNN/eNN.
     """
 
-    def __init__(self, client, roots: list = None, parent=None):
+    def __init__(
+        self, client, roots: list = None, parent=None, *,
+        window_title: str = "Выбор папки на Яндекс.Диске",
+        prompt_text: str = "Выберите папку сериала/фильма или создайте новую",
+        hint_text: str = (
+            "Для сериала: внутри выбранной папки эпизод (например, e02) будет\n"
+            "найден или создан автоматически — можно также сразу выбрать готовую\n"
+            "папку эпизода. Для фильма выбранная папка используется как есть."
+        ),
+    ):
         super().__init__(parent)
         self.client = client
         self.roots = list(roots) if roots else ["/отчеты"]
@@ -507,7 +517,7 @@ class YandexFolderPickerDialog(QDialog):
         self._expand_threads = {}  # path -> _ListFolderThread
         self._new_folder_thread = None
 
-        self.setWindowTitle("Выбор папки на Яндекс.Диске")
+        self.setWindowTitle(window_title)
         self.setModal(True)
         self.resize(420, 480)
         self.setStyleSheet("QDialog { background: #FFFFFF; }")
@@ -516,7 +526,7 @@ class YandexFolderPickerDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        title = QLabel("Выберите папку сериала/фильма или создайте новую")
+        title = QLabel(prompt_text)
         title.setFont(QFont(".AppleSystemUIFont", 12, QFont.DemiBold))
         title.setStyleSheet("color: #1D1D1F;")
         layout.addWidget(title)
@@ -548,11 +558,7 @@ class YandexFolderPickerDialog(QDialog):
         self.new_folder_btn.clicked.connect(self._create_new_folder)
         layout.addWidget(self.new_folder_btn)
 
-        hint = QLabel(
-            "Для сериала: внутри выбранной папки эпизод (например, e02) будет\n"
-            "найден или создан автоматически — можно также сразу выбрать готовую\n"
-            "папку эпизода. Для фильма выбранная папка используется как есть."
-        )
+        hint = QLabel(hint_text)
         hint.setFont(QFont(".AppleSystemUIFont", 10))
         hint.setStyleSheet("color: #86868B;")
         hint.setWordWrap(True)
