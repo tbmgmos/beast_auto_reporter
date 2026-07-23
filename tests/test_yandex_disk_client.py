@@ -223,6 +223,42 @@ def test_upload_raises_on_server_error_status(tmp_path):
             client.upload(local_file, "отчеты/Show/e01/report.docx")
 
 
+def test_upload_bytes_gets_href_then_puts_data_directly():
+    client = YandexDiskClient("test-token")
+    captured = []
+    responses = iter([DummyResponse(b'{"href": "https://upload.example/put"}'), DummyResponse(b"")])
+
+    def fake_urlopen(request, timeout=None):
+        captured.append((request.get_method(), request.full_url, request.data))
+        return next(responses)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=fake_urlopen):
+        client.upload_bytes(b'{"a": 1}', "/Beast Auto Reporter/sync/series_aliases.json")
+
+    href_call, put_call = captured
+    assert href_call[0] == "GET" and "overwrite=true" in href_call[1]
+    assert put_call[0] == "PUT" and put_call[1] == "https://upload.example/put"
+    assert put_call[2] == b'{"a": 1}'
+
+
+def test_upload_bytes_raises_when_no_href_returned():
+    client = YandexDiskClient("test-token")
+
+    with patch("src.yandex_disk_client.urlopen", return_value=DummyResponse(b"{}")):
+        with pytest.raises(YandexDiskError):
+            client.upload_bytes(b"data", "/Beast Auto Reporter/sync/series_aliases.json")
+
+
+def test_upload_bytes_raises_on_network_error_during_put():
+    client = YandexDiskClient("test-token")
+    href_response = DummyResponse(b'{"href": "https://upload.example/put"}')
+    error = HTTPError(url="x", code=500, msg="Server Error", hdrs=None, fp=None)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=[href_response, error]):
+        with pytest.raises(YandexDiskError):
+            client.upload_bytes(b"data", "/Beast Auto Reporter/sync/series_aliases.json")
+
+
 def test_move_sends_post_with_from_and_path():
     client = YandexDiskClient("test-token")
     captured_urls = []

@@ -97,3 +97,60 @@ def _format_disk_modified_date(modified: str) -> str:
         return datetime.fromisoformat(modified).strftime("%d.%m.%Y %H:%M")
     except ValueError:
         return modified
+
+
+def _relative_date_label(d) -> str:
+    """Человекочитаемая давность даты («сегодня», «вчера», «3 дн. назад»).
+
+    Для дат старше ~30 дней возвращается точная дата — "127 дн. назад"
+    неудобно воспринимается, абсолютная дата нагляднее. "дн."/"нед." —
+    намеренно несклоняемые сокращения (иначе пришлось бы разбирать
+    русское согласование числительных 1/2-4/5+ отдельно).
+    """
+    if d is None:
+        return ""
+    from datetime import date as _date
+    today = _date.today()
+    delta = (today - d).days
+    if delta < 0:
+        return d.strftime("%d.%m.%Y")
+    if delta == 0:
+        return "сегодня"
+    if delta == 1:
+        return "вчера"
+    if delta < 7:
+        return f"{delta} дн. назад"
+    if delta < 30:
+        return f"{delta // 7} нед. назад"
+    return d.strftime("%d.%m.%Y")
+
+
+def _relative_time_label(iso_string) -> str:
+    """Человекочитаемая давность момента времени с минутной/часовой
+
+    гранулярностью («только что», «5 мин. назад», «2 ч. назад») — в
+    отличие от _relative_date_label (только день/неделя), нужна там, где
+    событие может повторяться чаще раза в день, например статус "когда
+    последний раз синхронизировались конфиги". Старше суток — делегирует
+    в _relative_date_label (абсолютные дни/недели удобнее "27 ч. назад").
+    """
+    if not iso_string:
+        return ""
+    from datetime import datetime, timezone
+    try:
+        parsed = datetime.fromisoformat(iso_string)
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta_seconds = max((now - parsed).total_seconds(), 0)
+    if delta_seconds < 60:
+        return "только что"
+    minutes = int(delta_seconds // 60)
+    if minutes < 60:
+        return f"{minutes} мин. назад"
+    hours = int(delta_seconds // 3600)
+    if hours < 24:
+        return f"{hours} ч. назад"
+    return _relative_date_label(parsed.astimezone().date())

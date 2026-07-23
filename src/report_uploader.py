@@ -168,6 +168,51 @@ def list_series_aliases(path: Path = SERIES_ALIASES_FILE) -> list[tuple[str, str
     return sorted(load_series_aliases(path).items())
 
 
+VARIANT_OVERRIDES_FILE = CONFIG_DIR / "variant_overrides.json"
+
+
+def load_variant_overrides(path: Path = VARIANT_OVERRIDES_FILE) -> dict:
+    """remote_path -> вручную назначенный вариант ("ME"/"AD"/"VO"/"MAIN").
+
+    Назначается через ПКМ в просмотрщике Диска — на случай, когда
+    автоопределение по имени папки (см. YandexDiskBrowserDialog._report_variant)
+    ошибается или не справляется вовсе (нестандартное имя без узнаваемых
+    маркеров). "MAIN" — явное «без варианта», отличается от отсутствия
+    записи вообще («Авто» — работает автоопределение). Отсутствующий/битый
+    файл — не ошибка, просто пустой словарь.
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Не удалось прочитать ручные назначения типа отчёта: {exc}")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def save_variant_overrides(overrides: dict, path: Path = VARIANT_OVERRIDES_FILE) -> None:
+    try:
+        atomic_write_text(
+            path,
+            json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(f"Не удалось сохранить ручные назначения типа отчёта: {exc}")
+
+
+def set_variant_override(remote_path: str, variant: str | None, path: Path = VARIANT_OVERRIDES_FILE) -> None:
+    """variant=None ("Авто") убирает override — снова работает автоопределение."""
+    overrides = load_variant_overrides(path)
+    if variant is None:
+        overrides.pop(remote_path, None)
+    else:
+        overrides[remote_path] = variant
+    save_variant_overrides(overrides, path)
+
+
 UPLOADED_REPORTS_FILE = CONFIG_DIR / "uploaded_reports.json"
 _MAX_REMEMBERED_UPLOADS = 20
 

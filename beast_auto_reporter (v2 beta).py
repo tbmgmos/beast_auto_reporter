@@ -390,6 +390,7 @@ from src.yandex_ui.threads import (  # noqa: E402
     YandexDiskTokenCheckThread, NprUploadThread,
 )
 from src.yandex_ui.edit_sync import YandexEditSyncController  # noqa: E402
+from src.yandex_ui.config_sync_controller import ConfigSyncController  # noqa: E402
 from src.yandex_ui.dialogs import (  # noqa: E402
     YandexUploadDiffDialog, YandexVersionPickerDialog, YandexFolderPickerDialog,
     YandexDiskBrowserDialog, YandexUploadQueueDialog, SeriesAliasesDialog,
@@ -4281,6 +4282,10 @@ class BeastApp(QMainWindow):
         self._edit_sync.status_changed.connect(self._on_edit_sync_status_changed)
         self._edit_sync.conflict.connect(self._on_edit_sync_conflict)
 
+        self._config_sync = ConfigSyncController(get_token=SettingsDialog.get_yandex_token, parent=self)
+        self._config_sync.status_changed.connect(self._on_config_sync_status_changed)
+        self._config_sync.start_periodic()
+
         # Пробел (как Quick Look в Finder) открывает превью последнего
         # сгенерированного отчёта — но только пока это окно активно и
         # фокус не в текстовом поле/на кнопке (чтобы не мешать обычному вводу).
@@ -4289,6 +4294,7 @@ class BeastApp(QMainWindow):
         self._integrity_check_thread = None
         self._integrity_checked = False
         QTimer.singleShot(5000, self._check_uploaded_reports_integrity)
+        QTimer.singleShot(6000, self._config_sync.sync_now)
 
         self.init_ui()
 
@@ -4342,6 +4348,9 @@ class BeastApp(QMainWindow):
         edit_sync = getattr(self, "_edit_sync", None)
         if edit_sync is not None:
             edit_sync.stop_all()
+        config_sync = getattr(self, "_config_sync", None)
+        if config_sync is not None:
+            config_sync.stop_all()
         queue_manager = getattr(self, "_yandex_queue", None)
         if queue_manager is not None:
             queue_manager.shutdown()
@@ -4464,6 +4473,20 @@ class BeastApp(QMainWindow):
         yandex_browse_btn.setIconSize(QSize(15, 15))
         yandex_browse_btn.clicked.connect(self._open_yandex_disk_browser)
         layout.addWidget(yandex_browse_btn)
+
+        config_sync_btn = QPushButton()
+        config_sync_btn.setFixedSize(30, 30)
+        config_sync_btn.setToolTip("Синхронизировать конфиги с Яндекс.Диском")
+        config_sync_btn.setStyleSheet(icon_btn_style)
+        config_sync_btn.setIcon(make_icon("refresh", "#86868B", 15))
+        config_sync_btn.setIconSize(QSize(15, 15))
+        config_sync_btn.clicked.connect(self._config_sync.sync_now)
+        layout.addWidget(config_sync_btn)
+
+        self.config_sync_status_label = QLabel(self._config_sync.last_status_text())
+        self.config_sync_status_label.setFont(QFont(".AppleSystemUIFont", 10))
+        self.config_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
+        layout.addWidget(self.config_sync_status_label)
 
         layout.addStretch()
 
@@ -7120,6 +7143,15 @@ class BeastApp(QMainWindow):
         ))
         self.edit_sync_status_label.setText(status)
         self.edit_sync_status_label.setStyleSheet(f"color: {color}; background: transparent;")
+
+    def _on_config_sync_status_changed(self, status: str):
+        is_error = status.startswith("Не удалось") or status.startswith("Синхронизация приостановлена")
+        is_offline = "нет сети" in status
+        color = "#FF3B30" if is_error else ("#FF9500" if is_offline else (
+            "#34C759" if status.startswith("Синхронизировано") else "#86868B"
+        ))
+        self.config_sync_status_label.setText(status)
+        self.config_sync_status_label.setStyleSheet(f"color: {color}; background: transparent;")
         self.edit_sync_status_label.setVisible(True)
 
     def _on_edit_sync_conflict(self, path: str, actual_modified: str):

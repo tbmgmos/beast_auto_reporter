@@ -19,9 +19,13 @@ OpenCorpora и надёжно отличает реальные слова от 
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from pathlib import Path
 from typing import List, Optional, Tuple
+
+from src.app_paths import CONFIG_DIR, atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,51 @@ _EN_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 _WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё'-]+")
 
 _SENTENCE_ENDERS = ".!?…"
+
+
+CUSTOM_CORRECTIONS_FILE = CONFIG_DIR / "spellcheck_custom_corrections.json"
+
+
+def load_custom_corrections(path: Path = CUSTOM_CORRECTIONS_FILE) -> dict:
+    """Словарь исправлений, которые пользователь один раз ввёл вручную в
+
+    диалоге ревью орфографии (было в нижнем регистре -> стало). Заменяет
+    догадку алгоритма (pymorphy3/pyspellchecker) при повторной встрече того
+    же слова в будущих отчётах — см. SpellcheckService.correct_text.
+    Отсутствующий/битый файл — не ошибка, просто пустой словарь.
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Не удалось прочитать пользовательские исправления орфографии: {exc}")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def save_custom_corrections(corrections: dict, path: Path = CUSTOM_CORRECTIONS_FILE) -> None:
+    try:
+        atomic_write_text(
+            path,
+            json.dumps(corrections, ensure_ascii=False, indent=2, sort_keys=True),
+        )
+    except OSError as exc:
+        logger.warning(f"Не удалось сохранить пользовательские исправления орфографии: {exc}")
+
+
+def remember_custom_correction(old: str, new: str, path: Path = CUSTOM_CORRECTIONS_FILE) -> None:
+    """Запоминает исправление, введённое пользователем вручную в диалоге ревью
+
+    (см. src/spellcheck_review.py) — ключ нормализуется в нижний регистр,
+    регистр самого исправления сохраняется как есть и подгоняется под
+    регистр найденного слова через _apply_case при применении.
+    """
+    corrections = load_custom_corrections(path)
+    corrections[old.strip().lower()] = new.strip()
+    save_custom_corrections(corrections, path)
 
 
 def _is_cyrillic(word: str) -> bool:

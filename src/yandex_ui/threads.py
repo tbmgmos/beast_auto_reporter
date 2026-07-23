@@ -593,3 +593,46 @@ class _IntegrityCheckThread(_YandexWorkerThread):
 
     def _emit_failure(self, message: str) -> None:
         self.check_failed.emit(message)
+
+
+class ConfigSyncThread(_KeepAliveThread):
+    """Один проход синхронизации всех "выученных" локальных конфигов
+
+    (алиасы серий/NPR, ручные варианты, словарь спелчекера, реестр
+    отправленных отчётов) с Яндекс.Диском — см. src/config_sync.py.
+    Все файлы небольшие, синхронизируются последовательно за один вызов
+    sync_all(), поэтому один поток на весь цикл, а не по потоку на файл.
+
+    Оффлайн/просроченный токен получают отдельные сигналы (как в
+    YandexDiskUploadThread) — ConfigSyncController должен различать
+    "сеть недоступна, попробуем на следующем тике таймера" и "токен умер,
+    нужен повторный вход", а не просто показывать сырую ошибку.
+    """
+
+    resolved = pyqtSignal(object)  # SyncSummary
+    network_unavailable = pyqtSignal(str)
+    auth_expired = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, token: str):
+        super().__init__()
+        self.token = token
+
+    def run(self):
+        from src.config_sync import sync_all
+        from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+
+        try:
+            client = YandexDiskClient(self.token)
+            summary = sync_all(client)
+            self.resolved.emit(summary)
+        except YandexDiskError as exc:
+            if exc.status_code == 401:
+                self.auth_expired.emit(str(exc))
+            elif exc.status_code is None:
+                self.network_unavailable.emit(str(exc))
+            else:
+                self.failed.emit(str(exc))
+        except Exception as exc:
+            logger.error("Ошибка синхронизации конфигов с Яндекс.Диском: %s", exc, exc_info=True)
+            self.failed.emit(str(exc))

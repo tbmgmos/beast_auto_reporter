@@ -186,6 +186,24 @@ class YandexDiskClient:
         finally:
             conn.close()
 
+    def upload_bytes(self, data: bytes, remote_path: str) -> None:
+        """Загружает содержимое (bytes) на Диск без промежуточного локального
+        файла — для небольших сгенерированных данных (JSON-конфиги и т.п.),
+        где заводить временный файл ради upload() было бы лишним.
+        """
+        url = f"{API_BASE}/resources/upload?path={quote(remote_path, safe='/:')}&overwrite=true"
+        upload_info = self._request("GET", url)
+        href = upload_info.get("href")
+        if not href:
+            raise YandexDiskError("Яндекс.Диск не вернул ссылку для загрузки")
+
+        request = Request(href, data=data, method="PUT")
+        try:
+            with urlopen(request, timeout=self.timeout):
+                pass
+        except (HTTPError, URLError) as exc:
+            raise YandexDiskError(f"Не удалось загрузить данные на Яндекс.Диск: {exc}") from exc
+
     def download_bytes(self, remote_path: str) -> bytes:
         """Скачивает содержимое файла с Диска целиком в память."""
         href = self._get_download_href(remote_path)
