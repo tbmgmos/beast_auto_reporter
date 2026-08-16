@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -17,6 +18,40 @@ from urllib.parse import quote
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://cloud-api.yandex.net/v1/disk"
+
+# Ключи внутри custom_properties ресурса, под которыми хранится тег
+# (цвет + короткий комментарий) — namespaced префиксом "beast_", чтобы не
+# столкнуться с custom_properties, которые мог бы выставить другой клиент
+# Яндекс.Диска на тот же ресурс.
+TAG_COLOR_PROPERTY = "beast_tag_color"
+TAG_COMMENT_PROPERTY = "beast_tag_comment"
+
+
+def parse_tag(custom_properties: dict | None) -> tuple[str, str] | None:
+    """(цвет, комментарий) из custom_properties ресурса, или None — тега нет.
+
+    Цвет обязателен для существования тега (комментарий — опционален,
+    пустая строка по умолчанию); просто custom_properties от другого
+    приложения без нашего цветового ключа тегом не считается.
+    """
+    if not custom_properties:
+        return None
+    color = custom_properties.get(TAG_COLOR_PROPERTY)
+    if not color:
+        return None
+    return color, custom_properties.get(TAG_COMMENT_PROPERTY) or ""
+
+
+# 423 (DiskResourceLockedError) — "над ресурсом сейчас выполняется другая
+# операция" — почти всегда временное состояние (например, тот же путь
+# только что создавался/менялся другим запросом) и обычно проходит само
+# за несколько секунд. 5xx — временный сбой на стороне серверов Диска
+# (например, InternalServerError), не связан с самим запросом. Оба случая
+# ретраим с паузой вместо того, чтобы сразу показывать пользователю сырую
+# ошибку API — ретраить безопасно даже для не-идемпотентных по своей сути
+# методов (move и т.п.), потому что мы ретраим только явный ответ "ошибка"
+# от сервера, а не таймаут с неизвестным исходом операции.
+_TRANSIENT_ERROR_RETRY_DELAYS_SEC = [2, 5, 10]
 
 
 class YandexDiskError(Exception):
@@ -50,26 +85,49 @@ class YandexDiskClient:
         req_headers = self._headers()
         if headers:
             req_headers.update(headers)
-        request = Request(url, data=data, headers=req_headers, method=method)
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                raw = response.read()
-                return json.loads(raw) if raw else {}
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-            logger.warning(f"Yandex.Disk API {method} {url} -> HTTP {exc.code}: {body}")
+
+        attempt = 0
+        while True:
+            request = Request(url, data=data, headers=req_headers, method=method)
             try:
-                error_code = json.loads(body).get("error")
-            except (ValueError, AttributeError):
-                error_code = None
-            raise YandexDiskError(
-                f"Яндекс.Диск вернул ошибку {exc.code}: {body}\nЗапрос: {method} {url}",
-                status_code=exc.code,
-                error_code=error_code,
-            ) from exc
-        except URLError as exc:
-            logger.warning(f"Yandex.Disk API {method} {url} -> {exc}")
-            raise YandexDiskError(f"Не удалось подключиться к Яндекс.Диску: {exc}") from exc
+                with urlopen(request, timeout=self.timeout) as response:
+                    raw = response.read()
+                    return json.loads(raw) if raw else {}
+            except HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+                try:
+                    error_code = json.loads(body).get("error")
+                except (ValueError, AttributeError):
+                    error_code = None
+
+                # 423 означает, что операция не началась из-за блокировки,
+                # поэтому повтор безопасен для любого метода. После 5xx исход
+                # мутации неизвестен: POST (сейчас это move) мог успеть
+                # выполниться, и его повтор даст ложную ошибку или повторный
+                # побочный эффект. Такие ответы автоматически повторяем только
+                # для идемпотентных запросов этого клиента.
+                idempotent_method = method.upper() in {"GET", "PUT", "PATCH", "DELETE"}
+                is_retryable = exc.code == 423 or (500 <= exc.code < 600 and idempotent_method)
+                if is_retryable and attempt < len(_TRANSIENT_ERROR_RETRY_DELAYS_SEC):
+                    delay = _TRANSIENT_ERROR_RETRY_DELAYS_SEC[attempt]
+                    attempt += 1
+                    reason = "ресурс заблокирован" if exc.code == 423 else "ошибка сервера"
+                    logger.info(
+                        f"Yandex.Disk API {method} {url} -> {exc.code} ({reason}), "
+                        f"повтор через {delay} с (попытка {attempt}/{len(_TRANSIENT_ERROR_RETRY_DELAYS_SEC)})"
+                    )
+                    time.sleep(delay)
+                    continue
+
+                logger.warning(f"Yandex.Disk API {method} {url} -> HTTP {exc.code}: {body}")
+                raise YandexDiskError(
+                    f"Яндекс.Диск вернул ошибку {exc.code}: {body}\nЗапрос: {method} {url}",
+                    status_code=exc.code,
+                    error_code=error_code,
+                ) from exc
+            except URLError as exc:
+                logger.warning(f"Yandex.Disk API {method} {url} -> {exc}")
+                raise YandexDiskError(f"Не удалось подключиться к Яндекс.Диску: {exc}") from exc
 
     def get_disk_info(self) -> dict:
         """Общая информация о Диске (общее/занятое место и т.п.) — самый
@@ -86,6 +144,20 @@ class YandexDiskClient:
         """
         url = f"{API_BASE}/resources?path={quote(path, safe='/:')}"
         return self._request("GET", url)
+
+    def set_custom_properties(self, path: str, properties: dict) -> None:
+        """Обновляет custom_properties ресурса — Диск сам мёрджит переданные
+
+        ключи с уже существующими (не упомянутые ключи остаются нетронуты);
+        чтобы удалить конкретный ключ, передать для него None. Используется
+        для тегов (цвет+комментарий) — в отличие от вариантов/алиасов
+        (только локальный конфиг этого приложения), custom_properties
+        хранятся на самом ресурсе и видны любому пользователю с доступом
+        к этой папке на Диске.
+        """
+        url = f"{API_BASE}/resources?path={quote(path, safe='/:')}"
+        body = json.dumps({"custom_properties": properties}).encode("utf-8")
+        self._request("PATCH", url, data=body, headers={"Content-Type": "application/json"})
 
     def list_folder(self, path: str) -> list[dict]:
         """Возвращает список элементов (файлов и папок) в указанной папке.
@@ -121,6 +193,23 @@ class YandexDiskClient:
         except YandexDiskError as exc:
             if exc.status_code != 409 or exc.error_code == "DiskPathDoesntExistsError":
                 raise
+
+    def publish(self, path: str) -> str:
+        """Делает ресурс общедоступным по ссылке и возвращает саму ссылку.
+
+        Идемпотентно: если ресурс уже был опубликован раньше, Диск не
+        создаёт вторую ссылку — просто возвращает ту же самую. Сам ответ
+        publish не содержит ссылку напрямую (только href для проверки
+        статуса асинхронной операции) — публичный URL появляется в
+        метаданных ресурса (get_meta) сразу после публикации.
+        """
+        url = f"{API_BASE}/resources/publish?path={quote(path, safe='/:')}"
+        self._request("PUT", url)
+        meta = self.get_meta(path)
+        public_url = meta.get("public_url")
+        if not public_url:
+            raise YandexDiskError("Яндекс.Диск не вернул публичную ссылку после публикации")
+        return public_url
 
     def move(self, from_path: str, to_path: str) -> None:
         """Перемещает/переименовывает файл или папку."""
@@ -186,12 +275,16 @@ class YandexDiskClient:
         finally:
             conn.close()
 
-    def upload_bytes(self, data: bytes, remote_path: str) -> None:
+    def upload_bytes(self, data: bytes, remote_path: str, *, overwrite: bool = True) -> None:
         """Загружает содержимое (bytes) на Диск без промежуточного локального
         файла — для небольших сгенерированных данных (JSON-конфиги и т.п.),
         где заводить временный файл ради upload() было бы лишним.
         """
-        url = f"{API_BASE}/resources/upload?path={quote(remote_path, safe='/:')}&overwrite=true"
+        overwrite_flag = "true" if overwrite else "false"
+        url = (
+            f"{API_BASE}/resources/upload?path={quote(remote_path, safe='/:')}"
+            f"&overwrite={overwrite_flag}"
+        )
         upload_info = self._request("GET", url)
         href = upload_info.get("href")
         if not href:
@@ -201,7 +294,12 @@ class YandexDiskClient:
         try:
             with urlopen(request, timeout=self.timeout):
                 pass
-        except (HTTPError, URLError) as exc:
+        except HTTPError as exc:
+            raise YandexDiskError(
+                f"Не удалось загрузить данные на Яндекс.Диск: {exc}",
+                status_code=exc.code,
+            ) from exc
+        except URLError as exc:
             raise YandexDiskError(f"Не удалось загрузить данные на Яндекс.Диск: {exc}") from exc
 
     def download_bytes(self, remote_path: str) -> bytes:

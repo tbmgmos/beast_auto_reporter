@@ -1,4 +1,6 @@
-from src.conclusion_generator import ConclusionGenerator
+import pytest
+
+from src.conclusion_generator import ConclusionGenerator, _extract_anchor_tokens
 from src.csv_importer import Issue
 
 
@@ -20,230 +22,475 @@ def test_conclusion_generator_reads_llm_settings_from_config():
     assert generator.ollama_host == "http://127.0.0.1:11434"
 
 
-def test_structured_llm_output_is_formatted_into_final_conclusion():
+def test_num_ctx_defaults_to_8192():
+    assert ConclusionGenerator().num_ctx == 8192
+
+
+def test_num_ctx_read_from_config():
+    generator = ConclusionGenerator(config={"llm": {"num_ctx": 4096}})
+
+    assert generator.num_ctx == 4096
+
+
+def test_llm_provider_defaults_to_ollama():
+    assert ConclusionGenerator().llm_provider == "ollama"
+
+
+def test_llm_provider_read_from_config():
+    generator = ConclusionGenerator(config={"llm": {"provider": "groq"}})
+
+    assert generator.llm_provider == "groq"
+
+
+def test_set_llm_provider_switches_at_runtime():
     generator = ConclusionGenerator()
-    raw = """
-    {
-      "title": "По субъективной оценке выявлены следующие недочёты:",
-      "items": [
-        {
-          "kind": "blocker",
-          "timecodes": ["01:00:49:06"],
-          "omit_timecode": false,
-          "text": "видеофайл не синхронен со звуковыми дорожками (смещение ~8 кадров)"
-        },
-        {
-          "kind": "general",
-          "timecodes": [],
-          "omit_timecode": true,
-          "text": "звуковые дорожки не синхронны с изображением на 8 кадров"
-        }
-      ]
-    }
+    generator.set_llm_provider("groq")
+
+    assert generator.llm_provider == "groq"
+
+
+def test_ollama_generate_dispatches_to_ollama_by_default():
+    generator = ConclusionGenerator()
+    generator.ollama_service.generate = lambda prompt, **kw: "из ollama"
+    generator.groq_service.generate = lambda prompt, **kw: "из groq"
+
+    assert generator._ollama_generate("промпт") == "из ollama"
+
+
+def test_ollama_generate_dispatches_to_groq_when_provider_switched():
+    generator = ConclusionGenerator()
+    generator.set_llm_provider("groq")
+    generator.ollama_service.generate = lambda prompt, **kw: "из ollama"
+    generator.groq_service.generate = lambda prompt, **kw: "из groq"
+
+    assert generator._ollama_generate("промпт") == "из groq"
+
+
+def test_ollama_generate_dispatches_to_yandexgpt_when_provider_switched():
+    generator = ConclusionGenerator()
+    generator.set_llm_provider("yandexgpt")
+    generator.ollama_service.generate = lambda prompt, **kw: "из ollama"
+    generator.yandexgpt_service.generate = lambda prompt, **kw: "из yandexgpt"
+
+    assert generator._ollama_generate("промпт") == "из yandexgpt"
+
+
+def test_ollama_generate_dispatches_to_gigachat_when_provider_switched():
+    generator = ConclusionGenerator()
+    generator.set_llm_provider("gigachat")
+    generator.ollama_service.generate = lambda prompt, **kw: "из ollama"
+    generator.gigachat_service.generate = lambda prompt, **kw: "из gigachat"
+
+    assert generator._ollama_generate("промпт") == "из gigachat"
+
+
+def test_marker_translation_uses_active_provider_not_hardcoded_ollama():
+    """Перевод маркеров раньше был жёстко привязан к self.ollama_service
+
+    напрямую, в обход диспетчера провайдера — переключение на Groq/YandexGPT
+    для заключений не влияло на перевод. Теперь MarkerTranslationService
+    получает _ollama_generate и должен использовать текущий провайдер.
     """
-
-    conclusion = generator._format_structured_llm_output(raw)
-
-    assert conclusion is not None
-    assert "-    На таймкоде 01:00:49:06 видеофайл не синхронен со звуковыми дорожками (смещение ~8 кадров)" in conclusion
-    assert "-    Звуковые дорожки не синхронны с изображением на 8 кадров" in conclusion
-
-
-def test_structured_llm_output_formats_multiple_timecodes():
     generator = ConclusionGenerator()
-    raw = """
-    {
-      "title": "По субъективной оценке выявлены следующие недочёты:",
-      "items": [
-        {
-          "kind": "specific",
-          "timecodes": ["01:11:42:06", "01:11:44:22", "01:12:00:00"],
-          "omit_timecode": false,
-          "text": "реплики несинхронны с изображением"
-        }
-      ]
-    }
-    """
+    generator.set_llm_provider("groq")
+    generator.ollama_service.generate = lambda prompt, **kw: '[{"index": 0, "translation": "из ollama"}]'
+    generator.groq_service.generate = lambda prompt, **kw: '[{"index": 0, "translation": "из groq"}]'
 
-    conclusion = generator._format_structured_llm_output(raw)
+    result = generator.marker_translation_service._translate_batch_with_llm(["Click on the voice"])
 
-    assert conclusion is not None
-    assert "На таймкодах 01:11:42:06, 01:11:44:22 и 01:12:00:00 реплики несинхронны с изображением" in conclusion
+    assert result["Click on the voice"] == "из groq"
 
 
-def test_structured_llm_output_returns_none_for_non_json_text():
+def test_extract_anchor_tokens_finds_quotes_and_numeric_units():
+    text = 'Окончание фамилии "Ходяков" звучит обрезано, смещение ~8 кадров'
+
+    anchors = _extract_anchor_tokens(text)
+
+    assert "ходяков" in anchors
+    assert "~8 кадров" in anchors
+
+
+def test_extract_anchor_tokens_empty_for_text_without_anchors():
+    assert _extract_anchor_tokens("Реплики выглядят несинхронно с изображением") == set()
+    assert _extract_anchor_tokens("") == set()
+
+
+def _single_item_issue(timecode="01:18:49:24", desc='Окончание фамилии "Ходяков" звучит обрезано'):
+    return Issue(timecode, "", desc, False, False, False, False, False, True, False)
+
+
+def _issue(timecode, desc, blocker=False):
+    return Issue(timecode, "", desc, False, False, False, False, blocker, not blocker, False)
+
+
+def test_count_distinct_issue_types_counts_unique_group_types():
     generator = ConclusionGenerator()
-
-    assert generator._format_structured_llm_output("обычный текст без json") is None
-
-
-def test_structured_llm_output_rejects_wrong_kind_order_against_python_contract():
-    generator = ConclusionGenerator()
-    blockers = [
-        Issue(
-            "01:00:49:06",
-            "",
-            "Видео не синхронно со звуковыми дорожками",
-            True,
-            True,
-            False,
-            False,
-            False,
-            True,
-            False,
-        )
+    issues = [
+        _issue("01:00:00:00", "Слышны щёлкающие звуки"),
+        _issue("01:00:05:00", "Слышны щёлкающие звуки"),
+        _issue("01:00:10:00", "Реплика несинхронна с изображением"),
     ]
+
+    distinct = generator.count_distinct_issue_types(issues)
+
+    assert distinct == len({generator._classify_single_issue(i) for i in issues})
+    assert distinct <= len(issues)
+
+
+def test_maybe_auto_select_provider_returns_none_below_thresholds():
+    generator = ConclusionGenerator()
+    generator.auto_select_marker_threshold = 100
+    generator.auto_select_distinct_types_threshold = 100
+    issues = [_issue("01:00:00:00", "Слышны щёлкающие звуки")]
+
+    provider, cloud_unavailable = generator.maybe_auto_select_provider(issues)
+
+    assert provider is None
+    assert cloud_unavailable is False
+
+
+def test_maybe_auto_select_provider_does_nothing_if_already_on_cloud():
+    generator = ConclusionGenerator()
+    generator.set_llm_provider("groq")
+    generator.auto_select_marker_threshold = 1
+    issues = [_issue("01:00:00:00", "Слышны щёлкающие звуки")]
+
+    provider, cloud_unavailable = generator.maybe_auto_select_provider(issues)
+
+    assert provider is None
+    assert cloud_unavailable is False
+
+
+def test_maybe_auto_select_provider_switches_on_marker_count_threshold():
+    generator = ConclusionGenerator()
+    generator.use_llm = True
+    generator.auto_select_marker_threshold = 2
+    generator.auto_select_distinct_types_threshold = 100
+    generator.gigachat_service.get_auth_key = lambda: "fake-key"
+    generator.gigachat_service.check_status = lambda: True
+    issues = [
+        _issue("01:00:00:00", "Слышны щёлкающие звуки"),
+        _issue("01:00:05:00", "Слышны щёлкающие звуки"),
+    ]
+
+    provider, cloud_unavailable = generator.maybe_auto_select_provider(issues)
+
+    assert provider == "gigachat"
+    assert cloud_unavailable is False
+
+
+def test_maybe_auto_select_provider_respects_priority_order():
+    """GigaChat (бесплатно, без VPN) должен предпочитаться YandexGPT/Groq,
+
+    даже если все три настроены."""
+    generator = ConclusionGenerator()
+    generator.use_llm = True
+    generator.auto_select_marker_threshold = 1
+    generator.gigachat_service.get_auth_key = lambda: "fake-key"
+    generator.gigachat_service.check_status = lambda: True
+    generator.yandexgpt_service.get_api_key = lambda: "fake-key"
+    generator.yandexgpt_service.get_folder_id = lambda: "fake-folder"
+    generator.yandexgpt_service.check_status = lambda: True
+    generator.groq_service.get_api_key = lambda: "fake-key"
+    generator.groq_service.check_status = lambda: True
+    issues = [_issue("01:00:00:00", "Слышны щёлкающие звуки")]
+
+    provider, _ = generator.maybe_auto_select_provider(issues)
+
+    assert provider == "gigachat"
+
+
+def test_maybe_auto_select_provider_falls_through_to_next_when_unreachable():
+    generator = ConclusionGenerator()
+    generator.use_llm = True
+    generator.auto_select_marker_threshold = 1
+    generator.gigachat_service.get_auth_key = lambda: "fake-key"
+    generator.gigachat_service.check_status = lambda: False  # настроен, но недоступен
+    generator.yandexgpt_service.get_api_key = lambda: "fake-key"
+    generator.yandexgpt_service.get_folder_id = lambda: "fake-folder"
+    generator.yandexgpt_service.check_status = lambda: True
+    issues = [_issue("01:00:00:00", "Слышны щёлкающие звуки")]
+
+    provider, cloud_unavailable = generator.maybe_auto_select_provider(issues)
+
+    assert provider == "yandexgpt"
+    assert cloud_unavailable is False
+
+
+def test_maybe_auto_select_provider_reports_unavailable_when_nothing_reachable():
+    generator = ConclusionGenerator()
+    generator.use_llm = True
+    generator.auto_select_marker_threshold = 1
+    # Реальная Связка ключей на машине разработчика может реально содержать
+    # ключи Groq/YandexGPT (использовались для живого тестирования сервисов
+    # в этой же сессии) — явно обнуляем, чтобы тест не зависел от состояния
+    # окружения.
+    generator.groq_service.get_api_key = lambda: ""
+    generator.yandexgpt_service.get_api_key = lambda: ""
+    generator.yandexgpt_service.get_folder_id = lambda: ""
+    generator.gigachat_service.get_auth_key = lambda: "fake-key"
+    generator.gigachat_service.check_status = lambda: False
+    issues = [_issue("01:00:00:00", "Слышны щёлкающие звуки")]
+
+    provider, cloud_unavailable = generator.maybe_auto_select_provider(issues)
+
+    assert provider is None
+    assert cloud_unavailable is True
+
+
+def test_maybe_auto_select_provider_stays_local_when_nothing_configured():
+    generator = ConclusionGenerator()
+    generator.use_llm = True
+    generator.auto_select_marker_threshold = 1
+    generator.gigachat_service.get_auth_key = lambda: ""
+    generator.yandexgpt_service.get_api_key = lambda: ""
+    generator.yandexgpt_service.get_folder_id = lambda: ""
+    generator.groq_service.get_api_key = lambda: ""
+    issues = [_issue("01:00:00:00", "Слышны щёлкающие звуки")]
+
+    provider, cloud_unavailable = generator.maybe_auto_select_provider(issues)
+
+    assert provider is None
+    assert cloud_unavailable is False
+
+
+def test_auto_select_llm_enabled_by_default():
+    assert ConclusionGenerator().auto_select_llm_enabled is True
+
+
+def test_auto_select_llm_enabled_read_from_config():
+    generator = ConclusionGenerator(config={"llm": {"auto_select_enabled": False}})
+    assert generator.auto_select_llm_enabled is False
+
+
+def test_set_auto_select_llm_enabled_switches_at_runtime():
+    generator = ConclusionGenerator()
+    generator.set_auto_select_llm_enabled(False)
+    assert generator.auto_select_llm_enabled is False
+
+
+def test_maybe_auto_select_provider_returns_none_when_disabled():
+    generator = ConclusionGenerator()
+    generator.use_llm = True
+    generator.auto_select_marker_threshold = 1
+    generator.auto_select_llm_enabled = False
+    generator.gigachat_service.get_auth_key = lambda: "fake-key"
+    generator.gigachat_service.check_status = lambda: True
+    issues = [_issue("01:00:00:00", "Слышны щёлкающие звуки")]
+
+    provider, cloud_unavailable = generator.maybe_auto_select_provider(issues)
+
+    assert provider is None
+    assert cloud_unavailable is False
+
+
+def test_format_multiple_issue_shipenie_bare_type_is_not_generic():
+    """Регрессия: для report_type="main" и group_type="шипение" без подтипа
+
+    (__s_sound/__whistle/__high_freq) _format_multiple_issue проваливался в
+    generic "присутствуют проблемы", потому что ветка была только внутри
+    `if is_me:`. Найдено реальным прогоном ulichnaya_eda CSV через GigaChat —
+    LLM-ответ отклонён anchor-проверкой, и обнажился пустой python-фолбэк.
+    """
+    generator = ConclusionGenerator()
+    issues = [
+        _issue("01:17:59:11", 'Постороннее шипение на реплике "Не парься ..."'),
+        _issue("01:37:47:14", 'Постороннее шипение на реплике "Ты мне нравишься очень"'),
+    ]
+
+    result = generator._format_multiple_issue("шипение", issues, report_type="main")
+
+    assert result != "присутствуют проблемы"
+    assert "шипени" in result.lower()
+
+
+def test_format_multiple_issue_shchelchki_slyuna_bare_type_is_not_generic():
+    """Тот же класс бага, что и с 'шипение' — щелчки_слюна тоже не была
+
+    обработана в _format_multiple_issue вне is_me (была только в
+    _format_generalized_issue для групп 4+)."""
+    generator = ConclusionGenerator()
+    issues = [
+        _issue("01:00:00:00", "Посторонний щёлкающий звук в левом канале"),
+        _issue("01:01:00:00", "Яркий звук слюны перед репликой"),
+    ]
+
+    result = generator._format_multiple_issue("щелчки_слюна", issues, report_type="main")
+
+    assert result != "присутствуют проблемы"
+    assert "щёлкающ" in result.lower() or "слюн" in result.lower()
+
+
+def test_probe_provider_reachable_restores_original_timeout():
+    generator = ConclusionGenerator()
+    generator.groq_service.timeout = 60
+    generator.groq_service.check_status = lambda: True
+
+    assert generator._probe_provider_reachable("groq", timeout=4) is True
+    assert generator.groq_service.timeout == 60
+
+
+def test_summarize_item_with_llm_uses_ollama_response_when_valid():
+    generator = ConclusionGenerator()
+    issue = _single_item_issue()
+    expected_item = generator._build_structured_contract_item(
+        "specific", f"На таймкоде {issue.timecode_in} ...", source_issues=[issue],
+    )
+    generator.ollama_service.generate = lambda prompt, **kw: 'окончание фамилии "Ходяков" звучит совсем обрезано'
+
+    result = generator._summarize_item_with_llm(expected_item, is_me=False)
+
+    assert result == 'окончание фамилии "Ходяков" звучит совсем обрезано'
+
+
+def test_summarize_item_with_llm_returns_none_when_anchor_lost():
+    generator = ConclusionGenerator()
+    issue = _single_item_issue()
+    expected_item = generator._build_structured_contract_item(
+        "specific", f"На таймкоде {issue.timecode_in} ...", source_issues=[issue],
+    )
+    generator.ollama_service.generate = lambda prompt, **kw: "окончание фамилии звучит обрезано"
+
+    assert generator._summarize_item_with_llm(expected_item, is_me=False) is None
+
+
+def test_summarize_item_with_llm_accepts_generalized_summary_for_large_group():
+    """Регрессия на реальный кейс (GAMES M&E, эта сессия): для группы из 4+
+
+    маркеров с разными цитатами промпт прямо требует "обобщи, не перечисляя
+    каждый" — дословное сохранение ВСЕХ цитат в одном обобщающем
+    предложении невозможно и не должно требоваться. Раньше это приводило к
+    тому, что валидное обобщение отклонялось и заменялось на голый
+    python-фолбэк (треть пунктов реального отчёта превращалась в шаблон).
+    """
+    generator = ConclusionGenerator()
+    issues = [
+        Issue("01:07:20:23", "", 'звучит фраза "стоять! Кому говорят?"', False, False, False, False, False, True, False),
+        Issue("01:07:23:17", "", 'звучит фраза "давай"', False, False, False, False, False, True, False),
+        Issue("01:13:19:24", "", 'слышна часть реплики тренера "ааа"', False, False, False, False, False, True, False),
+        Issue("01:24:58:09", "", 'слышно слово "хочешь"', False, False, False, False, False, True, False),
+    ]
+    expected_item = generator._build_structured_contract_item(
+        "blocker", "В нескольких фрагментах присутствуют реплики актёров", source_issues=issues,
+    )
+    # Обобщённая формулировка без единой из 4 цитат — именно то, что и просит
+    # правило для 4+ маркеров.
+    generator.ollama_service.generate = lambda prompt, **kw: "В нескольких фрагментах присутствуют реплики актёров"
+
+    result = generator._summarize_item_with_llm(expected_item, is_me=True)
+
+    assert result == "В нескольких фрагментах присутствуют реплики актёров"
+
+
+def test_summarize_item_with_llm_returns_none_on_banned_phrase():
+    generator = ConclusionGenerator()
+    issue = Issue("01:00:00:00", "", "Слышны щёлкающие звуки", False, False, False, False, False, True, False)
+    expected_item = generator._build_structured_contract_item(
+        "general", "В нескольких фрагментах ...", source_issues=[issue],
+    )
+    generator.ollama_service.generate = lambda prompt, **kw: "в целом рекомендуем пересмотреть звук"
+
+    assert generator._summarize_item_with_llm(expected_item, is_me=False) is None
+
+
+def test_summarize_item_with_llm_returns_none_without_source_issues():
+    generator = ConclusionGenerator()
+    expected_item = generator._build_structured_contract_item("general", "В нескольких фрагментах ...")
+
+    assert generator._summarize_item_with_llm(expected_item, is_me=False) is None
+
+
+def test_summarize_item_with_llm_returns_none_on_ollama_exception():
+    generator = ConclusionGenerator()
+    issue = _single_item_issue()
+    expected_item = generator._build_structured_contract_item(
+        "specific", f"На таймкоде {issue.timecode_in} ...", source_issues=[issue],
+    )
+
+    def _raise(prompt, **kw):
+        raise RuntimeError("Ollama недоступна")
+
+    generator.ollama_service.generate = _raise
+
+    assert generator._summarize_item_with_llm(expected_item, is_me=False) is None
+
+
+def test_build_item_summary_prompt_mentions_count_rule_and_markers():
+    generator = ConclusionGenerator()
+    issues = [
+        Issue("01:00:00:00", "", "Слышны щёлкающие звуки", False, False, False, False, False, True, False),
+        Issue("01:01:00:00", "", "Слышны щёлкающие звуки", False, False, False, False, False, True, False),
+    ]
+    expected_item = generator._build_structured_contract_item(
+        "general", "В нескольких фрагментах ...", source_issues=issues,
+    )
+
+    prompt = generator._build_item_summary_prompt(expected_item, is_me=False)
+
+    assert "Слышны щёлкающие звуки" in prompt
+    assert "2 маркера" in prompt
+
+
+def test_build_item_summary_prompt_forbids_quoting_replicas_for_large_groups():
+    """Регрессия на реальный кейс: для группы 4+ модель перечислила все
+
+    цитаты реплик подряд («И нам пора», «В общем из-за выходок» и т.д.) —
+    формально это "обобщение", но по факту список цитат, не саммари.
+    Промпт для больших групп должен явно запрещать дословные цитаты.
+    """
+    generator = ConclusionGenerator()
+    issues = [
+        Issue(f"01:0{i}:00:00", "", f'Реплика "{i}" несинхронна', False, False, False, False, False, True, False)
+        for i in range(4)
+    ]
+    expected_item = generator._build_structured_contract_item(
+        "general", "Несинхронность в нескольких фрагментах ...", source_issues=issues,
+    )
+
+    prompt = generator._build_item_summary_prompt(expected_item, is_me=False)
+
+    assert "не приводи дословные цитаты" in prompt.lower()
+
+
+def test_build_item_summary_prompt_includes_me_domain_hint():
+    generator = ConclusionGenerator()
+    issue = _single_item_issue(desc="Слышны щёлкающие звуки")
+    expected_item = generator._build_structured_contract_item(
+        "specific", "На таймкоде ...", source_issues=[issue],
+    )
+
+    prompt = generator._build_item_summary_prompt(expected_item, is_me=True)
+
+    assert "M&E" in prompt
+
+
+def test_write_conclusion_with_llm_uses_ai_text_and_falls_back_per_item():
+    """Интеграционный тест чанкинга: для одного пункта LLM отвечает валидно,
+
+    для другого — теряет обязательную деталь. Итоговый текст должен
+    содержать AI-формулировку для первого пункта и python-фолбэк для
+    второго, а не откатываться на python для ВСЕГО заключения сразу.
+    """
+    generator = ConclusionGenerator()
     groups = {
         "другие_проблемы": [
-            Issue(
-                "01:12:29:05",
-                "",
-                "Слышна склейка фонового шума моря",
-                False,
-                False,
-                False,
-                False,
-                False,
-                True,
-                False,
-            )
-        ],
-        "щелчки_слюна": [
-            Issue(
-                "01:20:00:00",
-                "",
-                "Слышны щёлкающие звуки на репликах",
-                False,
-                False,
-                False,
-                False,
-                False,
-                True,
-                False,
-            ),
-            Issue(
-                "01:21:00:00",
-                "",
-                "Слышны щёлкающие звуки на репликах",
-                False,
-                False,
-                False,
-                False,
-                False,
-                True,
-                False,
-            ),
-            Issue(
-                "01:22:00:00",
-                "",
-                "Слышны щёлкающие звуки на репликах",
-                False,
-                False,
-                False,
-                False,
-                False,
-                True,
-                False,
-            ),
-            Issue(
-                "01:23:00:00",
-                "",
-                "Слышны щёлкающие звуки на репликах",
-                False,
-                False,
-                False,
-                False,
-                False,
-                True,
-                False,
-            ),
-        ],
-    }
-    raw = """
-    {
-      "title": "По субъективной оценке выявлены следующие недочёты:",
-      "items": [
-        {
-          "kind": "specific",
-          "timecodes": ["01:12:29:05"],
-          "omit_timecode": false,
-          "text": "слышна склейка фонового шума моря"
-        },
-        {
-          "kind": "blocker",
-          "timecodes": ["01:00:49:06"],
-          "omit_timecode": false,
-          "text": "видео не синхронно со звуковыми дорожками"
-        },
-        {
-          "kind": "general",
-          "timecodes": [],
-          "omit_timecode": true,
-          "text": "в фонограмме присутствуют посторонние щёлкающие звуки"
-        }
-      ]
-    }
-    """
-
-    conclusion = generator._format_structured_llm_output(raw, blockers, groups, "main")
-
-    assert conclusion is None
-
-
-def test_structured_llm_output_rejects_unknown_kind():
-    generator = ConclusionGenerator()
-    raw = """
-    {
-      "title": "По субъективной оценке выявлены следующие недочёты:",
-      "items": [
-        {
-          "kind": "summary",
-          "timecodes": [],
-          "omit_timecode": true,
-          "text": "в фонограмме присутствуют посторонние щёлкающие звуки"
-        }
-      ]
-    }
-    """
-
-    assert generator._format_structured_llm_output(raw) is None
-
-
-def test_structured_llm_output_rejects_timecodes_that_do_not_match_python_contract():
-    generator = ConclusionGenerator()
-    groups = {
-        "другие_проблемы": [
-            Issue(
-                "01:12:29:05",
-                "",
-                "Слышна склейка фонового шума моря",
-                False,
-                False,
-                False,
-                False,
-                False,
-                True,
-                False,
-            )
+            _single_item_issue("01:18:49:24", 'Окончание фамилии "Ходяков" звучит обрезано'),
+            _single_item_issue("01:20:00:00", 'Слышно слово "хочешь"'),
         ]
     }
-    raw = """
-    {
-      "title": "По субъективной оценке выявлены следующие недочёты:",
-      "items": [
-        {
-          "kind": "specific",
-          "timecodes": ["01:12:29:06"],
-          "omit_timecode": false,
-          "text": "слышна склейка фонового шума моря"
-        }
-      ]
-    }
-    """
 
-    conclusion = generator._format_structured_llm_output(raw, [], groups, "main")
+    def fake_generate(prompt, **kw):
+        if "Ходяков" in prompt:
+            return 'фамилия "Ходяков" обрезается на конце реплики'
+        return "деталь потеряна тут"  # не сохраняет якорь "хочешь" в кавычках
 
-    assert conclusion is None
+    generator.ollama_service.generate = fake_generate
+
+    conclusion = generator._write_conclusion_with_llm([], groups, "main")
+
+    assert 'фамилия "Ходяков" обрезается на конце реплики' in conclusion
+    assert 'слово "хочешь"' in conclusion  # python-фолбэк для второго пункта
+    assert conclusion.startswith("По субъективной оценке выявлены следующие недочёты:")
 
 
 def test_clean_marker_description_normalizes_me_noise_wording():
@@ -1241,36 +1488,6 @@ def test_me_conclusion_keeps_generalization_for_multiple_unique_sync_markers():
     assert "00:21:05:00" not in conclusion
     assert "00:35:44:08" not in conclusion
     assert "на три кадра вправо" not in conclusion
-
-
-def test_validate_polished_rejects_missing_required_timecode():
-    generator = ConclusionGenerator()
-    original = (
-        "По субъективной оценке выявлены следующие недочёты:\n\n"
-        "-    На таймкоде 00:10:15:12 обе дорожки не синхронны с изображением на три кадра вправо"
-    )
-    polished = (
-        "По субъективной оценке выявлены следующие недочёты:\n\n"
-        "-    В нескольких фрагментах звуковые дорожки несинхронны с изображением"
-    )
-
-    assert generator._validate_polished(original, polished, "me") is False
-
-
-def test_validate_polished_rejects_extra_specific_lines_for_generalized_group():
-    generator = ConclusionGenerator()
-    original = (
-        "По субъективной оценке выявлены следующие недочёты:\n\n"
-        "-    В нескольких фрагментах в музыке слышится задвоение или параллельная посторонняя музыкальная дорожка"
-    )
-    polished = (
-        "По субъективной оценке выявлены следующие недочёты:\n\n"
-        "-    На таймкоде 01:30:13:17 в музыке такое впечатление, что параллельно звучит еще какая-то музыка. Грязь\n"
-        "-    На таймкоде 01:33:07:02 в музыке такое впечатление, что параллельно звучит еще какая-то музыка. Грязь\n"
-        "-    В нескольких фрагментах в музыке слышится задвоение или параллельная посторонняя музыкальная дорожка"
-    )
-
-    assert generator._validate_polished(original, polished, "main") is False
 
 
 def test_all_reports_use_blockers_then_specific_then_general_ordering():

@@ -44,6 +44,13 @@ arch -x86_64 "${INTEL_PYTHON}" -c "import PyInstaller" 2>/dev/null || { echo "�
 
 echo "✅ Все зависимости найдены"
 
+# Импорт на Python 3.9 выявляет несовместимые аннотации и другие ошибки
+# загрузки до того, как PyInstaller создаст заведомо нерабочий .app.
+echo "Проверка запуска исходного модуля на Intel Python..."
+arch -x86_64 "${INTEL_PYTHON}" -c \
+    'import runpy; runpy.run_path("beast_auto_reporter (v2 beta).py", run_name="beast_intel_smoke_test")'
+echo "✅ Intel Python успешно загрузил приложение"
+
 # ── Clean previous build ─────────────────────────────────────────────────
 echo ""
 echo "Очистка предыдущей сборки..."

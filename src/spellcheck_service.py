@@ -4,6 +4,17 @@ Spellcheck Service
 Проверка орфографии и автоисправление опечаток в тексте маркер-листов
 (колонки Description / Comments) на русском и английском языках.
 
+Основной путь — LLM (см. correct_texts_batch/_correct_texts_llm): один
+batch-запрос на весь маркер-лист через выбранный в UI провайдер
+(Ollama/Groq/YandexGPT/GigaChat, тот же generate_fn, что и у
+ConclusionGenerator/MarkerTranslationService), с собственным промптом,
+заточенным под правки орфографии/пунктуации без изменения структуры и
+смысла. Возвращает точные пары (было, стало) — CSV/таймкоды/теги LLM не
+видит вообще, в него уходит только текст полей Description/Comments.
+
+Без generate_fn (например, отключено в настройках) или при сбое LLM —
+локальный алгоритмический фолбэк, полностью автономный (без сети):
+
 Русский язык проверяется через морфологический анализ (pymorphy3) —
 обычные словари типа hunspell/pyspellchecker слишком малы для русского
 и дают много ложных "исправлений" на профессиональной лексике
@@ -23,42 +34,11 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from src.app_paths import CONFIG_DIR, atomic_write_text
 
 logger = logging.getLogger(__name__)
-
-try:
-    from spellchecker import SpellChecker
-    _EN_AVAILABLE = True
-except ImportError:
-    _EN_AVAILABLE = False
-
-try:
-    import pymorphy3
-    _RU_AVAILABLE = True
-except ImportError:
-    _RU_AVAILABLE = False
-
-# Термины предметной области (аудио QC / маркер-листы), которые не входят
-# в общие словари, но не являются опечатками.
-DOMAIN_WHITELIST = {
-    'lufs', 'lra', 'dbtp', 'dbfs', 'tp', 'sfx', 'foley', 'фоли', 'фоули',
-    'm&e', 'sync', 'синхрон', 'таймкод', 'timecode', 'тс', 'tc',
-    'блокер', 'маркер', 'маркеры', 'маркер-лист', 'маркерлист', 'маркерлисты',
-    'cens', 'uncens', 'censored', 'uncensored', 'stereo', 'стерео',
-    'surround', 'сарраунд', 'клиппинг', 'clipping', 'реверб', 'reverb',
-    'wav', 'mp3', 'pdf', 'csv', 'docx', 'roomtone', 'atmo',
-}
-
-_RU_ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-_EN_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
-
-_WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё'-]+")
-
-_SENTENCE_ENDERS = ".!?…"
-
 
 CUSTOM_CORRECTIONS_FILE = CONFIG_DIR / "spellcheck_custom_corrections.json"
 
@@ -104,6 +84,36 @@ def remember_custom_correction(old: str, new: str, path: Path = CUSTOM_CORRECTIO
     corrections[old.strip().lower()] = new.strip()
     save_custom_corrections(corrections, path)
 
+try:
+    from spellchecker import SpellChecker
+    _EN_AVAILABLE = True
+except ImportError:
+    _EN_AVAILABLE = False
+
+try:
+    import pymorphy3
+    _RU_AVAILABLE = True
+except ImportError:
+    _RU_AVAILABLE = False
+
+# Термины предметной области (аудио QC / маркер-листы), которые не входят
+# в общие словари, но не являются опечатками.
+DOMAIN_WHITELIST = {
+    'lufs', 'lra', 'dbtp', 'dbfs', 'tp', 'sfx', 'foley', 'фоли', 'фоули',
+    'm&e', 'sync', 'синхрон', 'таймкод', 'timecode', 'тс', 'tc',
+    'блокер', 'маркер', 'маркеры', 'маркер-лист', 'маркерлист', 'маркерлисты',
+    'cens', 'uncens', 'censored', 'uncensored', 'stereo', 'стерео',
+    'surround', 'сарраунд', 'клиппинг', 'clipping', 'реверб', 'reverb',
+    'wav', 'mp3', 'pdf', 'csv', 'docx', 'roomtone', 'atmo',
+}
+
+_RU_ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+_EN_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+
+_WORD_RE = re.compile(r"[A-Za-zА-Яа-яЁё'-]+")
+
+_SENTENCE_ENDERS = ".!?…"
+
 
 def _is_cyrillic(word: str) -> bool:
     return bool(re.search(r"[А-Яа-яЁё]", word))
@@ -133,6 +143,31 @@ def _apply_case(source: str, correction: str) -> str:
     return correction
 
 
+def _extract_json_array(raw: str):
+    """Достаёт JSON-массив из ответа LLM, даже если он обёрнут в ```json
+
+    код-блок или содержит текст до/после массива — модели часто добавляют
+    пояснения, несмотря на просьбу вернуть строго JSON.
+    """
+    if not raw:
+        return None
+
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+        stripped = re.sub(r"\s*```$", "", stripped)
+
+    start = stripped.find("[")
+    end = stripped.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    try:
+        return json.loads(stripped[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+
+
 def _edits1(word: str, alphabet: str) -> set:
     """Все слова на расстоянии редактирования 1 от word (правки Норвига)."""
     splits = [(word[:i], word[i:]) for i in range(len(word) + 1)]
@@ -155,6 +190,128 @@ class SpellcheckService:
     # CSV с повторяющимися незнакомыми словами импортируется десятки секунд.
     _known_ru_cache: dict = {}
     _ru_correction_cache: dict = {}
+
+    def __init__(self, config: Optional[dict] = None, generate_fn: Optional[Callable[..., str]] = None):
+        """
+        generate_fn — вызов LLM (prompt, *, options) -> str, тот же
+        провайдер, что выбран в UI (см. ConclusionGenerator._ollama_generate,
+        так же передаётся в MarkerTranslationService). None (по умолчанию) —
+        батч-проверка орфографии идёт только через локальный алгоритм
+        (pymorphy3/pyspellchecker), как и раньше.
+        """
+        self.config = config or {}
+        self._generate_fn = generate_fn
+
+    def correct_texts_batch(self, texts: List[str]) -> Dict[str, List[Tuple[str, str]]]:
+        """Batch-поиск опечаток сразу во всех текстах — один вызов LLM на
+
+        весь маркер-лист вместо отдельного запроса на каждое поле (по
+        аналогии с MarkerTranslationService._translate_batch_with_llm).
+        Без generate_fn или при сбое LLM (сеть/ключ/невалидный JSON) —
+        откат на локальный алгоритм для каждого текста по отдельности,
+        чтобы проверка орфографии никогда не блокировала генерацию отчёта.
+
+        Возвращает {текст: [(было, стало), ...]}; тексты без опечаток в
+        словаре отсутствуют.
+        """
+        unique_texts = list(dict.fromkeys(t for t in texts if t and t.strip()))
+        if not unique_texts:
+            return {}
+
+        if self._generate_fn is not None:
+            try:
+                return self._correct_texts_llm(unique_texts)
+            except Exception as exc:
+                logger.warning(f"LLM-проверка орфографии недоступна, откат на локальный алгоритм: {exc}")
+
+        result: Dict[str, List[Tuple[str, str]]] = {}
+        for text in unique_texts:
+            _fixed, fixes = self.correct_text(text)
+            if fixes:
+                result[text] = fixes
+        return result
+
+    def _correct_texts_llm(self, texts: List[str]) -> Dict[str, List[Tuple[str, str]]]:
+        prompt_lines = [f"{idx}. {text}" for idx, text in enumerate(texts)]
+        prompt = f"""Ты — редактор русского и английского текста в маркер-листах аудио QC.
+
+Проверь орфографию, пунктуацию и явные грамматические ошибки в каждой строке ниже.
+
+Правила:
+1. Исправляй ТОЛЬКО орфографические, пунктуационные и явные грамматические ошибки.
+2. Не перефразируй и не меняй стиль и структуру текста без необходимости.
+3. Не добавляй новых слов и не убирай смысловые элементы.
+4. Если не уверен в исправлении — не трогай строку вообще: лучше пропустить настоящую опечатку, чем испортить корректный текст.
+5. НЕ считай ошибками:
+   - профессиональные термины аудио QC (LUFS, LRA, dBTP, dBFS, SFX, foley, таймкод, timecode, синхрон, sync, клиппинг, реверб, M&E, cens/uncens и т.п.)
+   - имена собственные (персонажи, названия, топонимы)
+   - содержимое технических маркеров/тегов, если они встретились в тексте: [TAG], <tag>, {{code}}, #ID, таймкоды вида 00:00:00
+   - фрагменты транскрипции живой речи — не выравнивай их до литературной нормы, исправляй только явные опечатки
+   - корректные слова, даже редкие или разговорные
+6. Если строка смешивает русский и английский — исправляй только русскую часть, если это безопасно для смысла.
+
+Для каждой найденной ошибки верни точную подстроку "old" ровно так, как она написана в строке (с сохранением регистра и пунктуации), и "new" — исправленный вариант. Если в строке ошибок нет — пустой список corrections.
+
+Верни СТРОГО JSON-массив вида:
+[{{"index": 0, "corrections": [{{"old": "...", "new": "..."}}]}}]
+
+СТРОКИ:
+{chr(10).join(prompt_lines)}
+"""
+        raw = self._generate_fn(
+            prompt,
+            options={
+                "temperature": 0.05,
+                "num_predict": min(1500, max(300, 150 * len(texts))),
+                "top_p": 0.9,
+            },
+        )
+        payload = _extract_json_array(raw)
+        if not isinstance(payload, list):
+            raise ValueError(f"LLM вернул не JSON-массив: {raw[:200] if raw else raw!r}")
+
+        result: Dict[str, List[Tuple[str, str]]] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            if not isinstance(index, int) or not (0 <= index < len(texts)):
+                continue
+            text = texts[index]
+            pairs: List[Tuple[str, str]] = []
+            for corr in item.get("corrections", []) or []:
+                if not isinstance(corr, dict):
+                    continue
+                old = str(corr.get("old", "")).strip()
+                new = str(corr.get("new", "")).strip()
+                if old and new and old != new and old in text:
+                    pairs.append((old, new))
+            if pairs:
+                result[text] = pairs
+        return result
+
+    @staticmethod
+    def apply_pairs(text: str, pairs) -> Tuple[str, List[Tuple[str, str]]]:
+        """Подставляет уже готовые пары (было, стало) в текст по границам
+
+        слова, без повторного скана — используется при импорте CSV, когда
+        исправления уже известны заранее (одобрены пользователем в диалоге
+        ревью, либо найдены батчем при скане в auto-режиме). pairs — любой
+        перебираемый набор пар (список или set).
+        """
+        if not text or not pairs:
+            return text, []
+        result = text
+        applied: List[Tuple[str, str]] = []
+        for old, new in pairs:
+            if not old:
+                continue
+            pattern = re.compile(r"(?<![A-Za-zА-Яа-яЁё])" + re.escape(old) + r"(?![A-Za-zА-Яа-яЁё])")
+            new_result, count = pattern.subn(lambda _m, _new=new: _new, result)
+            if count:
+                result = new_result
+                applied.extend([(old, new)] * count)
+        return result, applied
 
     @classmethod
     def _ensure_loaded(cls) -> bool:
@@ -243,6 +400,7 @@ class SpellcheckService:
             return text, []
 
         corrections: List[Tuple[str, str]] = []
+        custom_corrections = load_custom_corrections()
 
         def replace(match: "re.Match") -> str:
             word = match.group(0)
@@ -252,13 +410,19 @@ class SpellcheckService:
             if _likely_proper_noun(text, match.start(), stripped):
                 return word
 
-            if _is_cyrillic(stripped):
-                lowered = stripped.lower()
+            lowered = stripped.lower()
+            custom = custom_corrections.get(lowered)
+            if custom:
+                # Ручное исправление, ранее запомненное пользователем в
+                # диалоге ревью — приоритетнее догадки алгоритма (может
+                # заменять даже то, что pymorphy/pyspellchecker сочли бы
+                # другим "уверенным" вариантом).
+                suggestion = custom
+            elif _is_cyrillic(stripped):
                 if cls._is_known_ru(lowered):
                     return word
                 suggestion = cls._correct_ru(lowered)
             else:
-                lowered = stripped.lower()
                 if lowered in cls._en_checker:
                     return word
                 suggestion = cls._en_checker.correction(lowered)

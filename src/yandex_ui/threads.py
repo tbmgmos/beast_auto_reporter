@@ -121,30 +121,69 @@ class _MkdirThread(_YandexWorkerThread):
         self.finished_mkdir.emit(False, message)
 
 
+class _SetTagThread(_YandexWorkerThread):
+    """Асинхронный client.set_custom_properties(path, properties) —
+
+    сохраняет/убирает тег (цвет+комментарий) на ресурсе, не блокируя GUI.
+    """
+
+    finished_set_tag = pyqtSignal(bool, str)  # (success, path_or_error)
+
+    def __init__(self, client, path: str, properties: dict):
+        super().__init__()
+        self.client = client
+        self.path = path
+        self.properties = properties
+
+    def _work(self):
+        self.client.set_custom_properties(self.path, self.properties)
+        return self.path
+
+    def _emit_success(self, result) -> None:
+        self.finished_set_tag.emit(True, result)
+
+    def _emit_failure(self, message: str) -> None:
+        self.finished_set_tag.emit(False, message)
+
+
 class _ListFolderThread(_YandexWorkerThread):
     """Асинхронный client.list_folder(path) — для ленивого разворачивания
 
     папок в деревьях диалогов. Раньше листинг делался синхронно прямо в
     обработчике itemExpanded и на медленной сети замораживал GUI-поток
     до таймаута клиента (~15 с).
+
+    Переопределяет run() целиком (не использует общий _work()/_emit_*
+    шаблон _YandexWorkerThread) — нужно различить 404 (папка больше не
+    существует на Диске, например удалена мимо приложения) от прочих
+    ошибок отдельным сигналом not_found, а не строковым сопоставлением
+    текста сообщения (см. SeriesFolderNotFoundError — тем же принципом
+    руководствовались раньше в этой кодовой базе).
     """
 
     resolved = pyqtSignal(str, list)  # (path, children)
     failed = pyqtSignal(str, str)  # (path, error message)
+    not_found = pyqtSignal(str)  # path — папка больше не существует на Диске (404)
 
     def __init__(self, client, path: str):
         super().__init__()
         self.client = client
         self.path = path
 
-    def _work(self):
-        return self.client.list_folder(self.path)
+    def run(self):
+        from src.yandex_disk_client import YandexDiskError
 
-    def _emit_success(self, result) -> None:
-        self.resolved.emit(self.path, result)
-
-    def _emit_failure(self, message: str) -> None:
-        self.failed.emit(self.path, message)
+        try:
+            children = self.client.list_folder(self.path)
+            self.resolved.emit(self.path, children)
+        except YandexDiskError as exc:
+            if exc.status_code == 404:
+                self.not_found.emit(self.path)
+            else:
+                self.failed.emit(self.path, str(exc))
+        except Exception as exc:
+            logger.error("Ошибка листинга папки на Яндекс.Диске: %s", exc, exc_info=True)
+            self.failed.emit(self.path, str(exc))
 
 
 class _RenameThread(_YandexWorkerThread):
@@ -171,6 +210,33 @@ class _RenameThread(_YandexWorkerThread):
         self.finished_rename.emit(False, message)
 
 
+class _PublishThread(_YandexWorkerThread):
+    """Публикация ресурса (client.publish) — получить ссылку «поделиться»
+
+    на конкретный файл/папку по запросу пользователя (ПКМ в просмотрщике
+    Диска). В отличие от отклонённой раньше идеи «автоматически предлагать
+    публичную ссылку сразу после отправки отчёта» — это ручное действие
+    для одного выбранного элемента, ничего не публикует само по себе.
+    """
+
+    resolved = pyqtSignal(str, str)  # (path, public_url)
+    failed = pyqtSignal(str, str)  # (path, error message)
+
+    def __init__(self, client, path: str):
+        super().__init__()
+        self.client = client
+        self.path = path
+
+    def _work(self):
+        return self.client.publish(self.path)
+
+    def _emit_success(self, result) -> None:
+        self.resolved.emit(self.path, result)
+
+    def _emit_failure(self, message: str) -> None:
+        self.failed.emit(self.path, message)
+
+
 class _DeleteThread(_YandexWorkerThread):
     """Удаление ресурса (client.delete) — по умолчанию в Корзину, обратимо."""
 
@@ -192,6 +258,42 @@ class _DeleteThread(_YandexWorkerThread):
 
     def _emit_failure(self, message: str) -> None:
         self.finished_delete.emit(False, message)
+
+
+class _FolderSizeThread(_YandexWorkerThread):
+    """Рекурсивный подсчёт суммарного размера папки — по запросу (ПКМ
+
+    «Посчитать размер» в просмотрщике), не автоматически для каждой
+    видимой папки: полный рекурсивный обход может быть медленным для
+    больших деревьев.
+    """
+
+    resolved = pyqtSignal(str, int)  # (path, total_bytes)
+    failed = pyqtSignal(str, str)  # (path, error message)
+
+    def __init__(self, client, path: str):
+        super().__init__()
+        self.client = client
+        self.path = path
+
+    def _work(self):
+        return self._sum_folder(self.path)
+
+    def _sum_folder(self, path: str) -> int:
+        total = 0
+        for entry in self.client.list_folder(path):
+            if entry.get("type") == "dir":
+                child_path = entry.get("path") or f"{path}/{entry.get('name', '')}"
+                total += self._sum_folder(child_path)
+            else:
+                total += entry.get("size") or 0
+        return total
+
+    def _emit_success(self, result) -> None:
+        self.resolved.emit(self.path, result)
+
+    def _emit_failure(self, message: str) -> None:
+        self.failed.emit(self.path, message)
 
 
 class _FallbackFolderFindThread(_YandexWorkerThread):
@@ -228,7 +330,19 @@ class _FallbackFolderFindThread(_YandexWorkerThread):
 
 
 class YandexDiskFindVersionsThread(_YandexWorkerThread):
-    """Фоновый поиск папки серии/эпизода и списка всех версий отчёта на Диске."""
+    """Фоновый поиск папки серии/эпизода и списка всех версий отчёта на Диске.
+
+    list_report_versions вызывается БЕЗ meta — episode_path и так уже
+    указывает ровно на папку нужного эпизода (сезон/эпизод фильтровать не
+    нужно), а фильтрация по variant внутри list_report_versions требует
+    строгого совпадения имени с REPORT_PATTERN у КАЖДОГО кандидата и
+    молча выбрасывает версии с нестандартным именем (частое дело —
+    другой формат даты, составной тег вроде "cens_AD" и т.п.), даже если
+    они на самом деле того же варианта, что и текущий черновик. Разбор по
+    variant теперь делает вызывающий код (BeastApp._handle_yandex_versions)
+    через group_versions_by_category — то же лёгкое сканирование имени,
+    что и в просмотрщике Диска, вместо строгого REPORT_PATTERN целиком.
+    """
 
     resolved = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -249,7 +363,7 @@ class YandexDiskFindVersionsThread(_YandexWorkerThread):
         versions = []
         if series_path is not None:
             episode_path = f"{series_path}/e{self.meta.episode:02d}"
-            versions = list_report_versions(client, episode_path, self.meta)
+            versions = list_report_versions(client, episode_path)
         return {
             "series_path": series_path,
             "episode_path": episode_path,
@@ -263,16 +377,78 @@ class YandexDiskFindVersionsThread(_YandexWorkerThread):
         self.failed.emit(message)
 
 
+class YandexCombinedFindThread(_YandexWorkerThread):
+    """Резолвит папку отчёта И папку npr-проекта одним проходом.
+
+    Используется только когда есть npr-файлы для отправки вместе с
+    отчётом (см. BeastApp._send_report_to_disk) — решить, нужен ли
+    комбинированный пикер папок, можно только когда известны ОБА исхода
+    сразу; npr резолвится и грузится атомарно в NprUploadThread.run(),
+    поэтому его нельзя "приостановить" на середине и спросить пользователя
+    только про отчёт. Версии здесь не запрашиваются (в отличие от
+    YandexDiskFindVersionsThread) — при отправке ("send") они не нужны.
+    """
+
+    resolved = pyqtSignal(dict)  # {"series_path", "episode_path", "npr_folder"} — любое может быть None
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self, token: str, report_lookup_key: str, report_roots: list, meta,
+        npr_key: str, npr_root: str,
+    ):
+        super().__init__()
+        self.token = token
+        self.report_lookup_key = report_lookup_key
+        self.report_roots = report_roots or ["/отчеты"]
+        self.meta = meta
+        self.npr_key = npr_key
+        self.npr_root = npr_root
+
+    def _work(self):
+        from src.yandex_disk_client import YandexDiskClient
+        from src.report_uploader import find_series_folder, NPR_ALIASES_FILE
+
+        client = YandexDiskClient(self.token)
+        series_path = find_series_folder(client, self.report_lookup_key, roots=self.report_roots)
+        episode_path = None
+        if series_path is not None:
+            episode_path = f"{series_path}/e{self.meta.episode:02d}" if self.meta else series_path
+        npr_folder = find_series_folder(
+            client, self.npr_key, roots=[self.npr_root], aliases_path=NPR_ALIASES_FILE,
+        )
+        return {"series_path": series_path, "episode_path": episode_path, "npr_folder": npr_folder}
+
+    def _emit_success(self, result) -> None:
+        self.resolved.emit(result)
+
+    def _emit_failure(self, message: str) -> None:
+        self.failed.emit(message)
+
+
 class YandexDiskFolderVersionsThread(_YandexWorkerThread):
-    """Фоновый поиск списка версий отчёта в вручную выбранной папке."""
+    """Фоновый поиск списка версий отчёта в вручную выбранной папке.
+
+    meta принимается для обратной совместимости (вызывающий код может
+    знать вариант выбранного элемента — см.
+    YandexDiskBrowserDialog._fetch_versions_for_selected), но больше НЕ
+    передаётся в list_report_versions для фильтрации: строгая фильтрация
+    по variant там требует, чтобы КАЖДЫЙ кандидат тоже совпал с
+    REPORT_PATTERN целиком, и молча выбрасывала версии с нестандартным
+    именем (частое дело — другой формат даты, составной тег вроде
+    "cens_AD" и т.п.), даже если они на самом деле того же варианта.
+    Группировку по варианту теперь делает вызывающий код через
+    group_versions_by_category — то же лёгкое сканирование имени, что и
+    в остальном просмотрщике Диска, вместо строгого REPORT_PATTERN.
+    """
 
     resolved = pyqtSignal(list)
     failed = pyqtSignal(str)
 
-    def __init__(self, token: str, target_folder_path: str):
+    def __init__(self, token: str, target_folder_path: str, meta=None):
         super().__init__()
         self.token = token
         self.target_folder_path = target_folder_path
+        self.meta = meta
 
     def _work(self):
         from src.yandex_disk_client import YandexDiskClient
@@ -324,6 +500,36 @@ class YandexDiskCompareThread(_YandexWorkerThread):
         self.failed.emit(message)
 
 
+class VersionSummaryThread(_YandexWorkerThread):
+    """Фоновая генерация LLM-сводки различий между двумя версиями отчёта.
+
+    Сеть Диска здесь не участвует (данные уже собраны в ReportComparison),
+    но вызов LLM — особенно локальной Ollama — может идти десятки секунд,
+    поэтому выполняется вне GUI-потока, как и все операции модуля.
+    """
+
+    resolved = pyqtSignal(str)  # текст сводки
+    failed = pyqtSignal(str)  # error message
+
+    def __init__(self, generator, comparison, old_label: str = None, new_label: str = None):
+        super().__init__()
+        self.generator = generator
+        self.comparison = comparison
+        self.old_label = old_label
+        self.new_label = new_label
+
+    def _work(self):
+        return self.generator.summarize_version_changes(
+            self.comparison, old_label=self.old_label, new_label=self.new_label
+        )
+
+    def _emit_success(self, result) -> None:
+        self.resolved.emit(result)
+
+    def _emit_failure(self, message: str) -> None:
+        self.failed.emit(message)
+
+
 class YandexDiskUploadThread(_KeepAliveThread):
     """Фоновая загрузка папки готового отчёта (все файлы) на Яндекс.Диск.
 
@@ -335,6 +541,7 @@ class YandexDiskUploadThread(_KeepAliveThread):
     finished_upload = pyqtSignal(bool, str)
     needs_folder = pyqtSignal(str)  # error message — папка сериала не найдена, create_if_missing=False
     network_unavailable = pyqtSignal(str)  # error message — не удалось подключиться к Диску вообще (не ошибка API)
+    auth_expired = pyqtSignal(str)  # error message — 401: токен отозван/истёк, нужен повторный вход
     progress = pyqtSignal(int, int)  # (bytes_sent, total_bytes)
 
     def __init__(
@@ -353,6 +560,10 @@ class YandexDiskUploadThread(_KeepAliveThread):
     def run(self):
         from src.yandex_disk_client import YandexDiskClient, YandexDiskError
         from src.report_uploader import SeriesFolderNotFoundError, resolve_target_path, upload_folder
+        from src.marker_registry_sync import (
+            publish_local_chain_version,
+            reconcile_report_folder_before_upload,
+        )
 
         try:
             client = YandexDiskClient(self.token)
@@ -366,15 +577,30 @@ class YandexDiskUploadThread(_KeepAliveThread):
                 episode_path, _created = resolve_target_path(
                     client, self.meta, create_if_missing=self.create_if_missing, roots=self.series_roots
                 )
-            report_folder_path = f"{episode_path}/{self.local_folder_path.name}"
+            if self.local_folder_path is None:
+                raise ValueError("Не указана локальная папка отчёта для отправки")
+            local_folder_path = Path(self.local_folder_path)
+            if not local_folder_path.is_dir():
+                raise ValueError(f"Локальная папка отчёта недоступна: {local_folder_path}")
+            marker_chain_key, _renumbered = reconcile_report_folder_before_upload(
+                client, local_folder_path, episode_path
+            )
+            report_folder_path = f"{episode_path}/{local_folder_path.name}"
             client.mkdir(report_folder_path)
-            upload_folder(client, self.local_folder_path, report_folder_path,
+            upload_folder(client, local_folder_path, report_folder_path,
                            progress_callback=lambda sent, total: self.progress.emit(sent, total))
+            if marker_chain_key:
+                publish_local_chain_version(client, marker_chain_key, report_folder_path)
             self.finished_upload.emit(True, report_folder_path)
         except SeriesFolderNotFoundError as exc:
             self.needs_folder.emit(str(exc))
         except YandexDiskError as exc:
-            if exc.status_code is None:
+            if exc.status_code == 401:
+                # Токен отозван/истёк — retry-логика очереди это не вылечит
+                # (запросы будут падать снова и снова). Отдельный сигнал, чтобы
+                # менеджер поставил очередь на паузу и попросил войти заново.
+                self.auth_expired.emit(str(exc))
+            elif exc.status_code is None:
                 # URLError на уровне YandexDiskClient._request — не удалось
                 # подключиться вообще (DNS/обрыв связи), а не ответ API
                 # с кодом ошибки. Не тратим на это retry-попытки очереди.
@@ -403,6 +629,7 @@ class NprUploadThread(_KeepAliveThread):
     finished_upload = pyqtSignal(bool, str)
     needs_folder = pyqtSignal(str)  # папка сезона не найдена ни по алиасу, ни нечётким поиском
     network_unavailable = pyqtSignal(str)
+    progress = pyqtSignal(int, int)  # (файлов загружено, всего файлов) — раньше не эмитился вообще
 
     def __init__(
         self, token: str, npr_root: str, npr_key: str, local_paths, *,
@@ -430,9 +657,11 @@ class NprUploadThread(_KeepAliveThread):
                 if folder is None:
                     self.needs_folder.emit(f"Папка для проекта «{self.npr_key}» не найдена на Диске")
                     return
-            for local_path in self.local_paths:
+            total = len(self.local_paths)
+            for i, local_path in enumerate(self.local_paths):
                 remote_path = f"{folder}/{Path(local_path).name}"
                 client.upload(Path(local_path), remote_path)
+                self.progress.emit(i + 1, total)
             remember_series_alias(self.npr_key, folder, NPR_ALIASES_FILE)
             self.finished_upload.emit(True, folder)
         except YandexDiskError as exc:
@@ -442,6 +671,42 @@ class NprUploadThread(_KeepAliveThread):
                 self.finished_upload.emit(False, str(exc))
         except Exception as exc:
             logger.error("Ошибка отправки npr-файлов на Яндекс.Диск: %s", exc, exc_info=True)
+            self.finished_upload.emit(False, str(exc))
+
+
+class FinderDropUploadThread(_KeepAliveThread):
+    """Загрузка файлов/папок, перетащенных из Finder, в уже известную папку
+
+    на Диске — в отличие от NprUploadThread, путь назначения всегда уже
+    резолвлен (это папка в уже открытом дереве YandexDiskBrowserDialog),
+    и загружаемые локальные пути могут быть папками (рекурсивно, см.
+    upload_paths_recursive в src/report_uploader.py), а не только файлами.
+    """
+
+    finished_upload = pyqtSignal(bool, str)
+    progress = pyqtSignal(int, int)  # (файлов загружено, всего файлов)
+
+    def __init__(self, token: str, local_paths, remote_folder: str):
+        super().__init__()
+        self.token = token
+        self.local_paths = list(local_paths)
+        self.remote_folder = remote_folder
+
+    def run(self):
+        from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+        from src.report_uploader import upload_paths_recursive
+
+        try:
+            client = YandexDiskClient(self.token)
+            upload_paths_recursive(
+                client, self.local_paths, self.remote_folder,
+                progress_callback=lambda done, total: self.progress.emit(done, total),
+            )
+            self.finished_upload.emit(True, "")
+        except YandexDiskError as exc:
+            self.finished_upload.emit(False, str(exc))
+        except Exception as exc:
+            logger.error("Ошибка загрузки из Finder на Яндекс.Диск: %s", exc, exc_info=True)
             self.finished_upload.emit(False, str(exc))
 
 
@@ -635,4 +900,83 @@ class ConfigSyncThread(_KeepAliveThread):
                 self.failed.emit(str(exc))
         except Exception as exc:
             logger.error("Ошибка синхронизации конфигов с Яндекс.Диском: %s", exc, exc_info=True)
+            self.failed.emit(str(exc))
+
+
+class MarkerIdentityPrepareThread(_KeepAliveThread):
+    """Synchronize and analyse one marker chain before report generation.
+
+    Network/auth failures deliberately fall back to the local registry: the
+    product policy allows offline generation, but the returned plan carries a
+    visible warning and marks newly allocated IDs as pending.
+    """
+
+    prepared = pyqtSignal(object)  # MarkerIdentityPlan
+    conflict = pyqtSignal(object)  # MarkerRegistryConflictError
+    failed = pyqtSignal(str)
+
+    def __init__(self, token: str, source_path: str, roots: list[str]):
+        super().__init__()
+        self.token = token or ""
+        self.source_path = source_path
+        self.roots = list(roots or ["/отчеты"])
+
+    def run(self):
+        from src.marker_registry_sync import (
+            MarkerRegistryConflictError,
+            prepare_identity_plan_offline,
+            prepare_identity_plan_with_disk,
+        )
+        from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+
+        try:
+            if not self.token:
+                self.prepared.emit(prepare_identity_plan_offline(self.source_path))
+                return
+            try:
+                plan = prepare_identity_plan_with_disk(
+                    YandexDiskClient(self.token), self.source_path, roots=self.roots
+                )
+            except MarkerRegistryConflictError as exc:
+                self.conflict.emit(exc)
+                return
+            except YandexDiskError as exc:
+                if exc.status_code == 401:
+                    warning = (
+                        "Не удалось проверить ID: требуется повторный вход в Яндекс Диск. "
+                        "Используется локальная история."
+                    )
+                else:
+                    warning = (
+                        "Не удалось подключиться к Яндекс Диску. Используется локальная "
+                        "история ID; перед загрузкой будет выполнена повторная проверка."
+                    )
+                plan = prepare_identity_plan_offline(self.source_path, warning=warning)
+            self.prepared.emit(plan)
+        except Exception as exc:
+            logger.error("Ошибка подготовки постоянных ID маркеров: %s", exc, exc_info=True)
+            self.failed.emit(str(exc))
+
+
+class MarkerIdentityConflictResolveThread(_KeepAliveThread):
+    resolved = pyqtSignal(object)  # renumber mapping
+    failed = pyqtSignal(str)
+
+    def __init__(self, token: str, conflict, choices: dict[str, str]):
+        super().__init__()
+        self.token = token
+        self.conflict = conflict
+        self.choices = dict(choices)
+
+    def run(self):
+        from src.marker_registry_sync import resolve_chain_conflicts
+        from src.yandex_disk_client import YandexDiskClient
+
+        try:
+            mapping = resolve_chain_conflicts(
+                YandexDiskClient(self.token), self.conflict, self.choices
+            )
+            self.resolved.emit(mapping)
+        except Exception as exc:
+            logger.error("Ошибка разрешения конфликта ID: %s", exc, exc_info=True)
             self.failed.emit(str(exc))

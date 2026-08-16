@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import QPoint, QRectF, Qt
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 _ICON_CACHE = {}
 
@@ -174,6 +174,70 @@ def make_icon_pixmap(name: str, color="#86868B", size: int = 16, stroke: float =
         path.lineTo(2.7 * s, 13.2 * s)
         path.closeSubpath()
         painter.drawPath(path)
+    elif name == "refresh":
+        # Круговая стрелка: дуга ~290° + треугольная стрелка на переднем конце.
+        painter.drawArc(rect(2, 2, 12, 12), -40 * 16, 290 * 16)
+        arrow = QPainterPath()
+        arrow.moveTo(13.6 * s, 2.2 * s)
+        arrow.lineTo(14.6 * s, 5.9 * s)
+        arrow.lineTo(11.0 * s, 5.1 * s)
+        arrow.closeSubpath()
+        painter.setBrush(qcolor)
+        painter.drawPath(arrow)
+    elif name == "refresh_expressive":
+        # Material 3 Expressive: более тяжёлая округлая дуга и крупная
+        # стрелка, хорошо читающиеся в 20px-контейнере панели инструментов.
+        expressive_pen = QPen(qcolor)
+        expressive_pen.setWidthF(2.35 * s)
+        expressive_pen.setCapStyle(Qt.RoundCap)
+        expressive_pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(expressive_pen)
+        painter.drawArc(rect(2.6, 2.6, 10.8, 10.8), -25 * 16, 285 * 16)
+        arrow = QPainterPath()
+        arrow.moveTo(12.2 * s, 1.6 * s)
+        arrow.lineTo(14.7 * s, 5.5 * s)
+        arrow.lineTo(10.1 * s, 5.0 * s)
+        arrow.closeSubpath()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(qcolor)
+        painter.drawPath(arrow)
+    elif name == "view_list":
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(qcolor)
+        for y, marker_width, line_width in ((3.0, 3.0, 8.0), (7.0, 2.4, 9.0), (11.0, 3.4, 7.2)):
+            painter.drawRoundedRect(rect(1.5, y, marker_width, 2.4), 1.2 * s, 1.2 * s)
+            painter.drawRoundedRect(rect(5.6, y, line_width, 2.4), 1.2 * s, 1.2 * s)
+    elif name == "view_grid":
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(qcolor)
+        for x, y, w, h in (
+            (1.7, 1.7, 5.5, 5.5), (8.3, 1.7, 6.0, 4.2),
+            (1.7, 8.3, 4.2, 6.0), (7.0, 7.0, 7.3, 7.3),
+        ):
+            painter.drawRoundedRect(rect(x, y, w, h), 1.7 * s, 1.7 * s)
+    elif name == "view_columns":
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(qcolor)
+        painter.drawRoundedRect(rect(1.2, 2.0, 3.7, 12.0), 1.6 * s, 1.6 * s)
+        painter.drawRoundedRect(rect(6.1, 1.2, 3.9, 13.6), 1.7 * s, 1.7 * s)
+        painter.drawRoundedRect(rect(11.2, 3.0, 3.6, 10.0), 1.5 * s, 1.5 * s)
+    elif name == "link":
+        # Два скруглённых звена цепочки под углом, как классическая
+        # пиктограмма «ссылка»/«поделиться».
+        painter.drawRoundedRect(
+            QRectF(0, 0, 8 * s, 5 * s).translated(1.2 * s, 8.6 * s), 2.4 * s, 2.4 * s
+        )
+        painter.save()
+        painter.translate(9.5 * s, 5.6 * s)
+        painter.rotate(-38)
+        painter.drawRoundedRect(QRectF(-4 * s, -2.5 * s, 8 * s, 5 * s), 2.4 * s, 2.4 * s)
+        painter.restore()
+    elif name == "more":
+        # Три горизонтальные точки — кнопка «Ещё» с меню второстепенных
+        # действий (см. footer в главном окне).
+        painter.setBrush(qcolor)
+        for cx in (3.2, 8.0, 12.8):
+            painter.drawEllipse(rect(cx - 1.3, 6.7, 2.6, 2.6))
     else:
         painter.drawEllipse(rect(2, 2, 12, 12))
 
@@ -184,3 +248,68 @@ def make_icon_pixmap(name: str, color="#86868B", size: int = 16, stroke: float =
 
 def make_icon(name: str, color="#86868B", size: int = 16, stroke: float = 1.6) -> QIcon:
     return QIcon(make_icon_pixmap(name, color, size, stroke))
+
+
+def make_text_badge_pixmap(text: str, color="#5856D6", size: int = 16) -> QPixmap:
+    """Значок-бейдж с текстом (например, «ME»/«AD») — залитый цветной
+
+    прямоугольник с инициалами внутри. В отличие от силуэтных иконок
+    (нота, динамик) короткий текст читается однозначно даже на маленьком
+    (13px) размере в дереве — не нужно угадывать форму значка.
+    """
+    cache_key = ("badge", text, QColor(color).rgba(), size)
+    cached = _ICON_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.TextAntialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(color))
+    radius = size * 0.28
+    painter.drawRoundedRect(QRectF(0.5, 0.5, size - 1, size - 1), radius, radius)
+
+    # Три- и четырёхбуквенные метки форматов (PDF/CSV/NPR/FLAC) должны
+    # помещаться и в 18px-иконку компактного списка; короткие ME/AD при
+    # этом сохраняют прежний, более крупный кегль.
+    if len(text) >= 4:
+        font_scale = 0.30
+    elif len(text) == 3:
+        font_scale = 0.34
+    else:
+        font_scale = 0.40
+    font = QFont(".AppleSystemUIFont", max(5, int(size * font_scale)), QFont.DemiBold)
+    painter.setFont(font)
+    painter.setPen(QColor("#FFFFFF"))
+    painter.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, text)
+    painter.end()
+
+    _ICON_CACHE[cache_key] = pixmap
+    return pixmap
+
+
+def make_text_badge_icon(text: str, color="#5856D6", size: int = 16) -> QIcon:
+    return QIcon(make_text_badge_pixmap(text, color, size))
+
+
+def make_tagged_icon(base_icon: QIcon, tag_color: str, size: int = 16) -> QIcon:
+    """Накладывает маленький цветной кружок в правый нижний угол готовой
+
+    иконки — индикатор пользовательского тега. Не заменяет саму иконку
+    (в отличие от бейджей ME/AD/VO — тег независим от типа отчёта и может
+    быть у файла и у папки любого варианта одновременно).
+    """
+    pixmap = QPixmap(base_icon.pixmap(size, size))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    dot_size = size * 0.42
+    pen = QPen(QColor("#FFFFFF"))
+    pen.setWidthF(max(1.0, size * 0.06))
+    painter.setPen(pen)
+    painter.setBrush(QColor(tag_color))
+    painter.drawEllipse(QRectF(size - dot_size, size - dot_size, dot_size, dot_size))
+    painter.end()
+    return QIcon(pixmap)

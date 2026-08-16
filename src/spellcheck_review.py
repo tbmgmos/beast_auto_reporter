@@ -10,24 +10,49 @@
 
 from __future__ import annotations
 
+import html
 import logging
+import re
+from typing import Optional
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QLabel, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout,
+    QCheckBox, QDialog, QDialogButtonBox, QInputDialog, QLabel, QScrollArea,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
+from src.spellcheck_service import remember_custom_correction
+
 logger = logging.getLogger(__name__)
+
+_ENTRY_DATA_ROLE = Qt.UserRole + 1
+
+
+def _highlight_word(context: str, word: str) -> str:
+    """HTML контекста маркера с выделенным словом-заменой (регистронезависимо).
+
+    Экранирует остальной текст — context приходит из CSV, доверять ему как
+    готовому HTML нельзя.
+    """
+    escaped_context = html.escape(context)
+    escaped_word = re.escape(html.escape(word))
+    return re.sub(
+        f"({escaped_word})",
+        r'<b style="color:#FF3B30;">\1</b>',
+        escaped_context,
+        flags=re.IGNORECASE,
+    )
 
 
 def group_proposals(proposals: list[dict]) -> list[dict]:
     """Сворачивает предложения по уникальной замене (было, стало):
 
-    [{"old", "new", "count", "timecodes": [str, ...]}, ...] — одна строка
-    диалога на замену, сколько бы раз она ни встречалась в маркер-листе.
-    Порядок — по первому появлению в файле.
+    [{"old", "new", "count", "timecodes": [str, ...], "contexts": [str, ...]},
+    ...] — одна строка диалога на замену, сколько бы раз она ни встречалась
+    в маркер-листе. "contexts" выровнен по индексу с "timecodes" — полный
+    текст маркера для соответствующего вхождения, нужен диалогу для показа
+    контекста выбранной замены. Порядок — по первому появлению в файле.
     """
     grouped: dict[tuple, dict] = {}
     for proposal in proposals:
@@ -37,11 +62,13 @@ def group_proposals(proposals: list[dict]) -> list[dict]:
             "new": proposal["new"],
             "count": 0,
             "timecodes": [],
+            "contexts": [],
         })
         entry["count"] += 1
         timecode = proposal.get("timecode", "")
         if timecode and timecode not in entry["timecodes"]:
             entry["timecodes"].append(timecode)
+            entry["contexts"].append(proposal.get("context", ""))
     return list(grouped.values())
 
 
@@ -62,15 +89,23 @@ class SpellcheckScanThread(QThread):
 
     finished_scan = pyqtSignal(list)  # список предложений (может быть пуст)
 
-    def __init__(self, csv_path: str):
+    def __init__(self, csv_path: str, config: Optional[dict] = None, generate_fn=None):
+        """
+        generate_fn — вызов LLM для батч-проверки орфографии (обычно
+        ConclusionGenerator._ollama_generate из главного окна), см.
+        SpellcheckService.correct_texts_batch. None — только локальный
+        алгоритм (pymorphy3/pyspellchecker).
+        """
         super().__init__()
         self.csv_path = csv_path
+        self.config = config
+        self.generate_fn = generate_fn
 
     def run(self):
         from src.csv_importer import CSVImporter
 
         try:
-            proposals = CSVImporter().scan_spelling(self.csv_path)
+            proposals = CSVImporter(config=self.config, generate_fn=self.generate_fn).scan_spelling(self.csv_path)
         except Exception as exc:
             logger.warning(f"Скан орфографии перед генерацией не удался: {exc}")
             proposals = []
@@ -105,7 +140,9 @@ class SpellcheckReviewDialog(QDialog):
         layout.addWidget(title)
 
         hint = QLabel("Отмеченные замены будут применены в отчёте. "
-                      "Имена и термины можно снять с отметки.")
+                      "Имена и термины можно снять с отметки. "
+                      "Двойной клик по замене — исправить вручную, "
+                      "исправление запомнится для будущих отчётов.")
         hint.setFont(QFont(".AppleSystemUIFont", 10))
         hint.setStyleSheet("color: #86868B;")
         hint.setWordWrap(True)
@@ -141,9 +178,37 @@ class SpellcheckReviewDialog(QDialog):
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(0, Qt.Checked)
             item.setData(0, Qt.UserRole, (entry["old"], entry["new"]))
+            item.setData(0, _ENTRY_DATA_ROLE, entry)
             self.tree.addTopLevelItem(item)
         self.tree.itemChanged.connect(self._on_item_changed)
+        self.tree.currentItemChanged.connect(self._on_current_item_changed)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.tree, 1)
+
+        context_title = QLabel("Контекст (маркер, где найдена замена)")
+        context_title.setFont(QFont(".AppleSystemUIFont", 10, QFont.DemiBold))
+        context_title.setStyleSheet("color: #86868B;")
+        layout.addWidget(context_title)
+
+        self.context_label = QLabel()
+        self.context_label.setTextFormat(Qt.RichText)
+        self.context_label.setWordWrap(True)
+        self.context_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.context_label.setFont(QFont(".AppleSystemUIFont", 11))
+        self.context_label.setStyleSheet("color: #1D1D1F; padding: 2px;")
+
+        context_scroll = QScrollArea()
+        context_scroll.setWidget(self.context_label)
+        context_scroll.setWidgetResizable(True)
+        context_scroll.setFixedHeight(90)
+        context_scroll.setStyleSheet("""
+            QScrollArea {
+                background: #F7F7F8;
+                border: 1px solid #E5E5EA;
+                border-radius: 8px;
+            }
+        """)
+        layout.addWidget(context_scroll)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Применить выбранные")
@@ -151,6 +216,9 @@ class SpellcheckReviewDialog(QDialog):
         buttons.accepted.connect(self._on_apply)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        if self.tree.topLevelItemCount() > 0:
+            self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
     def _checked_pairs(self) -> set:
         pairs = set()
@@ -174,6 +242,55 @@ class SpellcheckReviewDialog(QDialog):
         self.select_all_cb.blockSignals(True)
         self.select_all_cb.setChecked(all_checked)
         self.select_all_cb.blockSignals(False)
+
+    def _on_current_item_changed(self, current, _previous):
+        if current is None:
+            self.context_label.setText("")
+            return
+        entry = current.data(0, _ENTRY_DATA_ROLE)
+        if not entry:
+            self.context_label.setText("")
+            return
+
+        blocks = []
+        for timecode, context in zip(entry["timecodes"], entry["contexts"]):
+            if not context:
+                continue
+            blocks.append(f"<b>{html.escape(timecode)}:</b> {_highlight_word(context, entry['old'])}")
+        self.context_label.setText("<br><br>".join(blocks) or "Контекст недоступен")
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int):
+        """Ручное исправление замены — двойной клик открывает поле ввода,
+
+        предзаполненное текущим "стало". Результат сразу запоминается
+        (remember_custom_correction) — при следующем скане CSV пропавшее/
+        неверное автоисправление для этого слова заменится на введённое
+        пользователем значение (см. SpellcheckService.correct_text).
+        """
+        entry = item.data(0, _ENTRY_DATA_ROLE)
+        if not entry:
+            return
+
+        new_value, ok = QInputDialog.getText(
+            self,
+            "Исправить вручную",
+            f"Правильное исправление для «{entry['old']}»:",
+            text=entry["new"],
+        )
+        if not ok:
+            return
+        new_value = new_value.strip()
+        if not new_value or new_value == entry["new"]:
+            return
+
+        entry["new"] = new_value
+        item.setText(0, f"{entry['old']} → {new_value}")
+        item.setData(0, Qt.UserRole, (entry["old"], new_value))
+        if item is self.tree.currentItem():
+            self._on_current_item_changed(item, None)
+
+        remember_custom_correction(entry["old"], new_value)
+        logger.info(f"Ручное исправление запомнено: «{entry['old']}» → «{new_value}»")
 
     def _on_apply(self):
         self.approved_corrections = self._checked_pairs()

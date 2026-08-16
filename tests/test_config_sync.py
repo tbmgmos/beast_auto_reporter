@@ -311,6 +311,7 @@ def test_sync_all_creates_remote_root_and_aggregates_conflicts(tmp_path, monkeyp
     monkeypatch.setattr(cs, "save_uploaded_reports", lambda entries: None)
 
     client = MagicMock()
+    client.get_disk_info.return_value = {}  # без "user" -> детект аккаунта пропускается
 
     def fake_download(remote_path):
         if remote_path.endswith("cfg_a.json"):
@@ -326,3 +327,108 @@ def test_sync_all_creates_remote_root_and_aggregates_conflicts(tmp_path, monkeyp
     assert summary.conflicts == ["cfg_a:a"]
     assert summary.changed is True
     assert {r.name for r in summary.dict_results} == {"cfg_a", "cfg_b"}
+
+
+# ---------------------------------------------------------------------------
+# sync_all — смена аккаунта Диска сбрасывает base-снэпшоты
+# ---------------------------------------------------------------------------
+
+def _sync_all_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "CONFIG_DIR", tmp_path)
+    store = _FakeStore({"a": "local"})
+    monkeypatch.setattr(cs, "SYNCABLE_DICT_CONFIGS", [_config(store, "cfg_a")])
+    monkeypatch.setattr(cs, "load_uploaded_reports", lambda: [])
+    monkeypatch.setattr(cs, "save_uploaded_reports", lambda entries: None)
+    return store
+
+
+def test_sync_all_resets_base_snapshot_when_account_changes(tmp_path, monkeypatch):
+    _sync_all_setup(tmp_path, monkeypatch)
+    # base помнит другое значение "a", чем то, что сейчас локально — если
+    # base не сбросить, локальная правка + пропажа этого значения на
+    # (пустом) новом аккаунте выглядели бы как настоящий конфликт.
+    cs.save_base_snapshot("cfg_a", {"a": "stale_from_other_account"})
+    cs._save_synced_account("old_login")
+
+    client = MagicMock()
+    client.get_disk_info.return_value = {"user": {"login": "new_login"}}
+    client.download_bytes.side_effect = YandexDiskError("not found", status_code=404)
+
+    summary = cs.sync_all(client)
+
+    # base был сброшен ДО мёрджа -> "a" считается новым (не конфликтующим)
+    # значением, а не расхождением с устаревшим base старого аккаунта.
+    assert summary.conflicts == []
+    assert cs.load_base_snapshot("cfg_a") == {"a": "local"}
+    assert cs._load_synced_account() == "new_login"
+
+
+def test_sync_all_keeps_base_snapshot_when_account_unchanged(tmp_path, monkeypatch):
+    _sync_all_setup(tmp_path, monkeypatch)
+    cs.save_base_snapshot("cfg_a", {"a": "stale_value"})
+    cs._save_synced_account("same_login")
+
+    client = MagicMock()
+    client.get_disk_info.return_value = {"user": {"login": "same_login"}}
+    client.download_bytes.side_effect = YandexDiskError("not found", status_code=404)
+
+    summary = cs.sync_all(client)
+
+    # base НЕ сброшен -> и локальное, и удалённое значение разошлись с
+    # base по-разному -> обычный конфликт merge_dicts, локальное побеждает.
+    assert summary.conflicts == ["cfg_a:a"]
+    assert cs.load_base_snapshot("cfg_a") == {"a": "local"}
+
+
+def test_sync_all_keeps_base_snapshot_when_account_not_recorded_yet(tmp_path, monkeypatch):
+    _sync_all_setup(tmp_path, monkeypatch)
+    cs.save_base_snapshot("cfg_a", {"a": "stale_value"})
+
+    client = MagicMock()
+    client.get_disk_info.return_value = {"user": {"login": "current_login"}}
+    client.download_bytes.side_effect = YandexDiskError("not found", status_code=404)
+
+    summary = cs.sync_all(client)
+
+    # Обновление со старой версии ещё не имеет _account.txt. Это не смена
+    # аккаунта: существующий base участвует в merge и только затем логин
+    # записывается для будущих сравнений.
+    assert summary.conflicts == ["cfg_a:a"]
+    assert cs.load_base_snapshot("cfg_a") == {"a": "local"}
+    assert cs._load_synced_account() == "current_login"
+
+
+def test_sync_all_skips_account_tracking_when_login_unavailable(tmp_path, monkeypatch):
+    _sync_all_setup(tmp_path, monkeypatch)
+    cs.save_base_snapshot("cfg_a", {"a": "existing"})
+
+    client = MagicMock()
+    client.get_disk_info.return_value = {}  # нет "user" в ответе
+    client.download_bytes.side_effect = YandexDiskError("not found", status_code=404)
+
+    summary = cs.sync_all(client)
+
+    # логин неизвестен -> ни сброса, ни записи "текущего аккаунта" не было;
+    # base сравнивается как обычно (без специальной логики смены аккаунта).
+    assert summary.conflicts == ["cfg_a:a"]
+    assert cs._load_synced_account() is None
+
+
+def test_current_account_login_reads_user_field():
+    client = MagicMock()
+    client.get_disk_info.return_value = {"user": {"login": "vlad"}}
+    assert cs._current_account_login(client) == "vlad"
+
+
+def test_current_account_login_none_when_missing():
+    client = MagicMock()
+    client.get_disk_info.return_value = {}
+    assert cs._current_account_login(client) is None
+
+
+def test_save_and_load_synced_account_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "CONFIG_DIR", tmp_path)
+    assert cs._load_synced_account() is None
+
+    cs._save_synced_account("vlad")
+    assert cs._load_synced_account() == "vlad"

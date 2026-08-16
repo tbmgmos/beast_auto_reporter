@@ -11,7 +11,7 @@ import copy
 import json
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from src.csv_importer import Issue
 from src.ollama_service import OllamaService
@@ -22,9 +22,17 @@ logger = logging.getLogger(__name__)
 class MarkerTranslationService:
     """Подготавливает русскоязычный аналитический текст маркеров."""
 
-    def __init__(self, config: Optional[dict] = None, ollama_service: Optional[OllamaService] = None):
+    def __init__(self, config: Optional[dict] = None, generate_fn: Optional[Callable[..., str]] = None):
+        """
+        generate_fn — вызов генерации текста (prompt, *, options) -> str.
+        По умолчанию — напрямую локальная Ollama; ConclusionGenerator
+        передаёт сюда свой _ollama_generate, чтобы перевод маркеров шёл
+        через тот же провайдер (Ollama/Groq/YandexGPT), что и заключение,
+        а не был жёстко привязан к локальной модели независимо от выбора
+        пользователя в UI.
+        """
         self.config = config or {}
-        self.ollama_service = ollama_service or OllamaService(self.config)
+        self._generate_fn = generate_fn or OllamaService(self.config).generate
         self._translation_cache: Dict[str, str] = {}
 
     def prepare_issues(self, issues: List[Issue], use_llm: bool = False) -> List[Issue]:
@@ -107,8 +115,9 @@ class MarkerTranslationService:
 
     def _translate_batch_with_llm(self, texts: List[str]) -> Dict[str, str]:
         """
-        Переводит англоязычные маркеры через Ollama. Если модель недоступна
-        или вернула невалидный JSON, просто оставляем rule-based fallback.
+        Переводит англоязычные маркеры через настроенный провайдер (Ollama/
+        Groq/YandexGPT). Если модель недоступна или вернула невалидный
+        JSON, просто оставляем rule-based fallback.
         """
         pending = [text for text in texts if text and text not in self._translation_cache]
         if not pending:
@@ -133,7 +142,7 @@ class MarkerTranslationService:
 """
 
         try:
-            raw = self.ollama_service.generate(
+            raw = self._generate_fn(
                 prompt,
                 options={
                     "temperature": 0.05,

@@ -42,6 +42,25 @@ def test_imports_tab_delimited_csv(tmp_path):
     content = HEADER.replace(",", "\t") + "\n" + ROW.replace(",", "\t") + "\n"
     issues = _write_and_import(tmp_path, content)
     assert len(issues) == 1
+
+
+def test_imports_new_me_dx_opt_marker_columns(tmp_path):
+    content = (
+        "Timecode In,Timecode Out,Description,2.0 ME,5.1 ME,2.0 DX,5.1 DX,2.0 OPT,5.1 OPT\n"
+        "01:00:05:00,01:00:07:00,шум,*, ,*, , ,*\n"
+    )
+    issues = _write_and_import(tmp_path, content)
+
+    assert issues[0].audio_20_c is True
+    assert issues[0].audio_51_c is False
+    assert issues[0].me_tracks == {
+        "me_20": True,
+        "me_51": False,
+        "dx_20": True,
+        "dx_51": False,
+        "opt_20": False,
+        "opt_51": True,
+    }
     assert issues[0].timecode_in == "01:00:05:00"
 
 
@@ -61,7 +80,9 @@ def test_scan_spelling_returns_proposals_without_modifying_file(tmp_path):
     assert [(p["old"], p["new"]) for p in proposals] == [("дефкт", "дефект"), ("дефкт", "дефект")]
     assert proposals[0]["timecode"] == "01:00:05:00"
     assert proposals[0]["field"] == "Описание"
+    assert proposals[0]["context"] == "слышен дефкт"
     assert proposals[1]["timecode"] == "01:02:10:00"
+    assert proposals[1]["context"] == "снова дефкт на реплике"
     assert csv_file.read_text(encoding="utf-8") == CSV_WITH_TYPOS  # файл не тронут
 
 

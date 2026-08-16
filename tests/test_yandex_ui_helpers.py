@@ -1,7 +1,12 @@
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
-from src.yandex_ui.helpers import _relative_date_label, _relative_time_label, _stop_thread
+from src.yandex_ui.helpers import (
+    _format_disk_modified_date,
+    _relative_date_label,
+    _relative_time_label,
+    _stop_thread,
+)
 
 
 def test_stop_thread_ignores_none():
@@ -127,3 +132,31 @@ def test_relative_time_label_naive_datetime_treated_as_utc():
 
 def test_relative_time_label_malformed_returns_empty():
     assert _relative_time_label("не дата") == ""
+
+
+def test_format_disk_modified_date_empty():
+    assert _format_disk_modified_date("") == ""
+
+
+def test_format_disk_modified_date_converts_utc_to_moscow():
+    # API отдаёт modified в UTC — без приведения к Europe/Moscow (+3ч, без
+    # перехода на летнее/зимнее время) отображаемое время расходится с
+    # реальным московским на 3 часа.
+    assert _format_disk_modified_date("2026-06-10T10:00:00+00:00") == "10.06.2026 13:00"
+
+
+def test_format_disk_modified_date_keeps_already_moscow_offset():
+    assert _format_disk_modified_date("2026-06-10T13:00:00+03:00") == "10.06.2026 13:00"
+
+
+def test_format_disk_modified_date_crosses_midnight_into_next_day():
+    assert _format_disk_modified_date("2026-06-10T22:30:00+00:00") == "11.06.2026 01:30"
+
+
+def test_format_disk_modified_date_naive_datetime_left_as_is():
+    # Без смещения в строке — конвертировать не из чего, форматируем как есть.
+    assert _format_disk_modified_date("2026-06-10T10:00:00") == "10.06.2026 10:00"
+
+
+def test_format_disk_modified_date_malformed_returns_original():
+    assert _format_disk_modified_date("не дата") == "не дата"

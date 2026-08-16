@@ -24,7 +24,7 @@ class OllamaService:
         self.config = config or {}
         llm_cfg = self.config.get("llm", {})
 
-        self.model = llm_cfg.get("model", "gemma4:12b")
+        self.model = llm_cfg.get("model", "gemma4:latest")
         self.temperature = llm_cfg.get("temperature", 0.15)
         self.max_tokens = llm_cfg.get("max_tokens", 2000)
         self.timeout = llm_cfg.get("timeout", 60)
@@ -171,7 +171,14 @@ class OllamaService:
         model: Optional[str] = None,
         options: Optional[dict] = None,
     ) -> str:
-        """Генерирует текст через Ollama и возвращает поле response."""
+        """Генерирует текст через Ollama и возвращает поле response.
+
+        think=False отключает у гибридных reasoning-моделей (gemma4 и т.п.)
+        фазу внутренних "размышлений" перед ответом — для наших задач
+        (форматирование по уже заданным в промпте правилам, а не открытые
+        рассуждения) она не нужна, а по времени генерации на неё уходит
+        основная часть eval-токенов (см. `ollama run --verbose`).
+        """
         client = self.get_client()
         if client is None:
             response = self._http_request(
@@ -180,13 +187,24 @@ class OllamaService:
                     "model": model or self.model,
                     "prompt": prompt,
                     "stream": False,
+                    "think": False,
                     "options": options or {},
                 },
             )
         else:
-            response = client.generate(
-                model=model or self.model,
-                prompt=prompt,
-                options=options or {},
-            )
+            try:
+                response = client.generate(
+                    model=model or self.model,
+                    prompt=prompt,
+                    think=False,
+                    options=options or {},
+                )
+            except TypeError:
+                # Установленный SDK старее и не знает параметр think —
+                # просто теряем ускорение, не падаем.
+                response = client.generate(
+                    model=model or self.model,
+                    prompt=prompt,
+                    options=options or {},
+                )
         return response["response"].strip()

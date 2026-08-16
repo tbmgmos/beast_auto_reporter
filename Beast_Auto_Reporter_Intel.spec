@@ -140,8 +140,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleName': 'Beast Auto Reporter',
         'CFBundleDisplayName': 'Beast Auto Reporter',
-        'CFBundleShortVersionString': '2.0.0',
-        'CFBundleVersion': '2.0.0',
+        'CFBundleShortVersionString': '2.1.3',
+        'CFBundleVersion': '2.1.3',
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '10.15',
         'NSRequiresAquaSystemAppearance': False,

@@ -41,7 +41,7 @@ detection:
 # LLM Integration
 llm:
   # Model selection
-  model: "gemma4:12b"  # Options: gemma4:12b (recommended), llama3.2, mistral, qwen2.5
+  model: "gemma4:latest"  # Options: gemma4:latest (recommended, installed locally), llama3.2, mistral, qwen2.5
 
   # Generation parameters
   temperature: 0.15  # Low temperature for consistent, predictable output

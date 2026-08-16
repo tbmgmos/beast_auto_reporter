@@ -3,6 +3,8 @@ Beast Auto Reporter v2 beta - macOS Style
 Нативный macOS-стиль интерфейс с поддержкой перетаскивания файлов
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import logging
@@ -25,7 +27,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.3"
 
 
 def load_app_config() -> dict:
@@ -38,6 +40,51 @@ def load_app_config() -> dict:
     except Exception as exc:
         logging.getLogger(__name__).warning(f"Не удалось загрузить config/settings.yaml: {exc}")
     return {}
+
+
+# Модели, между которыми пользователь может переключаться из UI (клик по
+# названию модели рядом с индикатором AI-генерации), без правки
+# config/settings.yaml. (provider, model_tag, подпись_для_меню).
+# Groq — облачный вариант для больших маркер-листов, где локальной gemma4
+# не хватает стабильности; по договору Groq не использует входы/выходы API
+# для обучения моделей ни на каком тарифе (см. обсуждение в этой сессии).
+# YandexGPT — альтернатива на случай, если Groq недоступен без VPN в регионе
+# (типично для РФ): российский сервис, работает напрямую, данные — на
+# серверах в России; на тарифе Pro (не Lite) не используются для обучения.
+# GigaChat — тоже без VPN, и вдобавок бесплатен (1 млн токенов/мес на тарифе
+# для физлиц GIGACHAT_API_PERS), в отличие от YandexGPT, платного с первого
+# токена; ценой сложности OAuth2-авторизации и сертификата НУЦ Минцифры.
+AVAILABLE_LLM_MODELS = [
+    ("ollama", "gemma4:latest", "gemma4:latest — точнее, ~40 сек"),
+    ("ollama", "gemma4:e2b-it-qat", "gemma4:e2b-it-qat — быстрее, ~2B"),
+    ("groq", "llama-3.3-70b-versatile", "Groq: Llama 3.3 70B — облако, нужен VPN в РФ"),
+    ("yandexgpt", "yandexgpt/latest", "YandexGPT Pro — облако, без VPN"),
+    ("gigachat", "GigaChat", "GigaChat — облако, без VPN, бесплатно (1 млн ток/мес)"),
+]
+
+LLM_MODEL_PRESENTATION = {
+    ("ollama", "gemma4:latest"): (
+        "Gemma 4 · Точная",
+        "Локально · лучшее качество · около 40 секунд",
+    ),
+    ("ollama", "gemma4:e2b-it-qat"): (
+        "Gemma 4 · Быстрая",
+        "Локально · быстрее · компактная модель 2B",
+    ),
+    ("groq", "llama-3.3-70b-versatile"): (
+        "Groq · Llama 3.3 70B",
+        "Облако · для больших списков · нужен VPN в РФ",
+    ),
+    ("yandexgpt", "yandexgpt/latest"): (
+        "YandexGPT Pro",
+        "Облако · работает без VPN",
+    ),
+    ("gigachat", "GigaChat"): (
+        "GigaChat",
+        "Облако · без VPN · бесплатно до 1 млн токенов/мес.",
+    ),
+}
+
 
 
 def _maybe_add_user_site() -> None:
@@ -157,33 +204,29 @@ def _require_module(module_name: str, install_hint: str) -> None:
 # Проверяем наличие зависимостей до импорта модулей, которые их используют
 # В замороженном приложении все зависимости уже внутри бандла
 if not getattr(sys, 'frozen', False):
-    _require_module("docx", "Установите зависимости: pip install -r requirements_pinned.txt")
     _require_module("PyQt5", "Установите зависимости: pip install -r requirements_pinned.txt")
-    _require_module("fitz", "Установите зависимости: pip install -r requirements_pinned.txt")
 
-from docx import Document
-from docx.shared import Cm
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QRadioButton, QTextEdit, QTextBrowser, QProgressBar,
     QCheckBox, QListWidget, QListWidgetItem, QFrame, QMessageBox, QFileDialog,
     QGroupBox, QScrollArea, QSizePolicy, QGraphicsDropShadowEffect,
-    QDialog, QDialogButtonBox, QFormLayout, QPlainTextEdit, QComboBox,
+    QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QPlainTextEdit, QComboBox,
     QTableWidget, QTableWidgetItem, QProgressDialog, QLineEdit,
-    QTreeWidget, QTreeWidgetItem, QInputDialog, QCompleter, QAbstractButton
+    QTreeWidget, QTreeWidgetItem, QInputDialog, QCompleter, QAbstractButton, QMenu,
+    QAction, QButtonGroup,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QEventLoop, QMetaObject, Q_ARG, QTimer, QRectF, QSize, QObject, QEvent, QFileSystemWatcher
-from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor, QIcon, QPainter, QPainterPath, QBrush, QPen, QPixmap, QRadialGradient, QImage
+from PyQt5.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor, QIcon, QPainter, QPainterPath, QBrush, QPen, QPixmap, QRadialGradient, QImage, QKeySequence
 
-import fitz
-
-from src.exact_report_generator import ExactReportGenerator
 from src.technical_info_extractor import TechnicalInfoExtractor, format_fps
+from src.me_tracks import (
+    detect_me_track_variant, dynamic_me_track_from_key, infer_me_track_variant,
+    me_assignment_key, me_assignment_label, me_track_key, me_track_label,
+    parse_me_assignment_label,
+)
 from src.csv_importer import CSVImporter
-from src.pdf_extractor import PDFExtractor
 from src.conclusion_generator import ConclusionGenerator
-from src.parameter_exporter import ParameterExporter
 from src.audio_metrics import parse_ebur128_output, run_ffmpeg_ebur128, measure_true_peak_precise
 from src.update_checker import (
     check_for_update,
@@ -192,6 +235,40 @@ from src.update_checker import (
     save_skipped_version,
 )
 from src.icons import make_icon, make_icon_pixmap
+
+# Тяжёлые DOCX/PDF-модули загружаются после показа главного окна. В .app это
+# заметно сокращает холодный путь до первого кадра, не меняя состав бандла:
+# PyInstaller всё равно видит импорты внутри функции.
+Document = Cm = WD_ALIGN_PARAGRAPH = WD_BREAK = fitz = None
+ExactReportGenerator = PDFExtractor = ParameterExporter = None
+
+
+def _ensure_document_dependencies() -> None:
+    global Document, Cm, WD_ALIGN_PARAGRAPH, WD_BREAK, fitz
+    global ExactReportGenerator, PDFExtractor, ParameterExporter
+
+    if ExactReportGenerator is not None:
+        return
+    if not getattr(sys, "frozen", False):
+        _require_module("docx", "Установите зависимости: pip install -r requirements_pinned.txt")
+        _require_module("fitz", "Установите зависимости: pip install -r requirements_pinned.txt")
+
+    from docx import Document as _Document
+    from docx.shared import Cm as _Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as _WD_ALIGN_PARAGRAPH, WD_BREAK as _WD_BREAK
+    import fitz as _fitz
+    from src.exact_report_generator import ExactReportGenerator as _ExactReportGenerator
+    from src.pdf_extractor import PDFExtractor as _PDFExtractor
+    from src.parameter_exporter import ParameterExporter as _ParameterExporter
+
+    Document = _Document
+    Cm = _Cm
+    WD_ALIGN_PARAGRAPH = _WD_ALIGN_PARAGRAPH
+    WD_BREAK = _WD_BREAK
+    fitz = _fitz
+    ExactReportGenerator = _ExactReportGenerator
+    PDFExtractor = _PDFExtractor
+    ParameterExporter = _ParameterExporter
 
 # Настройка логирования
 logging.basicConfig(
@@ -213,6 +290,7 @@ REPORT_TYPE_SCORE_PATTERNS = {
     ),
     "me": (
         (re.compile(r"(?:^|\s)(?:me|mne|m\s*e|m\s*n\s*e|m\s+and\s+e)(?:\s|$)", re.IGNORECASE), 8, "me/mne"),
+        (re.compile(r"(?:^|\s|\d)(?:me|mne)(?=\d|\s|$)", re.IGNORECASE), 8, "me/mne рядом с номером"),
         (re.compile(r"(?:^|\s)music\s+and\s+effects?(?:\s|$)", re.IGNORECASE), 10, "music and effects"),
     ),
     "standard": (
@@ -269,6 +347,25 @@ def detect_channel_from_name(name: str):
         return "51"
     if _CHANNEL_20_RE.search(name_lower):
         return "20"
+    return None
+
+
+_DCP_SPLIT_CHANNEL_PATTERNS = (
+    ("ls", re.compile(r"(?:^|[^a-z0-9])(?:ls|sl|left[ _.-]*surround)(?:[^a-z0-9]|$)", re.IGNORECASE)),
+    ("rs", re.compile(r"(?:^|[^a-z0-9])(?:rs|sr|right[ _.-]*surround)(?:[^a-z0-9]|$)", re.IGNORECASE)),
+    ("lfe", re.compile(r"(?:^|[^a-z0-9])(?:lfe|sub)(?:[^a-z0-9]|$)", re.IGNORECASE)),
+    ("c", re.compile(r"(?:^|[^a-z0-9])(?:c|center|centre)(?:[^a-z0-9]|$)", re.IGNORECASE)),
+    ("l", re.compile(r"(?:^|[^a-z0-9])(?:l|left)(?:[^a-z0-9]|$)", re.IGNORECASE)),
+    ("r", re.compile(r"(?:^|[^a-z0-9])(?:r|right)(?:[^a-z0-9]|$)", re.IGNORECASE)),
+)
+
+
+def detect_dcp_split_channel(name: str):
+    """Return the canonical 5.1 split channel encoded in a mono filename."""
+    stem = Path(name).stem
+    for channel, pattern in _DCP_SPLIT_CHANNEL_PATTERNS:
+        if pattern.search(stem):
+            return channel
     return None
 
 
@@ -348,6 +445,50 @@ def sanitize_base_name(name: str) -> str:
     return base or "отчет"
 
 
+def select_report_base_name(files_data: dict, report_type: str) -> str:
+    """Выбирает исходник, по которому называются папка и файл отчёта.
+
+    Для M&E дорожки DX/OPT являются дополнительными стемами и не должны
+    определять имя отчёта, даже если были добавлены раньше основного микса.
+    """
+    audio_files = list(files_data.get("audio") or [])
+    video_files = list(files_data.get("video") or [])
+    csv_files = list(files_data.get("csv") or [])
+    pdf_files = list(files_data.get("pdf") or [])
+
+    if report_type in {"me", "me_ours"}:
+        assignments = {
+            str(path): str(key)
+            for path, key in (files_data.get("me_track_assignments") or {}).items()
+        }
+
+        # Ручное назначение надёжнее имени: основной M&E использует обычные
+        # слоты, тогда как дополнительные DX/OPT — ключи audio_me_*.
+        for path in audio_files:
+            assigned_key = assignments.get(str(path), "")
+            if re.fullmatch(r"audio_(?:20|51)_(?:c|uc)", assigned_key):
+                return sanitize_base_name(path)
+
+        # Автоматический вариант: ищем M&E независимо от порядка исходников.
+        for path in audio_files:
+            kind, _variant, _confidence = infer_me_track_variant(str(path))
+            if kind == "me":
+                return sanitize_base_name(path)
+
+        # Неизвестная дорожка может оказаться основным миксом до ручного
+        # назначения. Явные DX/OPT здесь намеренно не выбираются.
+        for path in audio_files:
+            kind, _variant, _confidence = infer_me_track_variant(str(path))
+            if kind is None and assignments.get(str(path)) != "__ignore__":
+                return sanitize_base_name(path)
+
+        fallback_files = pdf_files + video_files + csv_files
+    else:
+        fallback_files = audio_files + video_files + csv_files + pdf_files
+
+    return sanitize_base_name(fallback_files[0]) if fallback_files else "отчет"
+
+
 def normalize_stem(name: str) -> str:
     stem = Path(name).stem.lower()
     stem = re.sub(r'[^a-z0-9]+', '_', stem)
@@ -355,16 +496,29 @@ def normalize_stem(name: str) -> str:
     return stem
 
 
+GENERIC_BASE_NAMES = {
+    "untitled", "unnamed", "noname", "no_name", "new_project",
+    "project", "без_названия", "безымянный",
+}
+
+
 def _matching_base_name(name: str) -> str:
     """Базовое имя для сравнения файлов (без расширения, маркеров каналов/цензуры/типа).
 
     В отличие от sanitize_base_name возвращает нормализованную (lowercase, _) форму,
     подходящую для сопоставления audio / pdf / csv между собой.
+
+    Родовые заглушки (напр. "untitled" — имя маркеров по умолчанию при
+    экспорте CSV из Nuendo без переименования) не несут информации о
+    материале, поэтому приводятся к пустой строке и не учитываются при
+    проверке на несоответствие (см. `validate_file_consistency`).
     """
     base = sanitize_base_name(name).lower()
     base = re.sub(r'(?i)[ _\.-]+(audio|video|pdf|csv|markers?|маркер[ыа]?)(?=$|[ _\.-])', '', base)
     base = re.sub(r'[^a-z0-9а-яё]+', '_', base, flags=re.IGNORECASE)
     base = re.sub(r'_+', '_', base).strip('_')
+    if base in GENERIC_BASE_NAMES:
+        return ''
     return base
 
 
@@ -374,10 +528,13 @@ from src import yandex_oauth  # noqa: E402
 from src.spellcheck_review import SpellcheckReviewDialog, SpellcheckScanThread  # noqa: E402
 from src.yandex_ui.oauth_dialog import YandexOAuthDialog  # noqa: E402
 from src.file_matching import _levenshtein, _bases_match  # noqa: E402
-from src.report_filename import parse_report_filename  # noqa: E402
+from src.marker_identity import enrich_marker_csv  # noqa: E402
+from src.marker_registry import apply_ambiguity_choices, chain_statistics  # noqa: E402
+from src.report_filename import categorize_variant, parse_report_filename  # noqa: E402
 from src.report_uploader import (  # noqa: E402
-    save_queue_state, load_queue_state, REPORTS_ROOT,
-    fallback_series_key, remember_series_alias, remember_uploaded_report, resolve_manual_pick_target,
+    save_queue_state, load_queue_state, NPR_ALIASES_FILE, REPORTS_ROOT,
+    fallback_series_key, group_versions_by_category, remember_series_alias, remember_uploaded_report,
+    resolve_manual_pick_target,
 )
 from src.yandex_ui.helpers import (  # noqa: E402
     _stop_thread, _quick_look_preview, _format_disk_modified_date, _send_system_notification,
@@ -385,15 +542,17 @@ from src.yandex_ui.helpers import (  # noqa: E402
 )
 from src.yandex_ui.threads import (  # noqa: E402
     _FallbackFolderFindThread, _IntegrityCheckThread, _MkdirThread,
-    YandexDiskFindVersionsThread, YandexDiskFolderVersionsThread,
+    YandexCombinedFindThread, YandexDiskFindVersionsThread, YandexDiskFolderVersionsThread,
     YandexDiskCompareThread, YandexDiskUploadThread,
     YandexDiskTokenCheckThread, NprUploadThread,
+    MarkerIdentityPrepareThread, MarkerIdentityConflictResolveThread,
 )
 from src.yandex_ui.edit_sync import YandexEditSyncController  # noqa: E402
 from src.yandex_ui.config_sync_controller import ConfigSyncController  # noqa: E402
 from src.yandex_ui.dialogs import (  # noqa: E402
     YandexUploadDiffDialog, YandexVersionPickerDialog, YandexFolderPickerDialog,
-    YandexDiskBrowserDialog, YandexUploadQueueDialog, SeriesAliasesDialog,
+    CombinedFolderPickerDialog, YandexDiskBrowserDialog, YandexUploadQueueDialog, SeriesAliasesDialog,
+    MarkerIdentityResolutionDialog, MarkerRegistryConflictDialog, MarkerRegistryStatsDialog,
 )
 from src.yandex_ui.queue_manager import YandexUploadQueueManager  # noqa: E402
 
@@ -526,7 +685,7 @@ def detect_report_type_from_files(files: list):
         }
 
     ranked = sorted(
-        aggregate_scores.items(),
+        special_scores.items(),
         key=lambda item: (-item[1], REPORT_TYPE_PRIORITY.index(item[0])),
     )
     best_type, best_score = ranked[0]
@@ -547,6 +706,9 @@ def detect_report_type_from_files(files: list):
             "leaders": (best_type, second_type),
         }
 
+    # Явный специальный маркер (ME/M&E/DCP) важнее общих слов вроде
+    # main, mix, master или AD. Иначе имя наподобие *_ME_AD_* получает
+    # равные баллы и без необходимости отправляет пользователя на ручной выбор.
     return best_type, {
         "reason": "scored_match",
         "scores": aggregate_scores,
@@ -1068,7 +1230,7 @@ class DropZone(QFrame):
     folder_dropped = pyqtSignal(str)  # путь папки готового отчёта — для отправки на Яндекс.Диск
 
     _STATE_COPY = {
-        "sleeping": ("Перетащите файлы сюда", "аудио, видео, CSV, PDF", "#3D3D3D", "#86868B", "rgba(0, 0, 0, 0.015)", "1.5px dashed rgba(0, 0, 0, 0.13)"),
+        "sleeping": ("Перетащите файлы сюда", "аудио, видео, CSV, PDF, NPR", "#3D3D3D", "#86868B", "rgba(0, 0, 0, 0.015)", "1.5px dashed rgba(0, 0, 0, 0.13)"),
         "hover": ("Отпустите файлы", "кот уже проснулся и ждёт загрузку", "#007AFF", "#6B7280", "rgba(0, 122, 255, 0.05)", "2px dashed rgba(0, 122, 255, 0.5)"),
         "ready": ("Готов к работе", "Нажмите «Создать» для генерации отчёта", "#1D1D1F", "#86868B", "rgba(0, 122, 255, 0.02)", "1.5px dashed rgba(0, 122, 255, 0.24)"),
         "working": ("Обрабатываю...", "Проверяю файлы и собираю отчёт", "#007AFF", "#6B7280", "rgba(0, 122, 255, 0.035)", "1.5px dashed rgba(0, 122, 255, 0.32)"),
@@ -1233,6 +1395,7 @@ class PdfOnlyDocxBuilder:
 
     @staticmethod
     def build(output_path: Path, pdf_paths: list) -> None:
+        _ensure_document_dependencies()
         doc = Document()
 
         # A3 landscape как в основном отчете
@@ -1357,6 +1520,12 @@ PREVIEW_SLOT_LABELS = {
     "audio_20_uc": "Аудио 2.0 U",
     "audio_51_c": "Аудио 5.1 C",
     "audio_51_uc": "Аудио 5.1 U",
+    "audio_dcp_split_l": "DCP Left",
+    "audio_dcp_split_r": "DCP Right",
+    "audio_dcp_split_c": "DCP Center",
+    "audio_dcp_split_lfe": "DCP LFE",
+    "audio_dcp_split_ls": "DCP Left surround",
+    "audio_dcp_split_rs": "DCP Right surround",
     "pdf_20_c": "PDF 2.0 C",
     "pdf_20_uc": "PDF 2.0 U",
     "pdf_20": "PDF 2.0",
@@ -1373,6 +1542,12 @@ PREVIEW_SLOT_ORDER = {
     "audio_20_uc": 41,
     "audio_51_c": 42,
     "audio_51_uc": 43,
+    "audio_dcp_split_l": 44,
+    "audio_dcp_split_r": 45,
+    "audio_dcp_split_c": 46,
+    "audio_dcp_split_lfe": 47,
+    "audio_dcp_split_ls": 48,
+    "audio_dcp_split_rs": 49,
     "pdf_20_c": 50,
     "pdf_20_uc": 51,
     "pdf_20": 52,
@@ -1383,7 +1558,14 @@ PREVIEW_SLOT_ORDER = {
 
 
 def preview_slot_label(slot_name: str, report_type: str) -> str:
+    if report_type == "dcp" and slot_name == "audio_51_c":
+        return "51 DCP"
     if report_type in {"me", "me_ours"}:
+        parsed = dynamic_me_track_from_key(slot_name)
+        if parsed:
+            _media, kind, variant, channel = parsed
+            media_label = "Аудио" if slot_name.startswith("audio_") else "PDF"
+            return f"{media_label} {me_track_label(kind, channel, variant)}"
         me_labels = {
             "audio_20_c": "Аудио 2.0",
             "audio_20_uc": "Аудио 2.0",
@@ -1397,6 +1579,70 @@ def preview_slot_label(slot_name: str, report_type: str) -> str:
         if slot_name in me_labels:
             return me_labels[slot_name]
     return PREVIEW_SLOT_LABELS.get(slot_name, slot_name)
+
+
+def collect_me_assignment_candidates(files_data: dict) -> list:
+    """Готовит WAV ME/DX/OPT к автоматическому или ручному распределению.
+
+    PDF в этом workflow относятся только к основным версиям ME и потому не
+    участвуют в назначении DX/OPT.
+    """
+    existing = {
+        str(path): key
+        for path, key in (files_data.get("me_track_assignments") or {}).items()
+    }
+    tech_extractor = TechnicalInfoExtractor()
+    candidates = []
+
+    for media, group in (("audio", "audio"),):
+        for path_value in files_data.get(group, []):
+            path = str(path_value)
+            name = Path(path).name
+            channel = detect_channel_from_name(name)
+            try:
+                if media == "audio":
+                    data = tech_extractor.extract_audio_info(path) or {}
+                    channels = int(float(data.get("channels") or 0))
+                    metadata_channel = "51" if channels >= 6 else ("20" if channels == 2 else None)
+                channel = metadata_channel or channel
+            except Exception as exc:
+                logger.warning("Не удалось прочитать канальность %s: %s", name, exc)
+
+            kind, variant, confidence = infer_me_track_variant(name)
+            suggested_key = existing.get(path)
+            if suggested_key == "__ignore__":
+                suggested_key = None
+            elif not suggested_key and kind and channel:
+                suggested_key = me_assignment_key(kind, channel, media, variant)
+
+            candidates.append({
+                "path": path,
+                "name": name,
+                "media": media,
+                "channel": channel,
+                "kind": kind,
+                "variant": variant,
+                "confidence": confidence,
+                "suggested_key": suggested_key,
+                "existing_key": existing.get(path),
+                "needs_review": (
+                    path not in existing
+                    and (confidence != "strong" or not channel or not suggested_key)
+                ),
+            })
+
+    occupied = {}
+    for item in candidates:
+        key = item.get("suggested_key")
+        if not key:
+            continue
+        collision_key = (item["media"], key)
+        if collision_key in occupied:
+            item["needs_review"] = True
+            occupied[collision_key]["needs_review"] = True
+        else:
+            occupied[collision_key] = item
+    return candidates
 
 
 def filter_preview_warnings(messages: list, report_type: str) -> list:
@@ -1602,12 +1848,17 @@ def preview_duration_issues(record: dict, duration_context: dict) -> list:
 
 def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -> dict:
     """Собирает предпросмотр распознавания файлов и параметров до генерации отчета."""
+    _ensure_document_dependencies()
     snapshot = {
         'audio': list(files_data.get('audio', [])),
         'video': list(files_data.get('video', [])),
         'csv': list(files_data.get('csv', [])),
         'pdf': list(files_data.get('pdf', [])),
         'params': list(files_data.get('params', [])),
+    }
+    me_assignments = {
+        str(path): key
+        for path, key in (files_data.get("me_track_assignments") or {}).items()
     }
     recognized = []
     warnings = []
@@ -1739,9 +1990,30 @@ def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -
         cens_state = detect_cens_state(filename)
         suffix = "uc" if cens_state == "uc" else "c"
         channel_final = channel_meta or channel_hint
-        slot = f"audio_{channel_final}_{suffix}" if channel_final in {"20", "51"} else None
+        dcp_split_channel = (
+            detect_dcp_split_channel(filename)
+            if report_type == "dcp" and channels == 1
+            else None
+        )
+        if dcp_split_channel:
+            slot = f"audio_dcp_split_{dcp_split_channel}"
+        elif report_type == "dcp" and channel_final == "51":
+            slot = "audio_51_c"
+        else:
+            slot = f"audio_{channel_final}_{suffix}" if channel_final in {"20", "51"} else None
+        if slot and report_type in {"me", "me_ours"}:
+            me_kind, me_variant = detect_me_track_variant(filename)
+            if me_kind != "me":
+                slot = me_track_key(me_kind, channel_final, "audio", me_variant)
 
-        if cens_state is None:
+        manual_slot = me_assignments.get(str(audio_file))
+        if manual_slot == "__ignore__":
+            slot = None
+            item_warnings.append("Файл исключён вручную из ME-отчёта.")
+        elif manual_slot:
+            slot = manual_slot
+
+        if cens_state is None and report_type != "dcp":
             item_warnings.append("В имени нет CENS/UNCENS, будет использован cens-слот по умолчанию.")
         if channel_hint and channel_meta and channel_hint != channel_meta:
             item_warnings.append(f"Имя говорит {channel_hint}, а метаданные файла говорят {channel_meta}.")
@@ -1820,10 +2092,15 @@ def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -
         pdf_data['source_pdf'] = Path(pdf_file).name
 
         matched_audio_key = audio_key_by_stem.get(normalize_stem(pdf_file))
+        if matched_audio_key and dynamic_me_track_from_key(matched_audio_key):
+            # DX/OPT не имеют собственных PDF: даже совпавшее имя не должно
+            # уводить PDF из основной 2.0/5.1 ME-строки.
+            matched_audio_key = None
         if matched_audio_key:
             slot = matched_audio_key.replace('audio_', 'pdf_')
         else:
             channel_hint = detect_channel_from_name(filename)
+            slot = None
             cens_state = detect_cens_state(filename)
             if channel_hint == "51" and cens_state == "c":
                 slot = "pdf_51_c"
@@ -1849,13 +2126,17 @@ def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -
                 slot = 'pdf_20_c' if cens_state == "c" else ('pdf_20_uc' if cens_state == "uc" else 'pdf_20')
 
         if slot and slot in used_pdf_slots:
-            generic_slot = 'pdf_20' if '20' in slot else 'pdf_51'
-            item_warnings.append(f"Слот {slot} уже занят, этот PDF уйдет в {generic_slot}.")
-            if generic_slot not in used_pdf_slots:
-                slot = generic_slot
-            else:
-                item_warnings.append(f"Слот {generic_slot} тоже уже занят, нужен ручной выбор.")
+            if dynamic_me_track_from_key(slot):
+                item_warnings.append(f"Слот {slot} уже занят; проверьте уникальную букву OPT в имени файла.")
                 slot = None
+            else:
+                generic_slot = 'pdf_20' if '20' in slot else 'pdf_51'
+                item_warnings.append(f"Слот {slot} уже занят, этот PDF уйдет в {generic_slot}.")
+                if generic_slot not in used_pdf_slots:
+                    slot = generic_slot
+                else:
+                    item_warnings.append(f"Слот {generic_slot} тоже уже занят, нужен ручной выбор.")
+                    slot = None
         if slot:
             used_pdf_slots[slot] = Path(pdf_file).name
         else:
@@ -1942,6 +2223,8 @@ def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -
     slot_summary = {key: None for key in (
         'video', 'csv', 'params',
         'audio_20_c', 'audio_20_uc', 'audio_51_c', 'audio_51_uc',
+        'audio_dcp_split_l', 'audio_dcp_split_r', 'audio_dcp_split_c',
+        'audio_dcp_split_lfe', 'audio_dcp_split_ls', 'audio_dcp_split_rs',
         'pdf_20', 'pdf_51', 'pdf_20_c', 'pdf_20_uc', 'pdf_51_c', 'pdf_51_uc',
     )}
     for item in recognized:
@@ -2168,11 +2451,21 @@ class SettingsDialog(QDialog):
             "auto_detect_report_type": False,
             "check_file_consistency": True,
             "auto_reset_after_done": True,
+            "confirm_exit": True,
             "extended_analysis_enabled": False,
             "yandex_disk_token": "",
             "yandex_auto_upload": False,
             "yandex_disk_roots": [REPORTS_ROOT],
             "yandex_npr_root": "",
+            "yandex_shared_root": "/SHARED",
+            "yandex_tiflo_root": "/ПРОКТЫ TIFLO",
+            "llm_model": "",
+            "llm_provider": "",
+            "llm_groq_model": "",
+            "llm_yandexgpt_model": "",
+            "llm_gigachat_model": "",
+            "llm_auto_select_enabled": True,
+            "llm_spellcheck_enabled": True,
         }
 
         if cls.CONFIG_FILE.exists():
@@ -2276,6 +2569,23 @@ class SettingsDialog(QDialog):
         """
         return cls.load_settings().get("yandex_npr_root", "").strip().rstrip("/")
 
+    @classmethod
+    def _get_optional_yandex_root(cls, key: str) -> str:
+        root = str(cls.load_settings().get(key, "") or "").strip().rstrip("/")
+        if root and not root.startswith("/"):
+            root = f"/{root}"
+        return root
+
+    @classmethod
+    def get_yandex_shared_root(cls) -> str:
+        """Корень вкладки Shared в браузере Яндекс.Диска."""
+        return cls._get_optional_yandex_root("yandex_shared_root")
+
+    @classmethod
+    def get_yandex_tiflo_root(cls) -> str:
+        """Корень вкладки Tiflo в браузере Яндекс.Диска."""
+        return cls._get_optional_yandex_root("yandex_tiflo_root")
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Настройки")
@@ -2294,8 +2604,8 @@ class SettingsDialog(QDialog):
         self._settings = self.load_settings()
 
         layout = QVBoxLayout()
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(8)
+        layout.setContentsMargins(20, 14, 20, 14)
 
         # Заголовок секции
         section_label = QLabel("Настройки")
@@ -2331,13 +2641,6 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(self.delete_sources_cb)
 
-        hint = QLabel("PDF, CSV и файлы параметров будут удалены\nиз исходной папки после копирования.")
-        hint.setFont(QFont(".AppleSystemUIFont", 10))
-        hint.setStyleSheet("color: #86868B; margin-left: 24px;")
-        layout.addWidget(hint)
-
-        layout.addSpacing(8)
-
         # Чекбокс проверки соответствия файлов
         self.check_files_cb = QCheckBox("Проверять соответствие файлов")
         self.check_files_cb.setFont(QFont(".AppleSystemUIFont", 12))
@@ -2350,13 +2653,6 @@ class SettingsDialog(QDialog):
             "относятся к одному и тому же материалу (по имени файла)."
         )
         layout.addWidget(self.check_files_cb)
-
-        check_hint = QLabel("Если имена аудио, PDF или CSV различаются,\nперед генерацией появится предупреждение.")
-        check_hint.setFont(QFont(".AppleSystemUIFont", 10))
-        check_hint.setStyleSheet("color: #86868B; margin-left: 24px;")
-        layout.addWidget(check_hint)
-
-        layout.addSpacing(8)
 
         # Чекбокс автоготовности после завершения отчёта
         self.auto_reset_cb = QCheckBox("Готовность к новому отчёту через 5 сек")
@@ -2371,12 +2667,17 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(self.auto_reset_cb)
 
-        auto_reset_hint = QLabel("Файлы очищаются автоматически, чтобы можно\nбыло сразу закинуть следующие.")
-        auto_reset_hint.setFont(QFont(".AppleSystemUIFont", 10))
-        auto_reset_hint.setStyleSheet("color: #86868B; margin-left: 24px;")
-        layout.addWidget(auto_reset_hint)
-
-        layout.addSpacing(8)
+        self.confirm_exit_cb = QCheckBox("Спрашивать подтверждение при выходе")
+        self.confirm_exit_cb.setFont(QFont(".AppleSystemUIFont", 12))
+        self.confirm_exit_cb.setStyleSheet(checkbox_style)
+        self.confirm_exit_cb.setIcon(make_icon("x", "#86868B", 14))
+        self.confirm_exit_cb.setIconSize(QSize(14, 14))
+        self.confirm_exit_cb.setChecked(self._settings.get("confirm_exit", True))
+        self.confirm_exit_cb.setToolTip(
+            "Если выключить, обычное закрытие окна и ⌘Q завершат приложение сразу.\n"
+            "Предупреждение во время генерации отчёта останется включённым."
+        )
+        layout.addWidget(self.confirm_exit_cb)
 
         # Чекбокс расширенного анализа (PyLoudNorm)
         self.extended_analysis_cb = QCheckBox("Расширенный анализ")
@@ -2392,207 +2693,140 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(self.extended_analysis_cb)
 
-        extended_analysis_hint = QLabel("Дополнительные данные громкости,\nно отчёт формируется дольше.")
-        extended_analysis_hint.setFont(QFont(".AppleSystemUIFont", 10))
-        extended_analysis_hint.setStyleSheet("color: #86868B; margin-left: 24px;")
-        layout.addWidget(extended_analysis_hint)
+        # Чекбокс LLM для проверки опечаток в маркер-листах
+        self.llm_spellcheck_cb = QCheckBox("LLM для проверки опечаток")
+        self.llm_spellcheck_cb.setFont(QFont(".AppleSystemUIFont", 12))
+        self.llm_spellcheck_cb.setStyleSheet(checkbox_style)
+        self.llm_spellcheck_cb.setIcon(make_icon("gear", "#86868B", 14))
+        self.llm_spellcheck_cb.setIconSize(QSize(14, 14))
+        self.llm_spellcheck_cb.setChecked(self._settings.get("llm_spellcheck_enabled", True))
+        self.llm_spellcheck_cb.setToolTip(
+            "Искать опечатки в маркер-листе через выбранного LLM-провайдера\n"
+            "(Ollama/Groq/YandexGPT/GigaChat — см. переключатель модели).\n"
+            "Выключено — только локальный алгоритм (pymorphy3/pyspellchecker),\n"
+            "без обращения в сеть."
+        )
+        layout.addWidget(self.llm_spellcheck_cb)
 
-        layout.addSpacing(8)
+        compact_line_style = """
+            QLineEdit {
+                background: #F5F5F7; border: 1px solid #D2D2D7;
+                border-radius: 7px; padding: 5px 9px; color: #1D1D1F;
+            }
+            QLineEdit:focus { border: 1px solid #007AFF; }
+        """
+        compact_button_style = """
+            QPushButton {
+                background: #FFFFFF; color: #007AFF; border: 1px solid #D2D2D7;
+                border-radius: 7px; padding: 5px 10px;
+            }
+            QPushButton:hover { background: #F5F5F7; }
+        """
 
-        # Токен Яндекс.Диска
-        yandex_label = QLabel("Токен Яндекс.Диска")
-        yandex_label.setFont(QFont(".AppleSystemUIFont", 12))
+        yandex_label = QLabel("Яндекс.Диск")
+        yandex_label.setFont(QFont(".AppleSystemUIFont", 12, QFont.DemiBold))
         yandex_label.setStyleSheet("color: #1D1D1F;")
         layout.addWidget(yandex_label)
 
+        token_row = QHBoxLayout()
+        token_row.setSpacing(6)
         self.yandex_token_edit = QLineEdit(self.get_yandex_token())
         self.yandex_token_edit.setEchoMode(QLineEdit.Password)
-        self.yandex_token_edit.setPlaceholderText("OAuth-токен для отправки отчётов на Диск")
-        self.yandex_token_edit.setFont(QFont(".AppleSystemUIFont", 12))
-        self.yandex_token_edit.setStyleSheet("""
-            QLineEdit {
-                background: #F5F5F7;
-                border: 1px solid #D2D2D7;
-                border-radius: 8px;
-                padding: 6px 10px;
-                color: #1D1D1F;
-            }
-            QLineEdit:focus { border: 1px solid #007AFF; }
-        """)
+        self.yandex_token_edit.setPlaceholderText("OAuth-токен")
+        self.yandex_token_edit.setFont(QFont(".AppleSystemUIFont", 11))
+        self.yandex_token_edit.setStyleSheet(compact_line_style)
         self.yandex_token_edit.setToolTip(
-            "OAuth-токен приложения на oauth.yandex.ru с правами disk:write/disk:read.\n"
-            "Нужен для кнопки «Отправить на Диск» в главном окне."
+            "OAuth-токен Яндекс.Диска с правами disk:write/disk:read."
         )
-        layout.addWidget(self.yandex_token_edit)
-
-        yandex_hint = QLabel("Используется для отправки отчёта на Диск\nи сравнения с предыдущей версией серии.")
-        yandex_hint.setFont(QFont(".AppleSystemUIFont", 10))
-        yandex_hint.setStyleSheet("color: #86868B;")
-        layout.addWidget(yandex_hint)
-
-        yandex_check_row = QHBoxLayout()
-        yandex_check_row.setSpacing(8)
-        self.yandex_check_status_label = QLabel("")
-        self.yandex_check_status_label.setFont(QFont(".AppleSystemUIFont", 10))
-        self.yandex_check_status_label.setWordWrap(True)
-        yandex_check_row.addWidget(self.yandex_check_status_label, 1)
+        token_row.addWidget(self.yandex_token_edit, 1)
         if yandex_oauth.is_configured():
-            self.yandex_login_btn = QPushButton("Войти в Яндекс")
-            self.yandex_login_btn.setFont(QFont(".AppleSystemUIFont", 11))
-            self.yandex_login_btn.setStyleSheet("""
-                QPushButton {
-                    background: #FFFFFF;
-                    color: #007AFF;
-                    border: 1px solid #D2D2D7;
-                    border-radius: 8px;
-                    padding: 5px 12px;
-                }
-                QPushButton:hover { background: #F5F5F7; }
-            """)
-            self.yandex_login_btn.setToolTip(
-                "Войти через браузер — токен будет получен и сохранён\n"
-                "автоматически, без ручного создания и вставки."
-            )
+            self.yandex_login_btn = QPushButton("Войти")
+            self.yandex_login_btn.setFont(QFont(".AppleSystemUIFont", 10))
+            self.yandex_login_btn.setStyleSheet(compact_button_style)
+            self.yandex_login_btn.setToolTip("Войти в Яндекс через браузер")
             self.yandex_login_btn.clicked.connect(self._on_yandex_login_clicked)
-            yandex_check_row.addWidget(self.yandex_login_btn)
+            token_row.addWidget(self.yandex_login_btn)
         self.yandex_check_token_btn = QPushButton("Проверить")
-        self.yandex_check_token_btn.setFont(QFont(".AppleSystemUIFont", 11))
-        self.yandex_check_token_btn.setStyleSheet("""
-            QPushButton {
-                background: #FFFFFF;
-                color: #007AFF;
-                border: 1px solid #D2D2D7;
-                border-radius: 8px;
-                padding: 5px 12px;
-            }
-            QPushButton:hover { background: #F5F5F7; }
-        """)
+        self.yandex_check_token_btn.setFont(QFont(".AppleSystemUIFont", 10))
+        self.yandex_check_token_btn.setStyleSheet(compact_button_style)
         self.yandex_check_token_btn.clicked.connect(self._on_check_yandex_token_clicked)
-        yandex_check_row.addWidget(self.yandex_check_token_btn)
-        layout.addLayout(yandex_check_row)
+        token_row.addWidget(self.yandex_check_token_btn)
+        layout.addLayout(token_row)
 
+        self.yandex_check_status_label = QLabel("")
+        self.yandex_check_status_label.setFont(QFont(".AppleSystemUIFont", 9))
+        self.yandex_check_status_label.setWordWrap(True)
+        layout.addWidget(self.yandex_check_status_label)
         self._yandex_check_thread = None
 
-        layout.addSpacing(8)
-
-        # Корневые папки на Диске для отчётов
-        yandex_roots_label = QLabel("Папки на Диске для отчётов")
-        yandex_roots_label.setFont(QFont(".AppleSystemUIFont", 12))
+        yandex_roots_label = QLabel("Папки отчётов")
+        yandex_roots_label.setFont(QFont(".AppleSystemUIFont", 11))
         yandex_roots_label.setStyleSheet("color: #1D1D1F;")
         layout.addWidget(yandex_roots_label)
 
         self.yandex_roots_list = QListWidget()
-        self.yandex_roots_list.setMaximumHeight(84)
-        self.yandex_roots_list.setFont(QFont(".AppleSystemUIFont", 12))
+        self.yandex_roots_list.setFixedHeight(52)
+        self.yandex_roots_list.setFont(QFont(".AppleSystemUIFont", 11))
         self.yandex_roots_list.setStyleSheet("""
             QListWidget {
-                background: #F5F5F7;
-                border: 1px solid #D2D2D7;
-                border-radius: 8px;
-                color: #1D1D1F;
+                background: #F5F5F7; border: 1px solid #D2D2D7;
+                border-radius: 7px; color: #1D1D1F; padding: 2px;
             }
         """)
         self.yandex_roots_list.setToolTip(
-            "Папки на Яндекс.Диске, внутри которых ищутся/создаются папки\n"
-            "серий и куда отправляются отчёты. Поиск идёт сразу по всем."
+            "Корни, внутри которых приложение ищет серии и размещает отчёты."
         )
         for root in (self._settings.get("yandex_disk_roots") or [REPORTS_ROOT]):
             self.yandex_roots_list.addItem(root)
         layout.addWidget(self.yandex_roots_list)
 
         yandex_roots_row = QHBoxLayout()
-        yandex_roots_row.setSpacing(8)
+        yandex_roots_row.setSpacing(6)
         self.yandex_new_root_edit = QLineEdit()
         self.yandex_new_root_edit.setPlaceholderText("/новая папка")
-        self.yandex_new_root_edit.setFont(QFont(".AppleSystemUIFont", 12))
-        self.yandex_new_root_edit.setStyleSheet("""
-            QLineEdit {
-                background: #F5F5F7;
-                border: 1px solid #D2D2D7;
-                border-radius: 8px;
-                padding: 6px 10px;
-                color: #1D1D1F;
-            }
-            QLineEdit:focus { border: 1px solid #007AFF; }
-        """)
+        self.yandex_new_root_edit.setFont(QFont(".AppleSystemUIFont", 11))
+        self.yandex_new_root_edit.setStyleSheet(compact_line_style)
         self.yandex_new_root_edit.returnPressed.connect(self._on_add_yandex_root)
         yandex_roots_row.addWidget(self.yandex_new_root_edit, 1)
-
         yandex_add_root_btn = QPushButton("Добавить")
-        yandex_add_root_btn.setFont(QFont(".AppleSystemUIFont", 11))
-        yandex_add_root_btn.setStyleSheet("""
-            QPushButton {
-                background: #FFFFFF;
-                color: #007AFF;
-                border: 1px solid #D2D2D7;
-                border-radius: 8px;
-                padding: 5px 12px;
-            }
-            QPushButton:hover { background: #F5F5F7; }
-        """)
+        yandex_add_root_btn.setFont(QFont(".AppleSystemUIFont", 10))
+        yandex_add_root_btn.setStyleSheet(compact_button_style)
         yandex_add_root_btn.clicked.connect(self._on_add_yandex_root)
         yandex_roots_row.addWidget(yandex_add_root_btn)
+        yandex_remove_root_btn = QPushButton("Удалить")
+        yandex_remove_root_btn.setFont(QFont(".AppleSystemUIFont", 10))
+        yandex_remove_root_btn.setStyleSheet(compact_button_style + "QPushButton { color: #FF3B30; }")
+        yandex_remove_root_btn.clicked.connect(self._on_remove_yandex_root)
+        yandex_roots_row.addWidget(yandex_remove_root_btn)
         layout.addLayout(yandex_roots_row)
 
-        yandex_remove_root_btn = QPushButton("Удалить выбранную")
-        yandex_remove_root_btn.setFont(QFont(".AppleSystemUIFont", 11))
-        yandex_remove_root_btn.setStyleSheet("""
-            QPushButton {
-                background: #FFFFFF;
-                color: #FF3B30;
-                border: 1px solid #D2D2D7;
-                border-radius: 8px;
-                padding: 5px 12px;
-            }
-            QPushButton:hover { background: #FFF1F0; }
-        """)
-        yandex_remove_root_btn.clicked.connect(self._on_remove_yandex_root)
-        layout.addWidget(yandex_remove_root_btn)
+        browser_folders_label = QLabel("Папки браузера")
+        browser_folders_label.setFont(QFont(".AppleSystemUIFont", 11))
+        browser_folders_label.setStyleSheet("color: #1D1D1F;")
+        layout.addWidget(browser_folders_label)
 
-        yandex_roots_hint = QLabel("Приложение ищет и создаёт папки отчётов\nсразу во всех перечисленных папках.")
-        yandex_roots_hint.setFont(QFont(".AppleSystemUIFont", 10))
-        yandex_roots_hint.setStyleSheet("color: #86868B;")
-        layout.addWidget(yandex_roots_hint)
-
-        layout.addSpacing(8)
-
-        # Папка для .npr-проектов Nuendo
-        yandex_npr_label = QLabel("Папка на Диске для проектов Nuendo (.npr)")
-        yandex_npr_label.setFont(QFont(".AppleSystemUIFont", 12))
-        yandex_npr_label.setStyleSheet("color: #1D1D1F;")
-        layout.addWidget(yandex_npr_label)
-
-        self.yandex_npr_root_edit = QLineEdit(self._settings.get("yandex_npr_root", ""))
-        self.yandex_npr_root_edit.setPlaceholderText("/ПРОЕКТЫ NUENDO")
-        self.yandex_npr_root_edit.setFont(QFont(".AppleSystemUIFont", 12))
-        self.yandex_npr_root_edit.setStyleSheet("""
-            QLineEdit {
-                background: #F5F5F7;
-                border: 1px solid #D2D2D7;
-                border-radius: 8px;
-                padding: 6px 10px;
-                color: #1D1D1F;
-            }
-            QLineEdit:focus { border: 1px solid #007AFF; }
-        """)
-        self.yandex_npr_root_edit.setToolTip(
-            "Отдельная папка на Диске для .npr-файлов проектов Nuendo —\n"
-            "не смешивается с папками отчётов. Внутри нужной папки сезона\n"
-            "лежат все .npr сразу, без деления на эпизоды."
+        browser_folders_grid = QGridLayout()
+        browser_folders_grid.setHorizontalSpacing(8)
+        browser_folders_grid.setVerticalSpacing(5)
+        browser_folders_grid.setColumnStretch(1, 1)
+        folder_specs = (
+            ("Nuendo", "yandex_npr_root_edit", "yandex_npr_root", "/ПРОЕКТЫ NUENDO"),
+            ("Shared", "yandex_shared_root_edit", "yandex_shared_root", "/SHARED"),
+            ("Tiflo", "yandex_tiflo_root_edit", "yandex_tiflo_root", "/ПРОКТЫ TIFLO"),
         )
-        layout.addWidget(self.yandex_npr_root_edit)
-
-        yandex_npr_hint = QLabel(
-            ".npr-файлы, перетащенные в окно вместе с исходниками отчёта,\n"
-            "уйдут на Диск по кнопке «Отправить» — папку сезона нужно будет\n"
-            "выбрать вручную при первой отправке, дальше она запомнится."
-        )
-        yandex_npr_hint.setFont(QFont(".AppleSystemUIFont", 10))
-        yandex_npr_hint.setStyleSheet("color: #86868B;")
-        yandex_npr_hint.setWordWrap(True)
-        layout.addWidget(yandex_npr_hint)
-
-        layout.addSpacing(8)
+        for row, (label_text, attr_name, setting_key, placeholder) in enumerate(folder_specs):
+            label = QLabel(label_text)
+            label.setFont(QFont(".AppleSystemUIFont", 10))
+            label.setStyleSheet("color: #6E6E73;")
+            edit = QLineEdit(str(self._settings.get(setting_key, "") or ""))
+            edit.setPlaceholderText(placeholder)
+            edit.setFont(QFont(".AppleSystemUIFont", 11))
+            edit.setStyleSheet(compact_line_style)
+            edit.setToolTip(f"Корневая папка вкладки {label_text} в браузере Яндекс.Диска")
+            setattr(self, attr_name, edit)
+            browser_folders_grid.addWidget(label, row, 0)
+            browser_folders_grid.addWidget(edit, row, 1)
+        layout.addLayout(browser_folders_grid)
 
         # Автоматическая отправка на Диск после генерации
         self.yandex_auto_upload_cb = QCheckBox("Автоматически отправлять на Диск после генерации")
@@ -2607,13 +2841,6 @@ class SettingsDialog(QDialog):
             "в очереди, дожидаясь ручного решения (диалог не всплывает сам)."
         )
         layout.addWidget(self.yandex_auto_upload_cb)
-
-        yandex_auto_hint = QLabel("Если папка сериала не найдена — отчёт\nостанется в очереди для ручного действия.")
-        yandex_auto_hint.setFont(QFont(".AppleSystemUIFont", 10))
-        yandex_auto_hint.setStyleSheet("color: #86868B; margin-left: 24px;")
-        layout.addWidget(yandex_auto_hint)
-
-        layout.addSpacing(8)
 
         # Версия приложения + ручная проверка обновлений
         update_row = QHBoxLayout()
@@ -2680,7 +2907,9 @@ class SettingsDialog(QDialog):
         self._settings["delete_sources_after_copy"] = self.delete_sources_cb.isChecked()
         self._settings["check_file_consistency"] = self.check_files_cb.isChecked()
         self._settings["auto_reset_after_done"] = self.auto_reset_cb.isChecked()
+        self._settings["confirm_exit"] = self.confirm_exit_cb.isChecked()
         self._settings["extended_analysis_enabled"] = self.extended_analysis_cb.isChecked()
+        self._settings["llm_spellcheck_enabled"] = self.llm_spellcheck_cb.isChecked()
         token = self.yandex_token_edit.text().strip()
         if secret_store.save_token(token):
             # Токен ушёл в Связку ключей — в файле настроек его не храним.
@@ -2696,6 +2925,14 @@ class SettingsDialog(QDialog):
         if npr_root and not npr_root.startswith("/"):
             npr_root = f"/{npr_root}"
         self._settings["yandex_npr_root"] = npr_root
+        for key, edit in (
+            ("yandex_shared_root", self.yandex_shared_root_edit),
+            ("yandex_tiflo_root", self.yandex_tiflo_root_edit),
+        ):
+            root = edit.text().strip().rstrip("/")
+            if root and not root.startswith("/"):
+                root = f"/{root}"
+            self._settings[key] = root
         self.save_settings(self._settings)
         self.accept()
 
@@ -2740,6 +2977,13 @@ class SettingsDialog(QDialog):
             self.yandex_token_edit.setText(dialog.token)
             self.yandex_check_status_label.setStyleSheet("color: #34C759;")
             self.yandex_check_status_label.setText("Вход выполнен, токен сохранён.")
+            main_window = self.parent()
+            config_sync = getattr(main_window, "_config_sync", None)
+            if config_sync is not None:
+                # Не ждём периодический таймер — сразу создаём/подтягиваем
+                # папку синка нового аккаунта (sync_all сам распознает смену
+                # аккаунта и сбросит base-снэпшоты, если она произошла).
+                config_sync.sync_now()
 
     def _on_check_yandex_token_clicked(self):
         token = self.yandex_token_edit.text().strip()
@@ -2801,7 +3045,8 @@ class ProcessingThread(QThread):
     true_peak_results_ready = pyqtSignal(list)  # результаты измерений для диалога
 
     def __init__(self, app, files_data, report_type, output_folder, pyloudnorm_enabled=False,
-                 tp_verify_enabled=False, delete_sources=False, spell_approved=None):
+                 tp_verify_enabled=False, delete_sources=False, spell_approved=None,
+                 tp_verify_main_mix_enabled=None, marker_identity_plan=None):
         super().__init__()
         self.app = app
         self.files_data = files_data
@@ -2809,11 +3054,17 @@ class ProcessingThread(QThread):
         self.output_folder = output_folder
         self.pyloudnorm_enabled = pyloudnorm_enabled
         self.tp_verify_enabled = tp_verify_enabled
+        self.tp_verify_main_mix_enabled = (
+            bool(tp_verify_enabled)
+            if tp_verify_main_mix_enabled is None
+            else bool(tp_verify_main_mix_enabled)
+        )
         self.delete_sources = delete_sources
         # Одобренные в диалоге ревью замены орфографии: множество пар
         # (было, стало); None — применять все уверенные автоматически
         # (путь без диалога, например если скан не удался).
         self.spell_approved = spell_approved
+        self.marker_identity_plan = marker_identity_plan
         self._tp_verify_loop = None
         self._tp_verify_results = None
     
@@ -2821,6 +3072,7 @@ class ProcessingThread(QThread):
         """Запуск обработки"""
         logger.debug("=== ProcessingThread.run() STARTED ===")
         try:
+            _ensure_document_dependencies()
             import shutil
             from pathlib import Path
             
@@ -2845,8 +3097,13 @@ class ProcessingThread(QThread):
             logger.debug(f"audio_51_c = {audio_51_c}")
             logger.debug(f"audio_51_uc = {audio_51_uc}")
             csv_files = self.files_data.get('csv', [])
+            prepared_csv_file = None
             pdf_files = self.files_data.get('pdf', [])
             params_files = self.files_data.get('params', [])
+            me_assignments = {
+                str(path): key
+                for path, key in (self.files_data.get("me_track_assignments") or {}).items()
+            }
             
             logger.info(f"Audio files found: {len(audio_files)}")
             logger.info(f"Video files found: {len(video_files)}")
@@ -3010,8 +3267,17 @@ class ProcessingThread(QThread):
                     dest = output_dir / target_name
                 else:
                     dest = output_dir / target_name
-                shutil.copy2(csv_files[0], dest)
-                logger.info(f"✅ Скопирован CSV: {Path(csv_files[0]).name} → {target_name}")
+                assigned_ids = enrich_marker_csv(
+                    csv_files[0], dest,
+                    identity_plan=self.marker_identity_plan,
+                    exclude_headers=("2.0 C", "2.0 UC", "5.1 C", "5.1 UC")
+                    if self.report_type == "dcp" else (),
+                )
+                prepared_csv_file = str(dest)
+                logger.info(
+                    f"✅ Скопирован CSV с постоянными ID "
+                    f"({len(assigned_ids)} маркеров): {Path(csv_files[0]).name} → {target_name}"
+                )
 
             # Копируем Параметры.txt если есть
             if params_files:
@@ -3041,6 +3307,10 @@ class ProcessingThread(QThread):
             for audio_file in audio_files:
                 logger.info(f"Обработка аудио: {audio_file}")
                 filename = Path(audio_file).stem.lower()
+                manual_key = me_assignments.get(str(audio_file))
+                if manual_key == "__ignore__":
+                    logger.info("ME: аудиофайл исключён вручную: %s", audio_file)
+                    continue
                 
                 # Извлекаем метаданные для определения количества каналов
                 audio_info = tech_extractor.extract_audio_info(audio_file)
@@ -3055,6 +3325,11 @@ class ProcessingThread(QThread):
                     channels = 0
                 is_51 = channels >= 6  # 6 каналов = 5.1
                 is_20 = channels == 2  # 2 канала = 2.0
+                dcp_split_channel = (
+                    detect_dcp_split_channel(filename)
+                    if self.report_type == "dcp" and channels == 1
+                    else None
+                )
                 
                 # Определяем тип по имени файла (гибкая проверка)
                 channel_hint = detect_channel_from_name(filename)
@@ -3068,13 +3343,25 @@ class ProcessingThread(QThread):
                 # Выбираем канал по метаданным, если есть; иначе по имени
                 channel_final = channel_meta or channel_hint
                 
-                if channel_final == "51":
+                if manual_key:
+                    key = manual_key
+                elif dcp_split_channel:
+                    key = f'audio_dcp_split_{dcp_split_channel}'
+                elif self.report_type == "dcp" and channel_final == "51":
+                    # У DCP один собранный 5.1-микс; cens/uncens к нему не применяется.
+                    key = 'audio_51_c'
+                elif channel_final == "51":
                     key = f'audio_51_{suffix}'
                 elif channel_final == "20":
                     key = f'audio_20_{suffix}'
                 else:
                     logger.warning(f"⚠️  Не удалось определить тип аудио: {filename} (channels={channels})")
                     continue
+
+                if not manual_key and self.report_type in {"me", "me_ours"}:
+                    me_kind, me_variant = detect_me_track_variant(filename)
+                    if me_kind != "me":
+                        key = me_track_key(me_kind, channel_final, "audio", me_variant)
                 
                 name_score = 0
                 if channel_hint and channel_final and channel_hint == channel_final:
@@ -3120,6 +3407,9 @@ class ProcessingThread(QThread):
                         dcp_audio_metrics_by_key[audio_key] = {
                             'sample_peak': sample_peak,
                         }
+                        audio_data = tech_info.get(audio_key)
+                        if isinstance(audio_data, dict):
+                            audio_data['sample_peak'] = sample_peak
                         logger.info(
                             f"DCP metrics for {audio_key}: sample_peak={sample_peak}"
                         )
@@ -3173,10 +3463,13 @@ class ProcessingThread(QThread):
 
                 # 1) Если имя PDF совпадает с аудио-файлом — берем тип из аудио метаданных
                 matched_audio_key = audio_key_by_stem.get(normalize_stem(pdf_file))
+                if matched_audio_key and dynamic_me_track_from_key(matched_audio_key):
+                    matched_audio_key = None
                 if matched_audio_key:
                     key = matched_audio_key.replace('audio_', 'pdf_')
                     logger.info(f"  -> Matched PDF to audio by name: {matched_audio_key} -> {key}")
                 else:
+                    key = None
                     # 2) Определяем тип PDF по имени
                     if has_51_marker and is_cens:
                         key = 'pdf_51_c'
@@ -3238,7 +3531,7 @@ class ProcessingThread(QThread):
 
                 # Сохраняем в словарь для JSON (а не напрямую в tech_info)
                 if key in pdf_data_all:
-                    # если ключ занят, кладем в общий без цензуры
+                    # PDF существуют только у основных версий 2.0/5.1 ME.
                     key = 'pdf_20' if '20' in key else 'pdf_51'
                 pdf_data_all[key] = pdf_data
                 
@@ -3250,12 +3543,15 @@ class ProcessingThread(QThread):
             # Попытка доопределить pending PDF по совпадению с аудио без маркеров
             if pending_pdfs:
                 missing_keys = []
-                for prefix in ("20", "51"):
-                    for suffix in ("_c", "_uc", ""):
-                        k = f"pdf_{prefix}{suffix}"
-                        audio_k = f"audio_{prefix}{suffix}"
-                        if audio_k in tech_info and (k not in pdf_data_all or pdf_data_all.get(k) is None):
-                            missing_keys.append((k, audio_k))
+                for audio_k in tech_info:
+                    if (
+                        not str(audio_k).startswith("audio_")
+                        or dynamic_me_track_from_key(audio_k)
+                    ):
+                        continue
+                    k = str(audio_k).replace("audio_", "pdf_", 1)
+                    if k not in pdf_data_all or pdf_data_all.get(k) is None:
+                        missing_keys.append((k, audio_k))
 
                 for item in pending_pdfs:
                     pdf_path = item['path']
@@ -3355,7 +3651,7 @@ class ProcessingThread(QThread):
             
             # Диагностика: что в tech_info перед генерацией
             logger.info(f"📊 tech_info перед генерацией: {list(tech_info.keys())}")
-            for k in ['pdf_20', 'pdf_51', 'pdf_20_c', 'pdf_51_c', 'pdf_20_uc', 'pdf_51_uc']:
+            for k in [key for key in tech_info if str(key).startswith('pdf_')]:
                 if k in tech_info:
                     v = tech_info[k]
                     if isinstance(v, dict):
@@ -3652,9 +3948,13 @@ class ProcessingThread(QThread):
             
             issues = []
             if csv_files:
-                csv_file = csv_files[0]
+                csv_file = prepared_csv_file or csv_files[0]
                 logger.info(f"Импорт CSV: {csv_file}")
-                importer = CSVImporter()
+                _llm_spellcheck_enabled = SettingsDialog.load_settings().get("llm_spellcheck_enabled", True)
+                importer = CSVImporter(
+                    config=self.app.config,
+                    generate_fn=self.app.conclusion_gen._ollama_generate if _llm_spellcheck_enabled else None,
+                )
                 issues = importer.import_issues(csv_file, approved_corrections=self.spell_approved)
                 logger.info(f"✅ Импортировано проблем: {len(issues)}")
             
@@ -3701,14 +4001,16 @@ class ProcessingThread(QThread):
                             elapsed = _time.time() - t0
                             precise_val = result.get('true_peak_dbtp')
                             per_ch = result.get('true_peak_per_channel', [])
+                            current_value = item.get('current_value')
+                            current_text = f"{current_value:.1f}" if current_value is not None else "нет данных"
 
                             logger.info(
-                                f"  ✅ {item['label']}: Youlean={item['current_value']:.1f} → "
+                                f"  ✅ {item['label']}: Youlean={current_text} → "
                                 f"Precise={precise_val:.2f} dBTP ({elapsed:.1f}s), "
                                 f"per_channel={[f'{v:.2f}' for v in per_ch]}"
                             )
                             self.status_update.emit(
-                                f"✅ {item['label']}: {item['current_value']:.1f} → {precise_val:.2f} dBTP ({elapsed:.0f}s)"
+                                f"✅ {item['label']}: {current_text} → {precise_val:.2f} dBTP ({elapsed:.0f}s)"
                             )
 
                             measurement_results.append({
@@ -3737,9 +4039,21 @@ class ProcessingThread(QThread):
                         self.true_peak_results_ready.emit(measurement_results)
                         self._tp_verify_loop.exec_()
 
-                        if self._tp_verify_results:
+                        accepted_tp_results = dict(self._tp_verify_results or {})
+                        # У DX/OPT без PDF нет исходного Youlean-значения,
+                        # поэтому точный результат является единственным TP и
+                        # всегда переносится в таблицу независимо от кнопки диалога.
+                        for result_item in measurement_results:
+                            if (
+                                result_item.get('youlean_value') is None
+                                and dynamic_me_track_from_key(result_item.get('key', ''))
+                                and result_item.get('precise_value') is not None
+                            ):
+                                accepted_tp_results[result_item['key']] = result_item['precise_value']
+
+                        if accepted_tp_results:
                             updated_keys = []
-                            for key, new_value in self._tp_verify_results.items():
+                            for key, new_value in accepted_tp_results.items():
                                 pdf_data = tech_info.get(key)
                                 if isinstance(pdf_data, dict):
                                     old_val = pdf_data.get('true_peak')
@@ -3776,7 +4090,37 @@ class ProcessingThread(QThread):
                 technical_conclusion = self.app.conclusion_gen.generate_technical_conclusion(
                     tech_info, params, self.report_type
                 )
-                subjective_conclusion = self.app.conclusion_gen.generate_subjective_conclusion(issues, self.report_type)
+
+                # Автовыбор облачного провайдера для ЭТОГО заключения — только
+                # если сейчас выбрана локальная Ollama, и только на время
+                # генерации (не трогает сохранённую настройку пользователя).
+                # См. ConclusionGenerator.maybe_auto_select_provider — критерии:
+                # объём маркер-листа ИЛИ разнообразие типов проблем.
+                auto_provider, cloud_unavailable = self.app.conclusion_gen.maybe_auto_select_provider(
+                    issues, self.report_type
+                )
+                if auto_provider:
+                    provider_label = {
+                        "groq": "Groq", "yandexgpt": "YandexGPT", "gigachat": "GigaChat",
+                    }.get(auto_provider, auto_provider)
+                    logger.info(f"Автовыбор облачного LLM для этого заключения: {auto_provider} (маркеров: {len(issues)})")
+                    self.status_update.emit(f"☁️ Автовыбор модели: {provider_label} (большой/разнородный маркер-лист)")
+                elif cloud_unavailable and not getattr(self.app, "_auto_provider_unavailable_notice_shown", False):
+                    # Показываем не чаще раза за сессию — не блокирующим диалогом,
+                    # а тем же статус-текстом, что и остальной прогресс генерации.
+                    self.app._auto_provider_unavailable_notice_shown = True
+                    self.status_update.emit(
+                        "⚠️ Маркер-лист большой/разнородный, но облачный провайдер недоступен — используется локальная модель"
+                    )
+
+                original_provider = self.app.conclusion_gen.llm_provider
+                if auto_provider:
+                    self.app.conclusion_gen.set_llm_provider(auto_provider)
+                try:
+                    subjective_conclusion = self.app.conclusion_gen.generate_subjective_conclusion(issues, self.report_type)
+                finally:
+                    if auto_provider:
+                        self.app.conclusion_gen.set_llm_provider(original_provider)
                 logger.info("Стандартная генерация заключений")
             
             self.progress_update.emit(85)
@@ -3906,7 +4250,7 @@ class ProcessingThread(QThread):
         if not source_norm:
             return None, None
 
-        for audio_key in ('audio_20_c', 'audio_20_uc', 'audio_51_c', 'audio_51_uc'):
+        for audio_key in (key for key in tech_info if str(key).startswith('audio_')):
             audio_data = tech_info.get(audio_key)
             if not isinstance(audio_data, dict):
                 continue
@@ -3937,7 +4281,31 @@ class ProcessingThread(QThread):
         items = []
         seen_audio = set()  # чтобы не измерять один файл дважды
 
-        for key in ('pdf_20_c', 'pdf_20_uc', 'pdf_51_c', 'pdf_51_uc', 'pdf_20', 'pdf_51'):
+        # Для DX/OPT точное измерение должно работать и без Youlean PDF:
+        # создаём служебную pdf_* запись, куда после подтверждения попадёт TP.
+        # Она затем читается той же технической таблицей, что и обычный PDF.
+        for audio_key in list(audio_path_by_key):
+            if not dynamic_me_track_from_key(audio_key):
+                continue
+            pdf_key = str(audio_key).replace('audio_', 'pdf_', 1)
+            if not isinstance(tech_info.get(pdf_key), dict):
+                tech_info[pdf_key] = {
+                    'source_pdf': None,
+                    'true_peak': None,
+                    'true_peak_source': 'pending_precise_measurement',
+                }
+
+        pdf_keys = [key for key in tech_info if str(key).startswith('pdf_')]
+        for key in pdf_keys:
+            if (
+                not self.tp_verify_main_mix_enabled
+                and not dynamic_me_track_from_key(key)
+            ):
+                logger.info(
+                    f"  {key}: основной микс пропущен — TP verify не включён вручную"
+                )
+                continue
+
             pdf_data = tech_info.get(key)
             if not isinstance(pdf_data, dict):
                 continue
@@ -3968,7 +4336,11 @@ class ProcessingThread(QThread):
 
             # 1) Прямой маппинг pdf_* → audio_*
             if not audio_file:
-                for audio_key in self._PDF_TO_AUDIO_KEYS.get(key, []):
+                direct_audio_keys = list(self._PDF_TO_AUDIO_KEYS.get(key, []))
+                dynamic_track = dynamic_me_track_from_key(key)
+                if dynamic_track:
+                    direct_audio_keys.insert(0, key.replace('pdf_', 'audio_', 1))
+                for audio_key in direct_audio_keys:
                     tried_keys.append(audio_key)
                     resolved_path = self._resolve_tp_audio_path(audio_key, tech_info, audio_path_by_key)
                     if resolved_path:
@@ -4012,7 +4384,7 @@ class ProcessingThread(QThread):
 
             items.append({
                 'key': key,
-                'label': self._PDF_KEY_LABELS.get(key, key),
+                'label': self._tp_key_label(key),
                 'current_value': tp,
                 'audio_file': audio_file,
             })
@@ -4024,6 +4396,13 @@ class ProcessingThread(QThread):
         else:
             self.status_update.emit("⚠️ TP verify: аудиофайлы не найдены")
         return items
+
+    def _tp_key_label(self, key: str) -> str:
+        parsed = dynamic_me_track_from_key(key)
+        if parsed:
+            _media, kind, variant, channel = parsed
+            return me_track_label(kind, channel, variant)
+        return self._PDF_KEY_LABELS.get(key, key)
 
     def receive_tp_verification(self, results: dict):
         """Вызывается из UI-потока после закрытия диалога."""
@@ -4121,6 +4500,24 @@ class MacToggleSwitch(QPushButton):
             painter.drawPath(path)
 
 
+class ClickableLabel(QLabel):
+    """QLabel с сигналом clicked — используется для названия модели Ollama
+
+    рядом с индикатором AI-генерации, чтобы по клику открыть меню выбора модели.
+    """
+
+    clicked = pyqtSignal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class PreviewDialog(QDialog):
     """Floating preview window that keeps the main form compact."""
 
@@ -4203,11 +4600,309 @@ class PreviewDialog(QDialog):
             self._parent_window._on_preview_dialog_closed()
 
 
+class METrackAssignmentDialog(QDialog):
+    """Ручное распределение неоднозначно названных ME/DX/OPT файлов."""
+
+    def __init__(self, candidates: list, parent=None):
+        super().__init__(parent)
+        self.candidates = list(candidates)
+        self.combos = []
+        self.result_assignments = {}
+        self.setWindowTitle("Распределение дорожек ME")
+        self.setModal(True)
+        self.resize(900, min(720, 230 + len(candidates) * 44))
+        self.setMinimumSize(760, 360)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("Укажите назначение файлов")
+        title.setFont(QFont(".AppleSystemUIFont", 14, QFont.DemiBold))
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "Часть имён WAV не содержит надёжных обозначений ME, DX или OPT. "
+            "Выберите ячейку отчёта для каждого аудиофайла. PDF назначаются "
+            "только основным версиям ME. Поле можно редактировать: "
+            "например, 2.0 OPT F или 5.1 OPT 4."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #6E6E73;")
+        layout.addWidget(hint)
+
+        table = QTableWidget(len(candidates), 4, self)
+        self.table = table
+        table.setHorizontalHeaderLabels(["Файл", "Тип", "Распознано", "Ячейка отчёта"])
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+
+        for row, item in enumerate(candidates):
+            file_item = QTableWidgetItem(item["name"])
+            file_item.setToolTip(item["path"])
+            file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 0, file_item)
+
+            media_text = "WAV/аудио"
+            channel_text = {"20": "2.0", "51": "5.1"}.get(item.get("channel"), "каналы неизвестны")
+            type_item = QTableWidgetItem(f"{media_text} · {channel_text}")
+            type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 1, type_item)
+
+            confidence = item.get("confidence")
+            if confidence == "strong":
+                detected_text = "по имени"
+            elif confidence == "heuristic":
+                detected_text = "предположение по содержимому"
+            else:
+                detected_text = "не распознано"
+            detected_item = QTableWidgetItem(detected_text)
+            detected_item.setFlags(detected_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(row, 2, detected_item)
+
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.addItem("Выберите дорожку…")
+            channels = [item["channel"]] if item.get("channel") else ["20", "51"]
+            for channel in channels:
+                channel_label = "2.0" if channel == "20" else "5.1"
+                combo.addItem(f"{channel_label} ME")
+                combo.addItem(f"{channel_label} DX")
+                combo.addItem(f"{channel_label} OPT")
+                for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                    combo.addItem(f"{channel_label} OPT {letter}")
+            combo.addItem("Не использовать")
+
+            existing_key = item.get("existing_key")
+            if existing_key == "__ignore__":
+                combo.setCurrentText("Не использовать")
+            elif item.get("suggested_key"):
+                combo.setCurrentText(me_assignment_label(item["suggested_key"]))
+            table.setCellWidget(row, 3, combo)
+            self.combos.append(combo)
+
+        table.setColumnWidth(0, 310)
+        table.setColumnWidth(1, 150)
+        table.setColumnWidth(2, 190)
+        table.setColumnWidth(3, 190)
+        table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(table, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Применить и создать отчёт")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
+        buttons.accepted.connect(self._accept_assignments)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_assignments(self):
+        assignments = {}
+        occupied = {}
+        for item, combo in zip(self.candidates, self.combos):
+            label = combo.currentText().strip()
+            if label == "Выберите дорожку…" or not label:
+                QMessageBox.warning(self, "Не выбрана дорожка", f"Укажите ячейку для файла:\n{item['name']}")
+                return
+            if label == "Не использовать":
+                assignments[item["path"]] = "__ignore__"
+                continue
+            try:
+                key = parse_me_assignment_label(label, item["media"])
+            except ValueError as exc:
+                QMessageBox.warning(self, "Некорректная ячейка", f"{item['name']}:\n{exc}")
+                return
+            collision = (item["media"], key)
+            if collision in occupied:
+                QMessageBox.warning(
+                    self,
+                    "Ячейка уже занята",
+                    f"Файлы «{occupied[collision]}» и «{item['name']}» назначены в одну ячейку.\n"
+                    "Выберите другую букву/номер OPT или исключите один файл.",
+                )
+                return
+            occupied[collision] = item["name"]
+            assignments[item["path"]] = key
+        self.result_assignments = assignments
+        self.accept()
+
+
+class LLMModelPickerDialog(QDialog):
+    """Компактный выбор LLM с отдельными настройками доступа."""
+
+    model_selected = pyqtSignal(str, str)
+    auto_select_changed = pyqtSignal(bool)
+    credentials_requested = pyqtSignal(str)
+
+    def __init__(
+        self,
+        options,
+        current_provider: str,
+        current_model: str,
+        auto_select_enabled: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Модель для анализа")
+        self.setModal(True)
+        self.setFixedWidth(440)
+        self.setStyleSheet("""
+            QDialog { background: #F5F5F7; }
+            QLabel#title { color: #1D1D1F; font-size: 18px; font-weight: 600; }
+            QLabel#subtitle { color: #6E6E73; font-size: 12px; }
+            QLabel#section { color: #6E6E73; font-size: 10px; font-weight: 600; }
+            QLabel#description { color: #86868B; font-size: 11px; }
+            QFrame#modelCard, QFrame#optionCard, QFrame#accessCard {
+                background: #FFFFFF;
+                border: 1px solid #E2E2E7;
+                border-radius: 10px;
+            }
+            QFrame#modelCard:hover { border-color: #B8D7FF; background: #FAFCFF; }
+            QRadioButton { color: #1D1D1F; font-size: 13px; font-weight: 500; spacing: 8px; }
+            QCheckBox { color: #1D1D1F; font-size: 13px; spacing: 8px; }
+            QPushButton#accessButton {
+                background: #FFFFFF;
+                color: #007AFF;
+                border: 1px solid #D2D2D7;
+                border-radius: 7px;
+                padding: 6px 10px;
+                font-size: 11px;
+            }
+            QPushButton#accessButton:hover { background: #F0F7FF; border-color: #9CC9FF; }
+            QPushButton#doneButton {
+                background: #007AFF;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 8px;
+                padding: 7px 20px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#doneButton:hover { background: #0063D1; }
+        """)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(10)
+
+        title = QLabel("Модель для анализа")
+        title.setObjectName("title")
+        root.addWidget(title)
+
+        subtitle = QLabel("Выберите, где обрабатывать маркер-листы")
+        subtitle.setObjectName("subtitle")
+        root.addWidget(subtitle)
+        root.addSpacing(4)
+
+        self._model_group = QButtonGroup(self)
+        self._model_buttons = {}
+        grouped_options = {
+            "ЛОКАЛЬНО НА ЭТОМ MAC": [],
+            "ОБЛАЧНЫЕ МОДЕЛИ": [],
+        }
+        for option in options:
+            section = "ЛОКАЛЬНО НА ЭТОМ MAC" if option[0] == "ollama" else "ОБЛАЧНЫЕ МОДЕЛИ"
+            grouped_options[section].append(option)
+
+        for section_name, section_options in grouped_options.items():
+            if not section_options:
+                continue
+            section_label = QLabel(section_name)
+            section_label.setObjectName("section")
+            root.addWidget(section_label)
+            for provider, tag, fallback_label in section_options:
+                title_text, description = LLM_MODEL_PRESENTATION.get(
+                    (provider, tag),
+                    (fallback_label, "Локальная модель Ollama"),
+                )
+                card = QFrame()
+                card.setObjectName("modelCard")
+                card_layout = QVBoxLayout(card)
+                card_layout.setContentsMargins(12, 8, 12, 8)
+                card_layout.setSpacing(2)
+
+                radio = QRadioButton(title_text)
+                radio.setChecked(provider == current_provider and tag == current_model)
+                radio.clicked.connect(
+                    lambda _checked, p=provider, t=tag: self.model_selected.emit(p, t)
+                )
+                self._model_group.addButton(radio)
+                self._model_buttons[(provider, tag)] = radio
+                card_layout.addWidget(radio)
+
+                description_label = QLabel(description)
+                description_label.setObjectName("description")
+                description_label.setContentsMargins(26, 0, 0, 0)
+                card_layout.addWidget(description_label)
+                root.addWidget(card)
+
+        auto_card = QFrame()
+        auto_card.setObjectName("optionCard")
+        auto_layout = QVBoxLayout(auto_card)
+        auto_layout.setContentsMargins(12, 9, 12, 9)
+        auto_layout.setSpacing(2)
+        self.auto_select_checkbox = QCheckBox("Автовыбор для сложных маркер-листов")
+        self.auto_select_checkbox.setChecked(auto_select_enabled)
+        self.auto_select_checkbox.toggled.connect(self.auto_select_changed)
+        auto_layout.addWidget(self.auto_select_checkbox)
+        auto_description = QLabel("Для больших списков приложение может выбрать облако")
+        auto_description.setObjectName("description")
+        auto_description.setContentsMargins(26, 0, 0, 0)
+        auto_layout.addWidget(auto_description)
+        root.addWidget(auto_card)
+
+        access_card = QFrame()
+        access_card.setObjectName("accessCard")
+        access_layout = QVBoxLayout(access_card)
+        access_layout.setContentsMargins(12, 9, 12, 10)
+        access_layout.setSpacing(7)
+        access_title = QLabel("Ключи доступа")
+        access_title.setStyleSheet("color: #1D1D1F; font-size: 12px; font-weight: 600;")
+        access_layout.addWidget(access_title)
+        access_buttons = QHBoxLayout()
+        access_buttons.setSpacing(6)
+        for provider, label in (
+            ("groq", "Groq"),
+            ("yandexgpt", "YandexGPT"),
+            ("gigachat", "GigaChat"),
+        ):
+            button = QPushButton(label)
+            button.setObjectName("accessButton")
+            button.clicked.connect(
+                lambda _checked, p=provider: self.credentials_requested.emit(p)
+            )
+            access_buttons.addWidget(button)
+        access_layout.addLayout(access_buttons)
+        root.addWidget(access_card)
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        done_button = QPushButton("Готово")
+        done_button.setObjectName("doneButton")
+        done_button.setDefault(True)
+        done_button.clicked.connect(self.accept)
+        footer.addWidget(done_button)
+        root.addLayout(footer)
+
+    def set_selected_model(self, provider: str, model_tag: str):
+        """Возвращает отметку к реально выбранной модели после проверки ключа."""
+        button = self._model_buttons.get((provider, model_tag))
+        if button is not None:
+            button.setChecked(True)
+
+
 class BeastApp(QMainWindow):
     """macOS-style main window"""
     _ollama_status_signal = pyqtSignal(str, str)  # (status, detail) — thread-safe обновление индикатора
     _update_check_signal = pyqtSignal(object)  # UpdateInfo | None — результат проверки обновлений
     _update_download_signal = pyqtSignal(bool, str)  # (success, path_or_error)
+    # Статус ручной отправки на Диск (только кнопка «Отправить» — путь
+    # известен заранее; для фоновой автозагрузки из очереди путь
+    # резолвится только внутри потока, туда не подключено) — если открыт
+    # YandexDiskBrowserDialog, помечает совпадающий по пути элемент дерева
+    # спиннером на время отправки. Бонус-функция: если элемент не
+    # загружен/не виден в дереве — просто ничего не подсвечивается.
+    yandex_upload_target_started = pyqtSignal(str)  # target_folder_path
+    yandex_upload_target_finished = pyqtSignal(str, bool)  # (target_folder_path, success)
 
     def __init__(self):
         super().__init__()
@@ -4217,12 +4912,37 @@ class BeastApp(QMainWindow):
         self._pending_update_info = None
         self._update_progress_dialog = None
         self.config = load_app_config()
+        _saved_llm_settings = SettingsDialog.load_settings()
+        saved_llm_model = _saved_llm_settings.get("llm_model", "").strip()
+        if saved_llm_model:
+            self.config.setdefault("llm", {})["model"] = saved_llm_model
+        saved_llm_provider = _saved_llm_settings.get("llm_provider", "").strip()
+        if saved_llm_provider:
+            self.config.setdefault("llm", {})["provider"] = saved_llm_provider
+        saved_groq_model = _saved_llm_settings.get("llm_groq_model", "").strip()
+        if saved_groq_model:
+            self.config.setdefault("llm", {})["groq_model"] = saved_groq_model
+        saved_yandexgpt_model = _saved_llm_settings.get("llm_yandexgpt_model", "").strip()
+        if saved_yandexgpt_model:
+            self.config.setdefault("llm", {})["yandexgpt_model"] = saved_yandexgpt_model
+        saved_gigachat_model = _saved_llm_settings.get("llm_gigachat_model", "").strip()
+        if saved_gigachat_model:
+            self.config.setdefault("llm", {})["gigachat_model"] = saved_gigachat_model
+        self.config.setdefault("llm", {})["auto_select_enabled"] = _saved_llm_settings.get(
+            "llm_auto_select_enabled", True
+        )
 
-        self.report_gen = ExactReportGenerator()
-        self.pdf_extractor = PDFExtractor()
         self.conclusion_gen = ConclusionGenerator(use_llm=False, config=self.config)
-        self.csv_importer = CSVImporter()
-        self.tech_extractor = TechnicalInfoExtractor()
+        # Эти сервисы не нужны для построения первого кадра. Их создание
+        # (особенно поиск ffprobe, чтение очереди и возможный старт сетевого
+        # потока) выполняется после показа окна в _finish_deferred_startup.
+        self.report_gen = None
+        self.pdf_extractor = None
+        self.csv_importer = None
+        self.tech_extractor = None
+        self._startup_settings = _saved_llm_settings
+        self._startup_services_ready = False
+        self._startup_services_initializing = False
 
         self.files_data = {
             'audio': [],
@@ -4263,27 +4983,17 @@ class BeastApp(QMainWindow):
         self.auto_reset_timer.setSingleShot(True)
         self.auto_reset_timer.timeout.connect(self._auto_reset_after_done)
 
-        self._yandex_queue = YandexUploadQueueManager(
-            get_token=SettingsDialog.get_yandex_token, get_roots=SettingsDialog.get_yandex_roots,
-        )
-        self._yandex_queue.queue_changed.connect(self._update_yandex_queue_badge)
+        self._yandex_queue = None
         self._yandex_queue_offline = False
-        self._yandex_queue.queue_paused_offline.connect(self._on_yandex_queue_offline_changed)
 
         # Куда именно уже отправлен отчёт (local_output_folder -> remote_folder_path) —
         # нужно, чтобы «Правка» знала, куда заливать изменения после сохранения.
         self._yandex_remote_by_local = {}
-        self._yandex_queue.job_uploaded.connect(self._on_yandex_queue_job_uploaded)
-        self._edit_sync = YandexEditSyncController(
-            get_token=SettingsDialog.get_yandex_token,
-            resolve_remote_path=self._resolve_edited_report_remote_path,
-            parent=self,
-        )
-        self._edit_sync.status_changed.connect(self._on_edit_sync_status_changed)
-        self._edit_sync.conflict.connect(self._on_edit_sync_conflict)
+        self._edit_sync = None
 
         self._config_sync = ConfigSyncController(get_token=SettingsDialog.get_yandex_token, parent=self)
         self._config_sync.status_changed.connect(self._on_config_sync_status_changed)
+        self._config_sync.auth_expired.connect(self._on_yandex_auth_expired)
         self._config_sync.start_periodic()
 
         # Пробел (как Quick Look в Finder) открывает превью последнего
@@ -4297,13 +5007,109 @@ class BeastApp(QMainWindow):
         QTimer.singleShot(6000, self._config_sync.sync_now)
 
         self.init_ui()
+        self._install_application_shortcuts()
+        # Даём Qt сначала показать и отрисовать окно. Пользователь видит готовый
+        # интерфейс, пока необязательные фоновые сервисы запускаются следом.
+        QTimer.singleShot(150, self._finish_deferred_startup)
+
+    def _finish_deferred_startup(self):
+        """Инициализирует тяжёлые сервисы после появления главного окна."""
+        if (
+            self._startup_services_ready
+            or self._startup_services_initializing
+            or getattr(self, "_closing", False)
+        ):
+            return
+
+        self._startup_services_initializing = True
+        settings = self._startup_settings
+        try:
+            _ensure_document_dependencies()
+            self.report_gen = ExactReportGenerator()
+            self.pdf_extractor = PDFExtractor()
+            self.csv_importer = CSVImporter(
+                config=self.config,
+                generate_fn=self.conclusion_gen._ollama_generate
+                if settings.get("llm_spellcheck_enabled", True) else None,
+            )
+            self.tech_extractor = TechnicalInfoExtractor()
+
+            self._yandex_queue = YandexUploadQueueManager(
+                get_token=SettingsDialog.get_yandex_token,
+                get_roots=SettingsDialog.get_yandex_roots,
+            )
+            self._yandex_queue.queue_changed.connect(self._update_yandex_queue_badge)
+            self._yandex_queue.queue_paused_offline.connect(
+                self._on_yandex_queue_offline_changed
+            )
+            self._yandex_queue.auth_expired.connect(self._on_yandex_auth_expired)
+            self._yandex_queue.job_uploaded.connect(self._on_yandex_queue_job_uploaded)
+
+            self._edit_sync = YandexEditSyncController(
+                get_token=SettingsDialog.get_yandex_token,
+                resolve_remote_path=self._resolve_edited_report_remote_path,
+                parent=self,
+            )
+            self._edit_sync.status_changed.connect(self._on_edit_sync_status_changed)
+            self._edit_sync.conflict.connect(self._on_edit_sync_conflict)
+            self._update_yandex_queue_badge()
+
+            self._startup_services_ready = True
+            self._startup_settings = None
+            logger.info("Отложенная инициализация сервисов завершена")
+        finally:
+            self._startup_services_initializing = False
+
+    def _install_application_shortcuts(self):
+        """Устанавливает безопасные macOS-сочетания для главного окна."""
+        self._minimize_action = QAction(self)
+        # В Qt portable-модификатор Ctrl на macOS соответствует клавише Command.
+        self._minimize_action.setShortcut(QKeySequence("Ctrl+M"))
+        self._minimize_action.setShortcutContext(Qt.WindowShortcut)
+        self._minimize_action.triggered.connect(self.showMinimized)
+        self.addAction(self._minimize_action)
+
+        self._close_window_action = QAction(self)
+        self._close_window_action.setShortcut(QKeySequence.Close)
+        self._close_window_action.setShortcutContext(Qt.WindowShortcut)
+        # hide() убирает окно, но не вызывает closeEvent, поэтому фоновые
+        # задачи и само приложение продолжают работать.
+        self._close_window_action.triggered.connect(self.hide)
+        self.addAction(self._close_window_action)
+
+        self._quit_action = QAction(self)
+        self._quit_action.setShortcut(QKeySequence.Quit)
+        self._quit_action.setShortcutContext(Qt.ApplicationShortcut)
+        self._quit_action.triggered.connect(self.close)
+        self.addAction(self._quit_action)
+
+    @staticmethod
+    def _is_sync_shortcut_event(event) -> bool:
+        """True для физической клавиши S без модификаторов в любой раскладке.
+
+        На macOS nativeVirtualKey == 1 — аппаратная позиция ANSI S и не
+        зависит от выбранного языка. Проверка текста «s»/«ы» оставлена как
+        переносимый fallback для тестов и окружений без native-кода.
+        """
+        if event.modifiers() != Qt.NoModifier or event.isAutoRepeat():
+            return False
+        return (
+            event.key() == Qt.Key_S
+            or event.text().casefold() in {"s", "ы"}
+            or event.nativeVirtualKey() == 1
+        )
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Space:
-            if QApplication.activeWindow() is self:
-                focus_widget = QApplication.focusWidget()
-                editable_types = (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractButton, QComboBox)
-                if not isinstance(focus_widget, editable_types):
+        if event.type() == QEvent.KeyPress and QApplication.activeWindow() is self:
+            focus_widget = QApplication.focusWidget()
+            editable_types = (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractButton, QComboBox)
+            if not isinstance(focus_widget, editable_types):
+                if self._is_sync_shortcut_event(event):
+                    config_sync = getattr(self, "_config_sync", None)
+                    if config_sync is not None:
+                        config_sync.sync_now()
+                        return True
+                if event.key() == Qt.Key_Space:
                     if self.last_report_docx_path and self.last_report_docx_path.exists():
                         _quick_look_preview(self.last_report_docx_path)
                         return True
@@ -4325,6 +5131,17 @@ class BeastApp(QMainWindow):
                 event.ignore()
                 return
             _stop_thread(processing_thread)
+        elif SettingsDialog.load_settings().get("confirm_exit", True):
+            reply = QMessageBox.question(
+                self,
+                "Закрыть приложение?",
+                "Вы уверены, что хотите выйти из Beast Auto Reporter?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
 
         # Флаг ставится ДО остановки потоков: пока _stop_thread ждёт, поток
         # успевает эмитнуть финальный сигнал (queued), и его обработчик
@@ -4336,6 +5153,8 @@ class BeastApp(QMainWindow):
         self._closing = True
 
         _stop_thread(getattr(self, "preview_thread", None))
+        _stop_thread(getattr(self, "_marker_identity_thread", None))
+        _stop_thread(getattr(self, "_marker_conflict_thread", None))
         _stop_thread(getattr(self, "_spell_scan_thread", None))
         _stop_thread(getattr(self, "_yandex_find_thread", None))
         _stop_thread(getattr(self, "_yandex_versions_thread", None))
@@ -4447,6 +5266,15 @@ class BeastApp(QMainWindow):
             QPushButton:pressed { background: #E8E8ED; }
         """
 
+        # Раньше здесь стояли 4 отдельные иконки-кнопки (Очистить/Настройки/
+        # Файлы на Диске/Синхронизировать) плюс текстовый статус синхронизации
+        # прямо в строке — вместе с Preview/Create они не помещались в узкое
+        # окно (минимальная ширина 400px) и текст обрезался без эллипсиса
+        # («Синхронизиров», «Предпросм», «Создат» — реальный визуальный баг).
+        # Спрятать всё четыре в меню «Ещё» оказалось перебором — Очистить и
+        # Файлы на Диске используются слишком часто, чтобы тратить на них
+        # два клика вместо одного; в меню остались только Настройки и
+        # ручной запуск синхронизации, которые нужны заметно реже.
         clear_btn = QPushButton()
         clear_btn.setFixedSize(30, 30)
         clear_btn.setToolTip("Очистить файлы")
@@ -4455,15 +5283,6 @@ class BeastApp(QMainWindow):
         clear_btn.setIconSize(QSize(15, 15))
         clear_btn.clicked.connect(self.clear_files)
         layout.addWidget(clear_btn)
-
-        settings_btn = QPushButton()
-        settings_btn.setFixedSize(30, 30)
-        settings_btn.setToolTip("Настройки")
-        settings_btn.setStyleSheet(icon_btn_style)
-        settings_btn.setIcon(make_icon("gear", "#86868B", 15))
-        settings_btn.setIconSize(QSize(15, 15))
-        settings_btn.clicked.connect(self.open_settings)
-        layout.addWidget(settings_btn)
 
         yandex_browse_btn = QPushButton()
         yandex_browse_btn.setFixedSize(30, 30)
@@ -4474,19 +5293,25 @@ class BeastApp(QMainWindow):
         yandex_browse_btn.clicked.connect(self._open_yandex_disk_browser)
         layout.addWidget(yandex_browse_btn)
 
-        config_sync_btn = QPushButton()
-        config_sync_btn.setFixedSize(30, 30)
-        config_sync_btn.setToolTip("Синхронизировать конфиги с Яндекс.Диском")
-        config_sync_btn.setStyleSheet(icon_btn_style)
-        config_sync_btn.setIcon(make_icon("refresh", "#86868B", 15))
-        config_sync_btn.setIconSize(QSize(15, 15))
-        config_sync_btn.clicked.connect(self._config_sync.sync_now)
-        layout.addWidget(config_sync_btn)
+        self.footer_more_btn = QPushButton()
+        self.footer_more_btn.setFixedSize(30, 30)
+        self.footer_more_btn.setToolTip("Ещё")
+        self.footer_more_btn.setStyleSheet(icon_btn_style)
+        self.footer_more_btn.setIcon(make_icon("more", "#86868B", 15))
+        self.footer_more_btn.setIconSize(QSize(15, 15))
+        self.footer_more_btn.clicked.connect(self._show_footer_more_menu)
+        layout.addWidget(self.footer_more_btn)
 
-        self.config_sync_status_label = QLabel(self._config_sync.last_status_text())
-        self.config_sync_status_label.setFont(QFont(".AppleSystemUIFont", 10))
-        self.config_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
-        layout.addWidget(self.config_sync_status_label)
+        # Статус синхронизации конфигов — текстом он вместе с 3 иконками и
+        # Preview/Create в строку уже не помещается ни при каком разумном
+        # ограничении ширины (нижняя граница окна — 400px, а одному только
+        # Preview с иконкой нужно ~124px). Вместо текста — цветная точка:
+        # видна всегда, без клика, полный текст — во всплывающей подсказке
+        # и в меню «Ещё».
+        self.config_sync_dot = QLabel()
+        self.config_sync_dot.setFixedSize(10, 10)
+        layout.addWidget(self.config_sync_dot)
+        self._set_config_sync_status_text(self._config_sync.last_status_text(), color="#86868B")
 
         layout.addStretch()
 
@@ -4533,6 +5358,36 @@ class BeastApp(QMainWindow):
         layout.addWidget(self.generate_btn)
 
         return footer
+
+    def _show_footer_more_menu(self) -> None:
+        menu = QMenu(self)
+        status_text = getattr(self, "_config_sync_status_full_text", "") or "Статус синхронизации неизвестен"
+        status_action = menu.addAction(status_text)
+        status_action.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(make_icon("gear", "#86868B", 13), "Настройки…", self.open_settings)
+        menu.addAction(
+            make_icon("refresh", "#86868B", 13), "Синхронизировать конфиги сейчас", self._config_sync.sync_now
+        )
+        menu.addAction(
+            make_icon("doc", "#86868B", 13), "История ID маркеров", self._show_marker_registry_stats
+        )
+        menu.exec_(self.footer_more_btn.mapToGlobal(self.footer_more_btn.rect().bottomLeft()))
+
+    def _show_marker_registry_stats(self) -> None:
+        MarkerRegistryStatsDialog(chain_statistics(), parent=self).exec_()
+
+    def _set_config_sync_status_text(self, full_text: str, color: str = "#86868B") -> None:
+        # Полный текст статуса нигде в строке не показывается текстом (не
+        # помещается — см. _create_footer), только цветом точки-индикатора
+        # и во всплывающей подсказке/меню «Ещё».
+        self._config_sync_status_full_text = full_text or ""
+        tooltip = self._config_sync_status_full_text or "Статус синхронизации неизвестен"
+        self.config_sync_dot.setToolTip(tooltip)
+        self.config_sync_dot.setStyleSheet(
+            f"background-color: {color}; border-radius: 5px;"
+        )
+        self.footer_more_btn.setToolTip(f"Ещё\n{tooltip}")
 
     def apply_macos_theme(self):
         palette = QPalette()
@@ -5033,6 +5888,8 @@ class BeastApp(QMainWindow):
         table_rows = "".join(slot_row(slot_name) for slot_name in (
             "video", "csv", "params",
             "audio_20_c", "audio_20_uc", "audio_51_c", "audio_51_uc",
+            "audio_dcp_split_l", "audio_dcp_split_r", "audio_dcp_split_c",
+            "audio_dcp_split_lfe", "audio_dcp_split_ls", "audio_dcp_split_rs",
             "pdf_20_c", "pdf_20_uc", "pdf_20", "pdf_51_c", "pdf_51_uc", "pdf_51",
         ))
 
@@ -5356,10 +6213,11 @@ class BeastApp(QMainWindow):
 
         # Видимое имя модели рядом с индикатором — пользователь должен видеть,
         # какая модель сконфигурирована, не наводя курсор на точку.
-        self.ollama_model_label = QLabel(self.conclusion_gen.llm_model)
+        self.ollama_model_label = ClickableLabel(self.conclusion_gen.llm_model)
         self.ollama_model_label.setFont(QFont(".AppleSystemUIFont", 9))
-        self.ollama_model_label.setStyleSheet("color: #86868B;")
-        self.ollama_model_label.setToolTip("Ollama: не используется")
+        self.ollama_model_label.setStyleSheet("color: #86868B; text-decoration: underline;")
+        self.ollama_model_label.setToolTip("Ollama: не используется\nНажмите, чтобы сменить модель")
+        self.ollama_model_label.clicked.connect(self._show_model_picker)
 
         self.ai_enabled_checkbox = QPushButton("AI генерация")
         self.ai_enabled_checkbox.setFont(QFont(".AppleSystemUIFont", 11))
@@ -5539,7 +6397,7 @@ class BeastApp(QMainWindow):
         layout.addWidget(self.name_input)
         widget.setLayout(layout)
         return widget
-    
+
     def create_output_folder_section(self):
         widget = QWidget()
         widget.setStyleSheet("background: transparent;")
@@ -5739,6 +6597,7 @@ class BeastApp(QMainWindow):
 
         self.edit_sync_status_label = QLabel("")
         self.edit_sync_status_label.setVisible(False)
+        self.edit_sync_status_label.setWordWrap(True)
         self.edit_sync_status_label.setFont(QFont(".AppleSystemUIFont", 10))
         self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
         layout.addWidget(self.edit_sync_status_label)
@@ -6111,7 +6970,7 @@ class BeastApp(QMainWindow):
 
     # Заголовки пустого маркер-листа (совпадают с шапкой таблицы в exact_report_generator)
     _EMPTY_CSV_HEADERS = [
-        "Timecode In", "Timecode Out", "Description",
+        "ID", "Timecode In", "Timecode Out", "Description",
         "2.0 C", "2.0 UC", "5.1 C", "5.1 UC",
         "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ",
     ]
@@ -6240,28 +7099,46 @@ class BeastApp(QMainWindow):
             self.ollama_timer.stop()
             self._set_ollama_dot("disabled", "")
 
+    def _current_provider_and_model(self) -> tuple:
+        provider = self.conclusion_gen.llm_provider
+        if provider == "ollama":
+            model = self.conclusion_gen.llm_model
+        elif provider == "groq":
+            model = self.conclusion_gen.groq_service.model
+        elif provider == "yandexgpt":
+            model = self.conclusion_gen.yandexgpt_service.model
+        else:
+            model = self.conclusion_gen.gigachat_service.model
+        return provider, model
+
     def _set_ollama_dot(self, status: str, detail: str):
         """
-        Обновить цвет, подсказку и подпись модели у индикатора Ollama.
+        Обновить цвет, подсказку и подпись модели у индикатора провайдера LLM.
         detail — доп. контекст для тултипа (например, список установленных моделей).
         """
-        model_name = self.conclusion_gen.llm_model
+        provider, model_name = self._current_provider_and_model()
+        provider_label = {
+            "ollama": "Ollama", "groq": "Groq", "yandexgpt": "YandexGPT", "gigachat": "GigaChat",
+        }.get(provider, provider)
         styles = {
             "disabled": ("background-color: #8E8E93; border-radius: 4px;",
-                         "Ollama: не используется"),
+                         f"{provider_label}: не используется"),
             "checking": ("background-color: #FF9F0A; border-radius: 4px;",
-                         "Ollama: проверка соединения..."),
+                         f"{provider_label}: проверка соединения..."),
             "ok": ("background-color: #30D158; border-radius: 4px;",
-                   f"Ollama подключена ✓\nМодель «{model_name}» установлена и готова к работе"),
+                   f"{provider_label} подключена ✓\nМодель «{model_name}» готова к работе"),
             "no_service": ("background-color: #FF3B30; border-radius: 4px;",
-                           "Ollama не отвечает.\nЗапустите приложение Ollama "
-                           f"(host: {self.conclusion_gen.ollama_host})"),
+                           f"{provider_label} не отвечает."
+                           + (f"\nЗапустите приложение Ollama (host: {self.conclusion_gen.ollama_host})"
+                              if provider == "ollama" else "")),
             "model_missing": ("background-color: #FF9F0A; border-radius: 4px;",
                                f"Ollama подключена, но модель «{model_name}» не установлена.\n"
                                f"Выполните в терминале: ollama pull {model_name}"
                                + (f"\n\nУстановлены: {detail}" if detail else "")),
+            "no_key": ("background-color: #FF9F0A; border-radius: 4px;",
+                       f"{provider_label}: не заданы учётные данные.\nВведите их в меню выбора модели."),
             "error": ("background-color: #FF3B30; border-radius: 4px;",
-                      "Ollama: не удалось проверить статус"),
+                      f"{provider_label}: не удалось проверить статус"),
         }
         style, tooltip = styles.get(status, styles["disabled"])
         self.ollama_dot.setStyleSheet(style)
@@ -6273,25 +7150,226 @@ class BeastApp(QMainWindow):
             "ok": "#30D158",
             "no_service": "#FF3B30",
             "model_missing": "#FF9F0A",
+            "no_key": "#FF9F0A",
             "error": "#FF3B30",
         }
         self.ollama_model_label.setText(model_name)
-        self.ollama_model_label.setStyleSheet(f"color: {label_colors.get(status, '#86868B')};")
-        self.ollama_model_label.setToolTip(tooltip)
+        self.ollama_model_label.setStyleSheet(
+            f"color: {label_colors.get(status, '#86868B')}; text-decoration: underline;"
+        )
+        self.ollama_model_label.setToolTip(tooltip + "\n\nНажмите, чтобы сменить модель")
+
+    def _show_model_picker(self):
+        """Открывает компактный выбор модели и настроек доступа.
+
+        Список вариантов — AVAILABLE_LLM_MODELS (локальные модели Ollama —
+        точная/быстрая — и облачные модели для больших маркер-листов).
+        Текущая сохранённая в config/settings.json модель, если она не входит
+        в список (например, задана только в config/settings.yaml), тоже
+        показывается — чтобы не потерять то, что реально сконфигурировано.
+        """
+        current_provider, current_model = self._current_provider_and_model()
+        options = list(AVAILABLE_LLM_MODELS)
+        known_ollama_tags = {tag for prov, tag, _ in options if prov == "ollama"}
+        if current_provider == "ollama" and current_model not in known_ollama_tags:
+            options = [("ollama", current_model, current_model)] + options
+
+        dialog = LLMModelPickerDialog(
+            options,
+            current_provider,
+            current_model,
+            self.conclusion_gen.auto_select_llm_enabled,
+            self,
+        )
+
+        def select_model(provider: str, model_tag: str):
+            self._on_model_selected(provider, model_tag)
+            dialog.set_selected_model(*self._current_provider_and_model())
+
+        def edit_credentials(provider: str):
+            if provider == "groq":
+                self._prompt_for_groq_key()
+            elif provider == "yandexgpt":
+                self._prompt_for_yandexgpt_credentials()
+            else:
+                self._prompt_for_gigachat_key()
+
+        dialog.model_selected.connect(select_model)
+        dialog.auto_select_changed.connect(self._toggle_auto_select_llm)
+        dialog.credentials_requested.connect(edit_credentials)
+        dialog.exec_()
+
+    def _toggle_auto_select_llm(self, checked: bool):
+        """Включает/выключает автовыбор облачного провайдера по объёму/
+
+        разнообразию маркер-листа (см. ConclusionGenerator.maybe_auto_select_provider).
+        Сохраняется в settings.json — переживает перезапуск приложения.
+        """
+        self.conclusion_gen.set_auto_select_llm_enabled(checked)
+        settings = SettingsDialog.load_settings()
+        settings["llm_auto_select_enabled"] = checked
+        SettingsDialog.save_settings(settings)
+        logger.info(f"Автовыбор облачной модели: {'включён' if checked else 'выключен'}")
+
+    def _on_model_selected(self, provider: str, model_tag: str):
+        """Применяет выбранные в меню провайдера/модель: обновляет генератор,
+
+        статус и сохраняет выбор в settings.json — переживает перезапуск
+        приложения. Для облачного провайдера без сохранённых учётных данных
+        сначала просит их ввести (переключение отменяется, если пользователь
+        закрыл диалог без ввода).
+        """
+        current_provider, current_model = self._current_provider_and_model()
+        if provider == current_provider and model_tag == current_model:
+            return
+
+        if provider == "groq" and not self.conclusion_gen.groq_service.get_api_key():
+            if not self._prompt_for_groq_key():
+                return
+        if provider == "yandexgpt" and not (
+            self.conclusion_gen.yandexgpt_service.get_api_key()
+            and self.conclusion_gen.yandexgpt_service.get_folder_id()
+        ):
+            if not self._prompt_for_yandexgpt_credentials():
+                return
+        if provider == "gigachat" and not self.conclusion_gen.gigachat_service.get_auth_key():
+            if not self._prompt_for_gigachat_key():
+                return
+
+        self.conclusion_gen.set_llm_provider(provider)
+        if provider == "ollama":
+            self.conclusion_gen.set_llm_model(model_tag)
+        elif provider == "groq":
+            self.conclusion_gen.groq_service.model = model_tag
+        elif provider == "yandexgpt":
+            self.conclusion_gen.yandexgpt_service.model = model_tag
+        else:
+            self.conclusion_gen.gigachat_service.model = model_tag
+
+        settings = SettingsDialog.load_settings()
+        settings["llm_provider"] = provider
+        if provider == "ollama":
+            settings["llm_model"] = model_tag
+        elif provider == "groq":
+            settings["llm_groq_model"] = model_tag
+        elif provider == "yandexgpt":
+            settings["llm_yandexgpt_model"] = model_tag
+        else:
+            settings["llm_gigachat_model"] = model_tag
+        SettingsDialog.save_settings(settings)
+        logger.info(f"LLM переключён на «{provider}:{model_tag}»")
+        if self.conclusion_gen.use_llm:
+            self._set_ollama_dot("checking", "")
+            self._check_ollama_status()
+        else:
+            self._set_ollama_dot("disabled", "")
+
+    def _prompt_for_groq_key(self) -> bool:
+        """Просит пользователя ввести API-ключ Groq и сохраняет его в Связку
+
+        ключей macOS (см. src/secret_store.py). Возвращает False, если
+        пользователь отменил ввод или оставил поле пустым — переключение на
+        Groq в этом случае не происходит.
+        """
+        key, ok = QInputDialog.getText(
+            self,
+            "API-ключ Groq",
+            "Вставьте API-ключ Groq (console.groq.com/keys):",
+        )
+        if not ok or not key.strip():
+            return False
+        from src import secret_store
+        secret_store.save_groq_key(key.strip())
+        return True
+
+    def _prompt_for_yandexgpt_credentials(self) -> bool:
+        """Просит API-ключ и folder_id YandexGPT (Yandex Cloud) и сохраняет
+
+        их в Связку ключей macOS. Возвращает False, если пользователь отменил
+        ввод любого из двух полей — переключение на YandexGPT в этом случае
+        не происходит.
+        """
+        from src import secret_store
+
+        key, ok = QInputDialog.getText(
+            self,
+            "API-ключ YandexGPT",
+            "Вставьте API-ключ сервисного аккаунта Yandex Cloud\n"
+            "(роль ai.languageModels.user, раздел «Сервисные аккаунты»):",
+        )
+        if not ok or not key.strip():
+            return False
+
+        folder_id, ok = QInputDialog.getText(
+            self,
+            "Folder ID YandexGPT",
+            "Вставьте ID каталога (folder) Yandex Cloud:",
+        )
+        if not ok or not folder_id.strip():
+            return False
+
+        secret_store.save_yandexgpt_key(key.strip())
+        secret_store.save_yandexgpt_folder_id(folder_id.strip())
+        return True
+
+    def _prompt_for_gigachat_key(self) -> bool:
+        """Просит "Authorization key" GigaChat (base64 client_id:client_secret,
+
+        личный кабинет developers.sber.ru) и сохраняет его в Связку ключей
+        macOS. Возвращает False, если пользователь отменил ввод — переключение
+        на GigaChat в этом случае не происходит.
+        """
+        from src import secret_store
+
+        key, ok = QInputDialog.getText(
+            self,
+            "Ключ GigaChat",
+            "Вставьте Authorization key GigaChat\n"
+            "(личный кабинет developers.sber.ru → раздел GigaChat API):",
+        )
+        if not ok or not key.strip():
+            return False
+        secret_store.save_gigachat_key(key.strip())
+        return True
 
     def _check_ollama_status(self):
-        """Проверить доступность Ollama и наличие модели в фоновом потоке (thread-safe через сигнал)."""
+        """Проверить доступность текущего провайдера LLM (Ollama/Groq/
+
+        YandexGPT/GigaChat) в фоновом потоке (thread-safe через сигнал).
+        """
         import threading
+
+        provider = self.conclusion_gen.llm_provider
 
         def _ping():
             try:
-                info = self.conclusion_gen.get_ollama_status()
-                if not info["reachable"]:
-                    new_status, detail = "no_service", ""
-                elif not info["model_installed"]:
-                    new_status, detail = "model_missing", ", ".join(info["installed_models"][:5])
+                if provider == "groq":
+                    info = self.conclusion_gen.get_groq_status()
+                    if not info["has_key"]:
+                        new_status, detail = "no_key", ""
+                    elif not info["reachable"]:
+                        new_status, detail = "no_service", ""
+                    else:
+                        new_status, detail = "ok", ""
+                elif provider == "yandexgpt":
+                    info = self.conclusion_gen.get_yandexgpt_status()
+                    new_status, detail = ("ok", "") if info["reachable"] else ("no_key", "")
+                elif provider == "gigachat":
+                    info = self.conclusion_gen.get_gigachat_status()
+                    if not info["has_key"]:
+                        new_status, detail = "no_key", ""
+                    elif not info["reachable"]:
+                        new_status, detail = "no_service", ""
+                    else:
+                        new_status, detail = "ok", ""
                 else:
-                    new_status, detail = "ok", ""
+                    info = self.conclusion_gen.get_ollama_status()
+                    if not info["reachable"]:
+                        new_status, detail = "no_service", ""
+                    elif not info["model_installed"]:
+                        new_status, detail = "model_missing", ", ".join(info["installed_models"][:5])
+                    else:
+                        new_status, detail = "ok", ""
             except Exception:
                 new_status, detail = "error", ""
             self._ollama_status_signal.emit(new_status, detail)
@@ -6424,6 +7502,9 @@ class BeastApp(QMainWindow):
     
     def start_processing(self):
         """Запуск обработки файлов"""
+        # Обычно сервисы уже готовы через 150 мс после показа окна. Этот
+        # вызов страхует сверхбыстрое действие пользователя и тестовые вызовы.
+        self._finish_deferred_startup()
         logger.info("=== ЗАПУСК ОБРАБОТКИ ===")
         self.preview_timer.stop()
 
@@ -6462,22 +7543,135 @@ class BeastApp(QMainWindow):
         if getattr(self, "auto_report_type_checkbox", None) and self.auto_report_type_checkbox.isChecked():
             self._apply_auto_detected_report_type(self._get_all_loaded_files())
 
-        # Перед генерацией — фоновый скан CSV на опечатки и диалог ревью
-        # «было → стало»: в отчёт попадают только одобренные замены
-        # (см. src/spellcheck_review.py). Кнопки блокируются сразу, чтобы
-        # повторный клик «Создать» не запустил второй скан/генерацию.
+        # В ME-пакетах DX/OPT нередко приходят с внутренними или полностью
+        # нейтральными именами. Надёжные общеупотребимые обозначения назначаем
+        # автоматически; слабые/неизвестные и конфликтующие имена обязательно
+        # показываем пользователю до запуска фоновой обработки.
+        if self.get_report_type() in {"me", "me_ours"}:
+            candidates = collect_me_assignment_candidates(self.files_data)
+            if candidates:
+                auto_assignments = {
+                    item["path"]: (item.get("existing_key") or item["suggested_key"])
+                    for item in candidates
+                    if item.get("existing_key") or item.get("suggested_key")
+                }
+                if any(item.get("needs_review") for item in candidates):
+                    dialog = METrackAssignmentDialog(candidates, parent=self)
+                    if dialog.exec_() != QDialog.Accepted:
+                        logger.info("Генерация отменена на распределении ME/DX/OPT дорожек")
+                        return
+                    self.files_data["me_track_assignments"] = dialog.result_assignments
+                else:
+                    self.files_data["me_track_assignments"] = auto_assignments
+                logger.info(
+                    "ME assignments: %s",
+                    self.files_data.get("me_track_assignments", {}),
+                )
+
         csv_files_for_scan = self.files_data.get('csv', [])
         if csv_files_for_scan:
+            self._marker_identity_plan = None
+            self._processing_active = True
+            self._set_generate_button_processing(True)
+            self._update_action_buttons()
+            self.progress_card.setVisible(True)
+            self._set_progress_status_text("Синхронизация истории ID маркеров…")
+            self._marker_identity_thread = MarkerIdentityPrepareThread(
+                SettingsDialog.get_yandex_token(),
+                csv_files_for_scan[0],
+                SettingsDialog.get_yandex_roots(),
+            )
+            self._marker_identity_thread.prepared.connect(self._on_marker_identity_prepared)
+            self._marker_identity_thread.conflict.connect(self._on_marker_identity_conflict)
+            self._marker_identity_thread.failed.connect(self._on_marker_identity_failed)
+            self._marker_identity_thread.start()
+            return
+
+        self._continue_processing_after_marker_identity()
+
+    def _on_marker_identity_prepared(self, plan):
+        if getattr(self, "_closing", False):
+            return
+        if plan.warning:
+            QMessageBox.warning(self, "ID маркеров — офлайн-режим", plan.warning)
+        if plan.ambiguities:
+            dialog = MarkerIdentityResolutionDialog(plan, parent=self)
+            if dialog.exec_() != QDialog.Accepted:
+                self._processing_active = False
+                self._set_generate_button_processing(False)
+                self._update_action_buttons()
+                self.progress_card.setVisible(False)
+                return
+            try:
+                plan = apply_ambiguity_choices(plan, dialog.choices)
+            except ValueError as exc:
+                self._on_marker_identity_failed(str(exc))
+                return
+        self._marker_identity_plan = plan.to_dict()
+        self._continue_processing_after_marker_identity()
+
+    def _on_marker_identity_conflict(self, conflict):
+        if getattr(self, "_closing", False):
+            return
+        dialog = MarkerRegistryConflictDialog(conflict, parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            self._processing_active = False
+            self._set_generate_button_processing(False)
+            self._update_action_buttons()
+            self.progress_card.setVisible(False)
+            return
+        token = SettingsDialog.get_yandex_token()
+        if not token:
+            self._on_marker_identity_failed("Для разрешения конфликта требуется подключение к Яндекс Диску")
+            return
+        self._set_progress_status_text("Разрешение конфликта истории ID…")
+        self._marker_conflict_thread = MarkerIdentityConflictResolveThread(
+            token, conflict, dialog.choices
+        )
+        self._marker_conflict_thread.resolved.connect(self._on_marker_identity_conflict_resolved)
+        self._marker_conflict_thread.failed.connect(self._on_marker_identity_failed)
+        self._marker_conflict_thread.start()
+
+    def _on_marker_identity_conflict_resolved(self, _mapping):
+        csv_files = self.files_data.get("csv", [])
+        if not csv_files:
+            self._continue_processing_after_marker_identity()
+            return
+        self._set_progress_status_text("Повторная проверка истории ID…")
+        self._marker_identity_thread = MarkerIdentityPrepareThread(
+            SettingsDialog.get_yandex_token(), csv_files[0], SettingsDialog.get_yandex_roots()
+        )
+        self._marker_identity_thread.prepared.connect(self._on_marker_identity_prepared)
+        self._marker_identity_thread.conflict.connect(self._on_marker_identity_conflict)
+        self._marker_identity_thread.failed.connect(self._on_marker_identity_failed)
+        self._marker_identity_thread.start()
+
+    def _on_marker_identity_failed(self, message: str):
+        self._processing_active = False
+        self._set_generate_button_processing(False)
+        self._update_action_buttons()
+        self.progress_card.setVisible(False)
+        QMessageBox.critical(self, "Не удалось подготовить ID маркеров", message)
+
+    def _continue_processing_after_marker_identity(self):
+        """Run spellcheck after marker history has been synchronized/reviewed."""
+        csv_files_for_scan = self.files_data.get('csv', [])
+        if csv_files_for_scan:
+            settings = SettingsDialog.load_settings()
             self._processing_active = True
             self._set_generate_button_processing(True)
             self._update_action_buttons()
             self.progress_card.setVisible(True)
             self._set_progress_status_text("Проверка орфографии маркер-листа…")
-            self._spell_scan_thread = SpellcheckScanThread(csv_files_for_scan[0])
+            self._spell_scan_thread = SpellcheckScanThread(
+                csv_files_for_scan[0],
+                config=self.config,
+                generate_fn=self.conclusion_gen._ollama_generate
+                if settings.get("llm_spellcheck_enabled", True) else None,
+            )
             self._spell_scan_thread.finished_scan.connect(self._on_spell_scan_finished)
             self._spell_scan_thread.start()
             return
-
         self._start_processing_stage2(spell_approved=None)
 
     def _on_spell_scan_finished(self, proposals: list):
@@ -6496,18 +7690,8 @@ class BeastApp(QMainWindow):
 
     def _start_processing_stage2(self, spell_approved):
         """Продолжение start_processing после (возможного) ревью орфографии."""
-        # Получаем базовое имя для папки
-        audio_files = self.files_data.get('audio', [])
-        video_files = self.files_data.get('video', [])
-        csv_files = self.files_data.get('csv', [])
-        
-        base_name = "отчет"
-        if audio_files:
-            base_name = sanitize_base_name(audio_files[0])
-        elif video_files:
-            base_name = sanitize_base_name(video_files[0])
-        elif csv_files:
-            base_name = sanitize_base_name(csv_files[0])
+        report_type = self.get_report_type()
+        base_name = select_report_base_name(self.files_data, report_type)
         
         # Папка вывода: выбранная пользователем или Рабочий стол
         if self.output_folder_path:
@@ -6535,18 +7719,35 @@ class BeastApp(QMainWindow):
         self.prepared_by = self.name_input.text().strip() or "Не указано"
         
         # Запускаем поток с Desktop папкой
-        report_type = self.get_report_type()
         _saved_settings = SettingsDialog.load_settings()
         pyloudnorm_enabled = _saved_settings.get("extended_analysis_enabled", False)
-        tp_verify_enabled = self.tp_verify_checkbox.isChecked()
+        me_assignments = self.files_data.get("me_track_assignments") or {}
+        dynamic_me_audio_present = any(
+            key != "__ignore__"
+            and str(key).startswith("audio_")
+            and dynamic_me_track_from_key(key)
+            for key in me_assignments.values()
+        )
+        # По требованиям ME точный True Peak для DX/OPT обязателен, поэтому
+        # эти дорожки измеряются даже если общий переключатель TP verify выключен.
+        tp_verify_main_mix_enabled = self.tp_verify_checkbox.isChecked()
+        tp_verify_enabled = tp_verify_main_mix_enabled or (
+            report_type in {"me", "me_ours"} and dynamic_me_audio_present
+        )
         delete_sources = _saved_settings.get("delete_sources_after_copy", False)
         logger.info(f"PyLoudNorm: {pyloudnorm_enabled}, Report type: {report_type}")
-        logger.info(f"TP verify: {tp_verify_enabled}, Delete sources: {delete_sources}")
+        logger.info(
+            f"TP verify: {tp_verify_enabled}, "
+            f"main mixes: {tp_verify_main_mix_enabled}, "
+            f"Delete sources: {delete_sources}"
+        )
 
         self.thread = ProcessingThread(
             self, self.files_data, report_type, str(output_folder),
             pyloudnorm_enabled, tp_verify_enabled, delete_sources,
             spell_approved=spell_approved,
+            tp_verify_main_mix_enabled=tp_verify_main_mix_enabled,
+            marker_identity_plan=getattr(self, "_marker_identity_plan", None),
         )
         self.thread.status_update.connect(self.on_thread_status_update)
         self.thread.progress_update.connect(self.on_thread_progress_update)
@@ -6639,9 +7840,17 @@ class BeastApp(QMainWindow):
 
             _settings = SettingsDialog.load_settings()
             if report_ready and _settings.get("yandex_auto_upload", False) and SettingsDialog.get_yandex_token():
-                meta = parse_report_filename(self.last_report_docx_path.name)
-                self._yandex_queue.enqueue(self.last_output_folder, meta)
-                self._start_npr_upload_flow()
+                # Раньше: отчёт тихо уходил в очередь автозагрузки (если
+                # папка не резолвилась — "нужна папка" просто зависала там
+                # до отдельного клика в YandexUploadQueueDialog), а npr
+                # отправлялся сразу и независимо от отчёта — при первой
+                # отправке серии можно было получить два несвязанных пикера
+                # в разное время. Теперь автозагрузка идёт тем же путём
+                # резолва+комбинированного пикера, что и ручная кнопка
+                # «Отправить» — см. _send_report_to_disk. Очередь
+                # (self._yandex_queue) остаётся только для повтора при
+                # сетевых сбоях (см. _on_yandex_upload_network_unavailable).
+                self._send_report_to_disk()
 
             if _settings.get("auto_reset_after_done", True):
                 self.auto_reset_timer.start(5000)
@@ -6685,6 +7894,41 @@ class BeastApp(QMainWindow):
     def _on_yandex_queue_offline_changed(self, offline: bool):
         self._yandex_queue_offline = offline
         self._update_yandex_queue_badge()
+
+    def _on_yandex_auth_expired(self, message: str) -> None:
+        # Очередь уже на паузе (queue_manager._on_job_auth_expired) — осталось
+        # предложить войти заново; после входа она продолжится сама.
+        _send_system_notification("Яндекс.Диск", "Сессия истекла — отправка отчётов приостановлена")
+        if getattr(self, "_yandex_relogin_prompt_active", False):
+            return
+        self._yandex_relogin_prompt_active = True
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle("Яндекс.Диск")
+            box.setIcon(QMessageBox.Warning)
+            box.setText("Сессия Яндекса истекла — отправка отчётов приостановлена.")
+            box.setInformativeText("Войдите снова — очередь продолжится автоматически после входа.")
+            relogin_btn = box.addButton("Войти снова", QMessageBox.AcceptRole)
+            box.addButton("Позже", QMessageBox.RejectRole)
+            box.exec_()
+            if box.clickedButton() is relogin_btn:
+                self._relogin_yandex_account()
+        finally:
+            self._yandex_relogin_prompt_active = False
+
+    def _relogin_yandex_account(self) -> None:
+        """Повторный вход в Яндекс после 401 — тот же Device Flow, что и из
+
+        настроек (см. SettingsDialog._on_yandex_login_clicked), только без
+        промежуточного сохранения в поле настроек: токен сразу в Связку.
+        """
+        dialog = YandexOAuthDialog(parent=self)
+        if dialog.exec_() == QDialog.Accepted and dialog.token:
+            secret_store.save_token(dialog.token)
+            self._yandex_queue.resume_after_relogin()
+            config_sync = getattr(self, "_config_sync", None)
+            if config_sync is not None:
+                config_sync.sync_now()
 
     def _on_yandex_queue_job_uploaded(self, local_folder: str, remote_path: str):
         self._yandex_remote_by_local[local_folder] = remote_path
@@ -6733,9 +7977,193 @@ class BeastApp(QMainWindow):
         forget_uploaded_reports(missing)
 
     def _send_report_to_disk(self):
-        """Сравнивает отчёт с предыдущей версией и отправляет его на Яндекс.Диск."""
-        self._start_yandex_flow(action="send")
-        self._start_npr_upload_flow()
+        """Сравнивает отчёт с предыдущей версией и отправляет его на Яндекс.Диск.
+
+        Если вместе с отчётом отправляются и .npr-файлы (Nuendo) на ещё не
+        определённые пути — сначала резолвятся ОБА пути одним фоновым
+        проходом (см. _on_combined_targets_resolved), чтобы при
+        необходимости показать один комбинированный пикер вместо двух
+        последовательных диалогов. Без npr-файлов (или без настроенного
+        корня для них) — как раньше, два независимых потока.
+        """
+        if not self.last_report_docx_path or not self.last_report_docx_path.exists():
+            QMessageBox.warning(self, "Нет отчёта", "Сначала сгенерируйте отчёт.")
+            return
+        if self._capture_yandex_report_folder() is None:
+            QMessageBox.critical(
+                self, "Ошибка Яндекс.Диска",
+                "Не найдена локальная папка готового отчёта. Создайте отчёт повторно."
+            )
+            return
+
+        npr_files = getattr(self, "_pending_npr_files", None)
+        if npr_files is None:
+            npr_files = self.files_data.get('npr') or []
+        npr_root = SettingsDialog.get_yandex_npr_root()
+
+        if not npr_files or not npr_root:
+            self._start_yandex_flow(action="send")
+            self._start_npr_upload_flow()
+            return
+
+        token = SettingsDialog.get_yandex_token()
+        if not token:
+            QMessageBox.warning(
+                self, "Нет токена",
+                "Укажите OAuth-токен Яндекс.Диска в настройках (кнопка «Настройки»)."
+            )
+            return
+
+        self._yandex_token = token
+        self._yandex_action = "send"
+        self._yandex_meta = parse_report_filename(self.last_report_docx_path.name)
+        self._yandex_fallback_key = (
+            None if self._yandex_meta else fallback_series_key(self.last_report_docx_path.name)
+        )
+        report_lookup_key = self._yandex_meta.series if self._yandex_meta else self._yandex_fallback_key
+        self._set_yandex_buttons_enabled(False)
+
+        self._npr_root = npr_root
+        self._npr_key = fallback_series_key(Path(npr_files[0]).name)
+        self._npr_files_pending = list(npr_files)
+
+        self._yandex_combined_thread = YandexCombinedFindThread(
+            token, report_lookup_key, SettingsDialog.get_yandex_roots(), self._yandex_meta,
+            self._npr_key, npr_root,
+        )
+        self._yandex_combined_thread.resolved.connect(self._on_combined_targets_resolved)
+        self._yandex_combined_thread.failed.connect(self._on_yandex_failed)
+        self._yandex_combined_thread.start()
+
+    def _on_combined_targets_resolved(self, result: dict) -> None:
+        if getattr(self, "_closing", False):
+            return
+        episode_path = result.get("episode_path")
+        series_path = result.get("series_path")
+        npr_folder = result.get("npr_folder")
+        alias_key = self._yandex_meta.series if self._yandex_meta else self._yandex_fallback_key
+
+        if episode_path and npr_folder:
+            self._yandex_target_folder = episode_path
+            remember_series_alias(alias_key, series_path)
+            self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
+            self._start_npr_upload(target_folder_path=npr_folder)
+        elif not episode_path and npr_folder:
+            # npr уже резолвился — грузим его сразу, отдельно от отчёта.
+            self._start_npr_upload(target_folder_path=npr_folder)
+            self._prompt_report_folder_not_found_after_combined_resolve()
+        elif episode_path and not npr_folder:
+            self._yandex_target_folder = episode_path
+            remember_series_alias(alias_key, series_path)
+            self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
+            self._on_npr_needs_folder("")  # существующий одиночный пикер npr
+        else:
+            self._open_combined_folder_picker()
+
+    def _prompt_report_folder_not_found_after_combined_resolve(self) -> None:
+        """Папка отчёта не резолвилась, а папка npr уже резолвилась отдельно
+
+        (см. _on_combined_targets_resolved) — предлагаем то же самое, что и
+        обычный одиночный путь резолва: создать автоматически/выбрать
+        вручную/отмена для распознанного имени файла, сразу ручной выбор
+        для нераспознанного. Только для action="send" (сюда попадаем
+        исключительно из комбинированного потока, который есть только для
+        отправки с npr — сравнение npr не касается).
+        """
+        self._set_yandex_buttons_enabled(True)
+        if self._yandex_meta is None:
+            self._open_yandex_folder_picker()
+            return
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Папка не найдена")
+        msg.setText(
+            f"Папка «{self._yandex_meta.series}» не найдена на Диске.\n"
+            "Создать автоматически по имени файла или выбрать папку вручную?"
+        )
+        auto_btn = msg.addButton("Создать автоматически", QMessageBox.AcceptRole)
+        manual_btn = msg.addButton("Выбрать вручную", QMessageBox.ActionRole)
+        msg.addButton("Отмена", QMessageBox.RejectRole)
+        msg.exec_()
+        clicked = msg.clickedButton()
+        if clicked is auto_btn:
+            self._start_yandex_upload(create_if_missing=True)
+        elif clicked is manual_btn:
+            self._open_yandex_folder_picker()
+
+    def _open_combined_folder_picker(self) -> None:
+        """Ни папка отчёта, ни папка npr не резолвились — один диалог с
+
+        двумя деревьями вместо двух последовательных пикеров (см.
+        _on_combined_targets_resolved).
+        """
+        from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+
+        try:
+            client = YandexDiskClient(self._yandex_token)
+            report_suggested_name = self._yandex_meta.series if self._yandex_meta else self._yandex_fallback_key
+            dialog = CombinedFolderPickerDialog(
+                client, report_roots=SettingsDialog.get_yandex_roots(), npr_root=self._npr_root,
+                parent=self,
+                npr_prompt_text=f"Папка сезона для Nuendo-проекта «{self._npr_key}»",
+                npr_aliases_path=NPR_ALIASES_FILE,
+                report_suggested_name=report_suggested_name or "",
+                npr_suggested_name=self._npr_key,
+            )
+        except YandexDiskError as exc:
+            self._set_yandex_buttons_enabled(True)
+            QMessageBox.critical(self, "Ошибка Яндекс.Диска", str(exc))
+            return
+
+        if dialog.exec_() != QDialog.Accepted:
+            self._set_yandex_buttons_enabled(True)
+            return
+
+        episode_path, series_path = resolve_manual_pick_target(dialog.report_selected_path, self._yandex_meta)
+        npr_folder = dialog.npr_selected_path
+        self._combined_picker_mkdir_thread = _MkdirThread(client, episode_path)
+        self._combined_picker_mkdir_thread.finished_mkdir.connect(
+            lambda success, message: self._on_combined_picker_mkdir_done(
+                success, message, episode_path, series_path, npr_folder,
+            )
+        )
+        self._combined_picker_mkdir_thread.start()
+
+    def _on_combined_picker_mkdir_done(
+        self, success: bool, message: str, episode_path: str, series_path: str, npr_folder: str,
+    ) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if not success:
+            self._set_yandex_buttons_enabled(True)
+            QMessageBox.critical(self, "Ошибка Яндекс.Диска", message)
+            return
+
+        self._yandex_target_folder = episode_path
+        if self._yandex_meta is not None:
+            remember_series_alias(self._yandex_meta.series, series_path)
+        elif getattr(self, "_yandex_fallback_key", None):
+            remember_series_alias(self._yandex_fallback_key, series_path)
+
+        self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
+        self._start_npr_upload(target_folder_path=npr_folder)
+
+    def _start_npr_upload(self, target_folder_path: str) -> None:
+        """Запускает отправку .npr-файлов в уже известную (резолвленную)
+
+        папку — без повторного её поиска внутри потока (в отличие от
+        _start_npr_upload_flow, который сам резолвит через needs_folder).
+        """
+        token = SettingsDialog.get_yandex_token()
+        self._npr_upload_status = "Nuendo: отправка…"
+        self._refresh_yandex_upload_status_label()
+        self._npr_upload_thread = NprUploadThread(
+            token, self._npr_root, self._npr_key, self._npr_files_pending,
+            target_folder_path=target_folder_path,
+        )
+        self._npr_upload_thread.progress.connect(self._on_npr_upload_progress)
+        self._npr_upload_thread.finished_upload.connect(self._on_npr_upload_finished)
+        self._npr_upload_thread.network_unavailable.connect(self._on_npr_network_unavailable)
+        self._npr_upload_thread.start()
 
     def _compare_report_with_disk(self):
         """Только сравнивает отчёт с версией на Яндекс.Диске, без отправки."""
@@ -6780,17 +8208,27 @@ class BeastApp(QMainWindow):
         self._npr_root = npr_root
         self._npr_key = fallback_series_key(Path(npr_files[0]).name)
         self._npr_files_pending = list(npr_files)
+        self._npr_upload_status = "Nuendo: отправка…"
+        self._refresh_yandex_upload_status_label()
         self._npr_upload_thread = NprUploadThread(token, npr_root, self._npr_key, npr_files)
+        self._npr_upload_thread.progress.connect(self._on_npr_upload_progress)
         self._npr_upload_thread.finished_upload.connect(self._on_npr_upload_finished)
         self._npr_upload_thread.needs_folder.connect(self._on_npr_needs_folder)
         self._npr_upload_thread.network_unavailable.connect(self._on_npr_network_unavailable)
         self._npr_upload_thread.start()
 
+    def _on_npr_upload_progress(self, done: int, total: int) -> None:
+        self._npr_upload_status = f"Nuendo: {done}/{total}"
+        self._refresh_yandex_upload_status_label()
+
     def _on_npr_upload_finished(self, success: bool, message: str):
+        self._npr_upload_status = ""
+        self._refresh_yandex_upload_status_label()
         if getattr(self, "_closing", False):
             return
         if success:
             _play_sound()
+            _send_system_notification("Nuendo-проект отправлен на Диск", message)
             logger.info("Npr-файлы отправлены на Диск: %s", message)
         else:
             QMessageBox.critical(self, "Ошибка отправки Nuendo-проекта", message)
@@ -6815,6 +8253,8 @@ class BeastApp(QMainWindow):
                     "Все .npr-файлы этого сезона будут лежать в выбранной\n"
                     "папке одним списком, без деления на эпизоды."
                 ),
+                aliases_path=NPR_ALIASES_FILE,
+                suggested_name=self._npr_key,
             )
         except YandexDiskError as exc:
             QMessageBox.critical(self, "Ошибка Яндекс.Диска", str(exc))
@@ -6823,15 +8263,20 @@ class BeastApp(QMainWindow):
         if dialog.exec_() != QDialog.Accepted or not dialog.selected_path:
             return
 
+        self._npr_upload_status = "Nuendo: отправка…"
+        self._refresh_yandex_upload_status_label()
         self._npr_upload_thread = NprUploadThread(
             token, self._npr_root, self._npr_key, self._npr_files_pending,
             target_folder_path=dialog.selected_path,
         )
+        self._npr_upload_thread.progress.connect(self._on_npr_upload_progress)
         self._npr_upload_thread.finished_upload.connect(self._on_npr_upload_finished)
         self._npr_upload_thread.start()
 
     def _on_npr_network_unavailable(self, message: str):
         logger.warning("Нет сети при отправке npr-файлов: %s", message)
+        self._npr_upload_status = ""
+        self._refresh_yandex_upload_status_label()
 
     def _open_yandex_disk_browser(self):
         """Открывает просмотрщик файлов на Яндекс.Диске (папка «отчеты»)."""
@@ -6842,7 +8287,15 @@ class BeastApp(QMainWindow):
                 "Укажите OAuth-токен Яндекс.Диска в настройках (кнопка «Настройки»)."
             )
             return
-        dialog = YandexDiskBrowserDialog(token, roots=SettingsDialog.get_yandex_roots(), parent=self)
+        local_draft = self.last_report_docx_path if self.last_report_docx_path and self.last_report_docx_path.exists() else None
+        dialog = YandexDiskBrowserDialog(
+            token, report_roots=SettingsDialog.get_yandex_roots(),
+            npr_root=SettingsDialog.get_yandex_npr_root(), parent=self,
+            shared_root=SettingsDialog.get_yandex_shared_root(),
+            tiflo_root=SettingsDialog.get_yandex_tiflo_root(),
+            upload_status_source=self, local_draft_docx_path=local_draft,
+            summary_generator=self.conclusion_gen,
+        )
         dialog.exec_()
 
     def _set_yandex_buttons_enabled(self, enabled: bool):
@@ -6855,6 +8308,12 @@ class BeastApp(QMainWindow):
         """action: "send" (сравнить и отправить) или "compare" (только сравнить)."""
         if not self.last_report_docx_path or not self.last_report_docx_path.exists():
             QMessageBox.warning(self, "Нет отчёта", "Сначала сгенерируйте отчёт.")
+            return
+        if self._capture_yandex_report_folder() is None:
+            QMessageBox.critical(
+                self, "Ошибка Яндекс.Диска",
+                "Не найдена локальная папка готового отчёта. Создайте отчёт повторно."
+            )
             return
 
         token = SettingsDialog.get_yandex_token()
@@ -6944,7 +8403,12 @@ class BeastApp(QMainWindow):
 
         try:
             client = YandexDiskClient(self._yandex_token)
-            dialog = YandexFolderPickerDialog(client, roots=SettingsDialog.get_yandex_roots(), parent=self)
+            _meta = getattr(self, "_yandex_meta", None)
+            report_suggested_name = _meta.series if _meta else (getattr(self, "_yandex_fallback_key", "") or "")
+            dialog = YandexFolderPickerDialog(
+                client, roots=SettingsDialog.get_yandex_roots(), parent=self,
+                suggested_name=report_suggested_name,
+            )
         except YandexDiskError as exc:
             self._set_yandex_buttons_enabled(True)
             QMessageBox.critical(self, "Ошибка Яндекс.Диска", str(exc))
@@ -6985,7 +8449,7 @@ class BeastApp(QMainWindow):
             self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
             return
 
-        self._yandex_versions_thread = YandexDiskFolderVersionsThread(self._yandex_token, episode_path)
+        self._yandex_versions_thread = YandexDiskFolderVersionsThread(self._yandex_token, episode_path, meta=self._yandex_meta)
         self._yandex_versions_thread.resolved.connect(self._handle_yandex_versions)
         self._yandex_versions_thread.failed.connect(self._on_yandex_failed)
         self._yandex_versions_thread.start()
@@ -7004,7 +8468,7 @@ class BeastApp(QMainWindow):
             self._start_yandex_upload(create_if_missing=False, target_folder_path=episode_path)
             return
 
-        self._yandex_versions_thread = YandexDiskFolderVersionsThread(self._yandex_token, episode_path)
+        self._yandex_versions_thread = YandexDiskFolderVersionsThread(self._yandex_token, episode_path, meta=self._yandex_meta)
         self._yandex_versions_thread.resolved.connect(self._handle_yandex_versions)
         self._yandex_versions_thread.failed.connect(self._on_yandex_failed)
         self._yandex_versions_thread.start()
@@ -7016,8 +8480,27 @@ class BeastApp(QMainWindow):
         В итоговом окне есть кнопка «Выбрать другую версию» — тогда
         открывается полный выбор (любые две версии между собой, например
         первую с четвёртой).
+
+        versions приходит НЕотфильтрованным по variant (см.
+        YandexDiskFindVersionsThread/YandexDiskFolderVersionsThread —
+        строгая фильтрация по variant внутри list_report_versions требует,
+        чтобы каждый кандидат совпал с REPORT_PATTERN целиком, и молча
+        выбрасывала версии с нестандартным именем, даже если они на самом
+        деле того же варианта, что и текущий черновик). Если вариант
+        черновика известен (self._yandex_meta), группируем по категории
+        (то же лёгкое сканирование имени, что и в просмотрщике Диска —
+        см. group_versions_by_category) и берём именно её — иначе одна
+        папка с несколькими вариантами (обычный/ME/AD) сравнивала бы
+        черновик не с той версией. Без известного варианта (fallback по
+        имени файла — см. _start_yandex_flow) разбираться, увы, не из чего,
+        берём как есть.
         """
         self._set_yandex_buttons_enabled(True)
+
+        if self._yandex_meta is not None and versions:
+            groups = group_versions_by_category(versions)
+            wanted_category = categorize_variant(self._yandex_meta.variant)
+            versions = groups.get(wanted_category, [])
         self._yandex_versions_cache = versions
 
         if not versions:
@@ -7066,21 +8549,84 @@ class BeastApp(QMainWindow):
             old_label=getattr(self, "_yandex_old_label", None),
             new_label=getattr(self, "_yandex_new_label", None),
             allow_pick_another=True,
+            summary_generator=self.conclusion_gen,
         )
         result_code = dialog.exec_()
 
         if result_code == YandexUploadDiffDialog.PICK_ANOTHER:
             self._open_yandex_version_picker()
 
+    def _refresh_yandex_upload_status_label(self) -> None:
+        """Объединяет статусы отчёта и npr в одной строке-лейбле.
+
+        Раньше прогресс npr нигде не отображался вообще (только звук по
+        завершении), хотя отчёт и npr теперь нередко грузятся одновременно
+        (см. _on_combined_targets_resolved) — не видно было, что npr вообще
+        что-то делает.
+        """
+        parts = [
+            part for part in (
+                getattr(self, "_yandex_report_upload_status", ""),
+                getattr(self, "_npr_upload_status", ""),
+            ) if part
+        ]
+        if parts:
+            self.edit_sync_status_label.setText("  ·  ".join(parts))
+            self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
+            self.edit_sync_status_label.setVisible(True)
+        else:
+            self.edit_sync_status_label.setVisible(False)
+
+    def _capture_yandex_report_folder(self):
+        """Сохраняет папку отчёта до асинхронного поиска папки на Диске.
+
+        Автосброс формы через пять секунд очищает ``last_output_folder`` и
+        ``last_report_docx_path``. Фоновый поиск на Диске часто завершается
+        позже, поэтому все последующие callbacks должны использовать этот
+        снимок, а не текущее состояние формы.
+        """
+        folder = getattr(self, "last_output_folder", None)
+        docx_path = getattr(self, "last_report_docx_path", None)
+        if folder:
+            snapshot = Path(folder)
+        elif docx_path:
+            snapshot = Path(docx_path).parent
+        else:
+            return None
+        if not snapshot.is_dir():
+            return None
+        self._yandex_local_folder_snapshot = snapshot
+        return snapshot
+
+    def _get_yandex_report_folder_snapshot(self):
+        snapshot = getattr(self, "_yandex_local_folder_snapshot", None)
+        if not snapshot:
+            return None
+        snapshot = Path(snapshot)
+        return snapshot if snapshot.is_dir() else None
+
     def _start_yandex_upload(self, create_if_missing: bool, target_folder_path: str = None):
         if getattr(self, "_closing", False):
             return
+        local_folder = self._get_yandex_report_folder_snapshot()
+        if local_folder is None:
+            self._set_yandex_buttons_enabled(True)
+            QMessageBox.critical(
+                self, "Ошибка Яндекс.Диска",
+                "Локальная папка отчёта больше недоступна. Повторите отправку из папки отчёта."
+            )
+            return
         self._set_yandex_buttons_enabled(False)
-        self.edit_sync_status_label.setText("Отправка на Диск: 0%")
-        self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
-        self.edit_sync_status_label.setVisible(True)
+        self._yandex_report_upload_status = "Отчёт: 0%"
+        self._refresh_yandex_upload_status_label()
+        # target_folder_path известен не всегда (при create_if_missing=True
+        # без явного пути папка резолвится только внутри потока) — статус
+        # в дереве браузера в этом случае просто не показывается.
+        self._yandex_upload_status_target = target_folder_path
+        if target_folder_path is not None:
+            self.yandex_upload_target_started.emit(target_folder_path)
         self._yandex_upload_thread = YandexDiskUploadThread(
-            self._yandex_token, self.last_output_folder,
+            self._yandex_token, local_folder,
             meta=self._yandex_meta, create_if_missing=create_if_missing,
             series_roots=SettingsDialog.get_yandex_roots(),
             target_folder_path=target_folder_path,
@@ -7092,25 +8638,57 @@ class BeastApp(QMainWindow):
         # для отказоустойчивости, чтобы кнопки не остались заблокированными
         # молча, если сюда всё же попадёт SeriesFolderNotFoundError.
         self._yandex_upload_thread.needs_folder.connect(lambda message: self._on_yandex_upload_finished(False, message))
+        self._yandex_upload_thread.network_unavailable.connect(self._on_yandex_upload_network_unavailable)
         self._yandex_upload_thread.start()
 
     def _on_yandex_upload_progress(self, sent: int, total: int):
         percent = int(sent * 100 / total) if total else 0
-        self.edit_sync_status_label.setText(f"Отправка на Диск: {percent}%")
-        self.edit_sync_status_label.setStyleSheet("color: #86868B; background: transparent;")
-        self.edit_sync_status_label.setVisible(True)
+        self._yandex_report_upload_status = f"Отчёт: {percent}%"
+        self._refresh_yandex_upload_status_label()
 
     def _on_yandex_upload_finished(self, success: bool, message: str):
         self._set_yandex_buttons_enabled(True)
-        self.edit_sync_status_label.setVisible(False)
+        self._yandex_report_upload_status = ""
+        self._refresh_yandex_upload_status_label()
+        target = getattr(self, "_yandex_upload_status_target", None)
+        if target:
+            self.yandex_upload_target_finished.emit(target, success)
         if success:
-            if self.last_output_folder:
-                self._yandex_remote_by_local[str(self.last_output_folder)] = message
-                remember_uploaded_report(str(self.last_output_folder), message)
+            local_folder = self._get_yandex_report_folder_snapshot()
+            if local_folder:
+                self._yandex_remote_by_local[str(local_folder)] = message
+                remember_uploaded_report(str(local_folder), message)
             _play_sound()
-            QMessageBox.information(self, "Готово", f"Папка с отчётом отправлена на Диск:\n{message}")
+            # Уведомление вместо модального окна — успех не требует
+            # решения/действия, не должен прерывать работу.
+            _send_system_notification("Отчёт отправлен на Диск", message)
         else:
             QMessageBox.critical(self, "Ошибка Яндекс.Диска", message)
+
+    def _on_yandex_upload_network_unavailable(self, message: str) -> None:
+        """Нет связи с Диском вообще (DNS/обрыв) — не показываем ошибку
+
+        сразу, а передаём отчёт в очередь автозагрузки (self._yandex_queue)
+        для повтора с задержкой, когда сеть восстановится. Папка серии уже
+        известна/подтверждена алиасом к этому моменту (резолв уже прошёл в
+        _send_report_to_disk/_start_yandex_flow до старта самой отправки),
+        так что очередь просто дождётся сети и отправит — без нового
+        похода к пользователю. Единственная оставшаяся роль очереди теперь,
+        после переноса разрешения папки в тот же путь, что и ручная
+        отправка.
+        """
+        self._set_yandex_buttons_enabled(True)
+        self._yandex_report_upload_status = ""
+        self._refresh_yandex_upload_status_label()
+        target = getattr(self, "_yandex_upload_status_target", None)
+        if target:
+            self.yandex_upload_target_finished.emit(target, False)
+        logger.warning("Нет сети при отправке отчёта на Диск, отложено в очередь: %s", message)
+        local_folder = self._get_yandex_report_folder_snapshot()
+        if local_folder:
+            self._yandex_queue.enqueue(local_folder, self._yandex_meta)
+        else:
+            logger.error("Не удалось отложить отправку: локальная папка отчёта недоступна")
 
     def _edit_report(self):
         """Открывает отчёт во внешнем редакторе; после каждого сохранения,
@@ -7131,9 +8709,25 @@ class BeastApp(QMainWindow):
 
     def _resolve_edited_report_remote_path(self, path: str) -> str | None:
         remote_folder = self._yandex_remote_by_local.get(str(self.last_output_folder))
-        if not remote_folder:
-            return None
-        return f"{remote_folder}/{Path(path).name}"
+        if remote_folder:
+            return f"{remote_folder}/{Path(path).name}"
+        # Отчёт ещё ни разу не отправлялся на Диск — саму эту правку
+        # синхронизировать некуда, но раз она уже сохранена локально,
+        # запускаем полную отправку (тот же поток, что кнопка
+        # «Отправить»): она загрузит папку отчёта целиком, а файл на
+        # диске к этому моменту уже содержит только что сохранённую
+        # правку — отдельно досылать её не нужно.
+        self._auto_send_report_after_edit()
+        return None
+
+    def _auto_send_report_after_edit(self) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if not SettingsDialog.get_yandex_token():
+            return  # интеграция с Диском не настроена — ничего не отправляем
+        if getattr(self, "send_to_disk_btn", None) and not self.send_to_disk_btn.isEnabled():
+            return  # отправка уже идёт (например, несколько сохранений подряд)
+        self._send_report_to_disk()
 
     def _on_edit_sync_status_changed(self, status: str):
         is_error = status.startswith("Не удалось") or status.startswith("Правки НЕ")
@@ -7150,9 +8744,7 @@ class BeastApp(QMainWindow):
         color = "#FF3B30" if is_error else ("#FF9500" if is_offline else (
             "#34C759" if status.startswith("Синхронизировано") else "#86868B"
         ))
-        self.config_sync_status_label.setText(status)
-        self.config_sync_status_label.setStyleSheet(f"color: {color}; background: transparent;")
-        self.edit_sync_status_label.setVisible(True)
+        self._set_config_sync_status_text(status, color=color)
 
     def _on_edit_sync_conflict(self, path: str, actual_modified: str):
         choice = QMessageBox.question(
@@ -7350,5 +8942,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
- 

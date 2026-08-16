@@ -1,13 +1,13 @@
 """Тесты группировки предложений для диалога ревью орфографии."""
 
-from src.spellcheck_review import _format_occurrences, group_proposals
+from src.spellcheck_review import _format_occurrences, _highlight_word, group_proposals
 
 
 def test_group_proposals_merges_same_correction():
     proposals = [
-        {"timecode": "01:00:05:00", "field": "Описание", "old": "дефкт", "new": "дефект"},
-        {"timecode": "01:02:10:00", "field": "Описание", "old": "дефкт", "new": "дефект"},
-        {"timecode": "01:03:00:00", "field": "Комментарии", "old": "hiqh", "new": "high"},
+        {"timecode": "01:00:05:00", "field": "Описание", "old": "дефкт", "new": "дефект", "context": "слышен дефкт"},
+        {"timecode": "01:02:10:00", "field": "Описание", "old": "дефкт", "new": "дефект", "context": "снова дефкт"},
+        {"timecode": "01:03:00:00", "field": "Комментарии", "old": "hiqh", "new": "high", "context": "hiqh level"},
     ]
 
     grouped = group_proposals(proposals)
@@ -16,7 +16,11 @@ def test_group_proposals_merges_same_correction():
     assert grouped[0]["old"] == "дефкт"
     assert grouped[0]["count"] == 2
     assert grouped[0]["timecodes"] == ["01:00:05:00", "01:02:10:00"]
-    assert grouped[1] == {"old": "hiqh", "new": "high", "count": 1, "timecodes": ["01:03:00:00"]}
+    assert grouped[0]["contexts"] == ["слышен дефкт", "снова дефкт"]
+    assert grouped[1] == {
+        "old": "hiqh", "new": "high", "count": 1,
+        "timecodes": ["01:03:00:00"], "contexts": ["hiqh level"],
+    }
 
 
 def test_group_proposals_keeps_case_variants_separate():
@@ -50,3 +54,17 @@ def test_format_occurrences_truncates_long_lists():
 def test_format_occurrences_short_list_has_no_suffix():
     entry = {"old": "x", "new": "y", "count": 2, "timecodes": ["01:00", "02:00"]}
     assert _format_occurrences(entry) == "01:00, 02:00"
+
+
+def test_highlight_word_wraps_match_case_insensitively():
+    highlighted = _highlight_word("Слышится ШУРАШИНЕ на фоне", "шурашине")
+
+    assert '<b style="color:#FF3B30;">ШУРАШИНЕ</b>' in highlighted
+    assert highlighted.startswith("Слышится ")
+
+
+def test_highlight_word_escapes_html_in_context():
+    highlighted = _highlight_word('Реплика <герой> кричит "дефкт"', "дефкт")
+
+    assert "&lt;герой&gt;" in highlighted
+    assert '<b style="color:#FF3B30;">дефкт</b>' in highlighted

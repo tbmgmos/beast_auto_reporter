@@ -12,15 +12,15 @@ import io
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from docx import Document
-from docx.oxml.ns import qn
 
 from src.app_paths import CONFIG_DIR, atomic_write_text, migrate_legacy_config_file
 from src.file_matching import _bases_match
-from src.report_filename import ReportMeta, parse_report_filename
+from src.marker_identity import read_marker_csv, read_marker_csv_bytes
+from src.report_filename import ReportMeta, extract_date_loosely, parse_report_filename
 from src.yandex_disk_client import YandexDiskClient, YandexDiskError
 
 logger = logging.getLogger(__name__)
@@ -100,7 +100,7 @@ def fallback_series_key(docx_name: str) -> str:
     никогда бы не запоминался на будущее.
     """
     stem = docx_name
-    for ext in (".docx", ".pages", ".pdf", ".csv", ".npr"):
+    for ext in (".docx", ".pdf", ".csv", ".npr"):
         if stem.lower().endswith(ext):
             stem = stem[: -len(ext)]
             break
@@ -166,6 +166,19 @@ def list_series_aliases(path: Path = SERIES_ALIASES_FILE) -> list[tuple[str, str
     для отображения в UI-диалоге управления алиасами.
     """
     return sorted(load_series_aliases(path).items())
+
+
+def alias_key_for_path(path: str, aliases_path: Path = SERIES_ALIASES_FILE) -> str | None:
+    """Обратный поиск: есть ли алиас, указывающий именно на этот путь.
+
+    Используется для подсказки в дереве просмотрщика Диска — «эта папка
+    уже привязана к серии/проекту такому-то», без похода в отдельный
+    диалог управления алиасами.
+    """
+    for key, aliased_path in load_series_aliases(aliases_path).items():
+        if aliased_path == path:
+            return key
+    return None
 
 
 VARIANT_OVERRIDES_FILE = CONFIG_DIR / "variant_overrides.json"
@@ -325,11 +338,13 @@ def upload_folder(client: YandexDiskClient, local_folder: Path, remote_folder: s
     progress_callback(bytes_sent, total_bytes), если передан, отражает
     совокупный прогресс по всем файлам папки, а не по одному файлу.
     """
-    # Скрытые файлы (.DS_Store и прочие дотфайлы Finder/редакторов) —
-    # служебный мусор, ему нечего делать в папке отчёта на Диске.
+    # Скрытые файлы (.DS_Store и прочие дотфайлы Finder/редакторов) и
+    # lock-файлы MS Office (~$отчет_....docx, создаются, пока документ
+    # открыт в Word) — служебный мусор, ему нечего делать в папке отчёта
+    # на Диске.
     entries = [
         e for e in sorted(Path(local_folder).iterdir())
-        if e.is_file() and not e.name.startswith(".")
+        if e.is_file() and not e.name.startswith(".") and not e.name.startswith("~$")
     ]
     total_bytes = sum(e.stat().st_size for e in entries) or 1
     uploaded = []
@@ -345,6 +360,56 @@ def upload_folder(client: YandexDiskClient, local_folder: Path, remote_folder: s
         uploaded.append(remote_path)
         sent_before += entry.stat().st_size
     return uploaded
+
+
+def upload_paths_recursive(client: YandexDiskClient, local_paths: list[Path], remote_folder: str,
+                            progress_callback=None) -> None:
+    """Загружает произвольный список локальных файлов и папок в remote_folder,
+
+    рекурсивно (в отличие от upload_folder, который специально не
+    рекурсивен — папка готового отчёта плоская). Используется для
+    перетаскивания из Finder, который отдаёт смешанный список файлов и
+    папок одним drop'ом. Недостающие подпапки на Диске создаются по мере
+    необходимости (mkdir идемпотентен, но каждая папка создаётся не более
+    одного раза за вызов).
+
+    progress_callback(done, total), если передан, считает файлы (не байты).
+    """
+    all_files = []  # [(local_file_path, relative_path_from_remote_folder)]
+    for raw_path in local_paths:
+        path = Path(raw_path)
+        if path.is_dir():
+            for f in sorted(path.rglob("*")):
+                if f.is_file() and not f.name.startswith(".") and not f.name.startswith("~$"):
+                    all_files.append((f, Path(path.name) / f.relative_to(path)))
+        elif path.is_file() and not path.name.startswith(".") and not path.name.startswith("~$"):
+            all_files.append((path, Path(path.name)))
+
+    total = len(all_files) or 1
+    created_dirs = set()
+
+    def _ensure_dir(remote_dir: str) -> None:
+        # mkdir Диска требует существования родителя (см. docstring mkdir) —
+        # создаём уровни по порядку от корня, а не сразу самый глубокий.
+        if remote_dir in created_dirs:
+            return
+        parent = remote_dir.rsplit("/", 1)[0]
+        if parent and parent != remote_folder:
+            _ensure_dir(parent)
+        client.mkdir(remote_dir)
+        created_dirs.add(remote_dir)
+
+    for done, (local_file, rel_path) in enumerate(all_files, start=1):
+        rel_parts = rel_path.parts[:-1]
+        if rel_parts:
+            remote_dir = "/".join([remote_folder, *rel_parts])
+            _ensure_dir(remote_dir)
+            remote_path = f"{remote_dir}/{rel_path.name}"
+        else:
+            remote_path = f"{remote_folder}/{rel_path.name}"
+        client.upload(local_file, remote_path)
+        if progress_callback:
+            progress_callback(done, total)
 
 
 def find_series_folder(
@@ -477,7 +542,21 @@ def list_report_versions(
                 continue
             if candidate_meta.season != meta.season or candidate_meta.episode != meta.episode:
                 continue
-        date_value = candidate_meta.date if candidate_meta else None
+            if candidate_meta.variant != meta.variant:
+                # Один эпизод может лежать в одной папке вместе с ME-версией
+                # (variant="MnE" в имени) — это не версии друг друга, а
+                # параллельные отдельные отчёты, их нельзя сравнивать/путать
+                # местами при автоподборе «предыдущей версии».
+                continue
+        # Если имя не разобрал REPORT_PATTERN целиком (нестандартная схема —
+        # другой формат сезона/эпизода, составной тег вроде "cens_AD" и
+        # т.п.), не сдаёмся сразу на дату ЗАГРУЗКИ на Диск — сперва пробуем
+        # найти дату НАПИСАНИЯ отчёта прямо в имени лёгким сканированием.
+        # Иначе только что загруженный (но написанный давно) отчёт с
+        # нестандартным именем сортировался бы как самый новый по времени
+        # загрузки, хотя по содержанию — самый старый (реальный регресс:
+        # "программа не определяет где новый и где старый отчёт").
+        date_value = candidate_meta.date if candidate_meta else extract_date_loosely(name)
         sort_key = date_value.isoformat() if date_value else item.get("modified", "")
         versions.append({
             "path": item.get("path") or f"{folder_path}/{name}",
@@ -490,6 +569,39 @@ def list_report_versions(
     for version in versions:
         del version["_sort_key"]
     return versions
+
+
+def group_versions_by_category(versions: list, overrides: dict = None) -> dict:
+    """Группирует версии отчёта (см. list_report_versions) по категории
+
+    варианта (см. report_filename.categorize_variant/extract_variant_loosely)
+    — "main"/"me"/"vo"/"dub"/"other". overrides — {remote_path: "ME"/"AD"/
+    .../"MAIN"}, ручные назначения через ПКМ в просмотрщике Диска (см.
+    load_variant_overrides) — имеют приоритет над автоопределением по имени.
+
+    Один эпизод нередко лежит в одной папке вместе с ME/AD/VO-версией того
+    же отчёта — это не версии друг друга, а параллельные отдельные отчёты
+    (см. YandexDiskBrowserDialog._label_report_version_siblings). Группировка
+    — через лёгкое сканирование имени (extract_variant_loosely), а не
+    строгий REPORT_PATTERN целиком: многие реальные папки не совпадают со
+    строгой схемой вообще (другой формат даты, составной тег вроде
+    "cens_AD" и т.п.), и раньше list_report_versions с заданным meta молча
+    отбрасывал такие версии вместо того, чтобы дать им шанс на сравнение
+    (см. YandexDiskFindVersionsThread — та же категория, что и meta.variant
+    у текущего черновика, теперь ищется среди ВСЕХ версий папки, а не
+    только среди тех, что совпали со строгим парсером).
+    """
+    from src.report_filename import categorize_variant, extract_variant_loosely
+
+    overrides = overrides or {}
+    groups: dict = {}
+    for version in versions:
+        override = overrides.get(version.get("path", ""))
+        variant = (None if override == "MAIN" else override) if override is not None \
+            else extract_variant_loosely(version.get("label", ""))
+        category = categorize_variant(variant)
+        groups.setdefault(category, []).append(version)
+    return groups
 
 
 def find_previous_report(
@@ -536,6 +648,8 @@ def _cell_status(cell) -> str | None:
     маркировку, которую уже расставляет генератор отчёта, вместо того
     чтобы заново пересчитывать пороги (target_lufs/lufs_tolerance и т.п.).
     """
+    from docx.oxml.ns import qn
+
     tc_pr = cell._tc.tcPr
     if tc_pr is None:
         return None
@@ -550,21 +664,68 @@ def _cell_status(cell) -> str | None:
     return None
 
 
+def _iter_all_tables(doc) -> list:
+    """Все таблицы документа на любой глубине вложенности, включая
+
+    таблицы внутри текстовых блоков/фигур (w:txbxContent) — именно так
+    экспортирует таблицы Pages при сохранении в .docx. Штатный doc.tables
+    возвращает только таблицы верхнего уровня тела документа и полностью
+    пропускает вложенные, из-за чего у старых отчётов (и таблица маркеров,
+    и техническая таблица параметров лежат в текстовых блоках) сравнение
+    не видело вообще никаких данных и показывало 0 маркеров / «без
+    изменений» по параметрам, хотя данные в документе есть.
+    """
+    from docx.oxml.ns import qn
+    from docx.table import Table
+
+    tables = []
+    seen = set()
+    for tbl_el in doc.element.body.iter(qn("w:tbl")):
+        if id(tbl_el) in seen:
+            continue
+        seen.add(id(tbl_el))
+        tables.append(Table(tbl_el, doc))
+    return tables
+
+
 def _summarize_document(doc) -> DocumentSummary:
     """Считает маркеры/блокеров/новых маркеров и снимает значения технических
 
     параметров (LOUDNESS/TRUE PEAK/LRA и т.п. по дорожкам) из таблиц отчёта.
     """
     summary = DocumentSummary()
+    all_tables = _iter_all_tables(doc)
 
-    for table in doc.tables:
+    for table in all_tables:
         if not table.rows:
             continue
-        header_cells = [cell.text.strip() for cell in table.rows[0].cells]
-        if "Timecode In" not in header_cells:
+        # Строка заголовка ищется сканированием (как и в таблице параметров
+        # ниже), а не берётся жёстко row[0]: в старом формате отчёта первая
+        # строка — объединённый титул «MARKER LIST» на всю ширину, а сами
+        # заголовки колонок («Timecode In»/«Timecode Out»/…) лежат во второй
+        # строке. Новые отчёты приложения кладут заголовки прямо в row[0].
+        # Раньше проверялась только row[0] и притом регистрозависимо, поэтому
+        # для старых отчётов таблица маркеров молча не находилась вообще —
+        # сравнение показывало 0 → 0 маркеров/блокеров для обеих версий сразу.
+        header_row_idx = None
+        header_cells = None
+        for idx, row in enumerate(table.rows):
+            cells = [cell.text.strip() for cell in row.cells]
+            if "TIMECODE IN" in {text.upper() for text in cells}:
+                header_row_idx = idx
+                header_cells = cells
+                break
+        if header_row_idx is None:
             continue
 
-        data_rows = table.rows[1:]
+        # Полностью пустые строки после заголовка не считаем маркерами:
+        # в старом формате (экспорт Pages) под заголовком таблицы маркеров
+        # часто лежит пустая строка-заглушка — без фильтра «чистый» отчёт
+        # без замечаний показывал бы 1 маркер вместо 0.
+        data_rows = [
+            row for row in table.rows[header_row_idx + 1:]
+            if any(cell.text.strip() for cell in row.cells)
+        ]
         summary.marker_count = len(data_rows)
 
         blocker_idx = next((i for i, text in enumerate(header_cells) if text.upper() == "БЛОКЕР"), None)
@@ -590,6 +751,7 @@ def _summarize_document(doc) -> DocumentSummary:
         tc_in_idx = _column_index("TIMECODE IN")
         tc_out_idx = _column_index("TIMECODE OUT")
         description_idx = _column_index("DESCRIPTION", "ОПИСАНИЕ ПРОБЛЕМЫ", "ОПИСАНИЕ")
+        marker_id_idx = _column_index("ID")
 
         def _cell_text(row, idx):
             if idx is None or idx >= len(row.cells):
@@ -598,6 +760,7 @@ def _summarize_document(doc) -> DocumentSummary:
 
         summary.markers = [
             {
+                "id": _cell_text(row, marker_id_idx),
                 "tc_in": _cell_text(row, tc_in_idx),
                 "tc_out": _cell_text(row, tc_out_idx),
                 "description": _cell_text(row, description_idx),
@@ -608,7 +771,7 @@ def _summarize_document(doc) -> DocumentSummary:
         ]
         break
 
-    for table in doc.tables:
+    for table in all_tables:
         header_row_idx = None
         header_cells = None
         for idx, row in enumerate(table.rows):
@@ -695,30 +858,41 @@ def _format_parameter_changes(old_params: dict, new_params: dict, new_status: di
 
 
 def diff_markers(old_markers: list, new_markers: list) -> dict:
-    """Попозиционный diff маркеров двух версий отчёта по таймкодам.
+    """Попозиционный diff маркеров двух версий отчёта.
 
-    Ключ сопоставления — Timecode In (дубли одного таймкода внутри версии
-    различаются порядковым номером появления). Возвращает
-    {"added": [маркер, ...], "removed": [маркер, ...],
-     "changed": [{"tc_in", "changes": [{"field", "old", "new"}, ...]}, ...]}
-    — added/removed в порядке таймкодов новой/старой версии соответственно.
+    Постоянный Beast ID — главный ключ. Для старых отчётов без ID
+    fallback — Timecode In + номер дубля.
     """
+    old_ids = {marker.get("id", "").strip() for marker in old_markers if marker.get("id", "").strip()}
+    new_ids = {marker.get("id", "").strip() for marker in new_markers if marker.get("id", "").strip()}
+    shared_ids = old_ids & new_ids
+
     def _keyed(markers):
         occurrences: dict = {}
         result = {}
         for marker in markers:
-            tc = marker.get("tc_in", "")
-            occurrences[tc] = occurrences.get(tc, 0) + 1
-            result[(tc, occurrences[tc])] = marker
+            marker_id = marker.get("id", "").strip()
+            if marker_id in shared_ids:
+                key = ("id", marker_id)
+            else:
+                tc = marker.get("tc_in", "")
+                occurrences[tc] = occurrences.get(tc, 0) + 1
+                key = ("tc", tc, occurrences[tc])
+            # Повтор ID в повреждённом/ручном CSV не затирает строку.
+            if key in result:
+                tc = marker.get("tc_in", "")
+                occurrences[tc] = occurrences.get(tc, 0) + 1
+                key = ("tc", tc, occurrences[tc])
+            result[key] = marker
         return result
 
     old_by_key = _keyed(old_markers)
     new_by_key = _keyed(new_markers)
-
     added = [marker for key, marker in new_by_key.items() if key not in old_by_key]
     removed = [marker for key, marker in old_by_key.items() if key not in new_by_key]
 
-    _FIELD_LABELS = [
+    field_labels = [
+        ("tc_in", "Timecode In"),
         ("description", "Описание"),
         ("tc_out", "Timecode Out"),
         ("blocker", "Блокер"),
@@ -741,11 +915,15 @@ def diff_markers(old_markers: list, new_markers: list) -> dict:
                 "old": _display(field_name, old_marker.get(field_name)),
                 "new": _display(field_name, new_marker.get(field_name)),
             }
-            for field_name, label in _FIELD_LABELS
+            for field_name, label in field_labels
             if old_marker.get(field_name) != new_marker.get(field_name)
         ]
         if field_changes:
-            changed.append({"tc_in": key[0], "changes": field_changes})
+            changed.append({
+                "id": new_marker.get("id", ""),
+                "tc_in": new_marker.get("tc_in", ""),
+                "changes": field_changes,
+            })
 
     return {"added": added, "removed": removed, "changed": changed}
 
@@ -762,20 +940,80 @@ class ReportComparison:
     # Результат diff_markers (added/removed/changed) либо None, если
     # таблицы маркеров не найдены ни в одной из версий.
     marker_diff: dict = None
+    # Снимок технических параметров НОВОЙ версии (label дорожки -> {параметр:
+    # значение}) и их статусов ("bad"/"warn") — не только diff, а текущее
+    # состояние как есть. Используется LLM-сводкой, чтобы говорить и о том,
+    # что не менялось (хронометраж, формат файла, текущая громкость и т.п.).
+    new_parameters: dict = None
+    new_parameter_status: dict = None
 
 
 def _find_docx_in_report_folder(client: YandexDiskClient, report_folder_path: str) -> str | None:
-    """Находит файл отчёта (отчет_*.docx) внутри подпапки отчёта."""
+    """Находит файл отчёта (.docx) внутри подпапки отчёта.
+
+    Предпочитает файл с префиксом «отчет_» (текущее соглашение об имени),
+    но если такого нет — берёт любой .docx как есть (кроме lock-файлов
+    MS Office «~$...» и скрытых файлов). Нужно для старых папок,
+    загруженных ещё ДО того, как это соглашение появилось — там и папка,
+    и сам .docx внутри могут быть названы без префикса (реальный случай:
+    «one_last_sin_s01_e01_Master_uncens_2025_05_14/one_last_sin_..._2025_05_14.docx»),
+    а строгое требование префикса у файла давало «Не удалось прочитать
+    выбранную версию отчёта» на совершенно реальных, читаемых версиях.
+    """
     items = _list_folder_if_exists(client, report_folder_path)
     logger.info(
         "_find_docx_in_report_folder: %s -> %d элементов: %s",
         report_folder_path, len(items), [(i.get("name"), i.get("type")) for i in items],
     )
+    fallback_path = None
     for item in items:
         name = item.get("name", "")
-        if item.get("type") == "file" and name.startswith("отчет_") and name.lower().endswith(".docx"):
+        if item.get("type") != "file" or not name.lower().endswith(".docx"):
+            continue
+        if name.startswith("~$") or name.startswith("."):
+            continue
+        path = item.get("path") or f"{report_folder_path}/{name}"
+        if name.startswith("отчет_"):
+            return path
+        if fallback_path is None:
+            fallback_path = path
+    return fallback_path
+
+
+def _find_csv_in_report_folder(client: YandexDiskClient, report_folder_path: str) -> str | None:
+    """Find the marker-list CSV stored beside a report DOCX."""
+    if report_folder_path.lower().endswith(".csv"):
+        return report_folder_path
+    if report_folder_path.lower().endswith(".docx"):
+        return None
+    for item in _list_folder_if_exists(client, report_folder_path):
+        name = item.get("name", "")
+        if (
+            item.get("type") == "file"
+            and name.lower().endswith(".csv")
+            and not name.startswith((".", "~$"))
+        ):
             return item.get("path") or f"{report_folder_path}/{name}"
     return None
+
+
+def _find_local_marker_csv(docx_path: Path) -> Path | None:
+    candidates = sorted(
+        path for path in docx_path.parent.glob("*.csv")
+        if not path.name.startswith((".", "~$"))
+    )
+    return candidates[0] if candidates else None
+
+
+def _replace_summary_markers_from_csv(summary: DocumentSummary, markers: list[dict]) -> None:
+    """Prefer original marker-list data while retaining DOCX parameters."""
+    summary.markers = markers
+    summary.marker_count = len(markers)
+    summary.blocker_count = sum(1 for marker in markers if marker.get("blocker"))
+    summary.new_marker_count = sum(
+        1 for marker in markers
+        if "НОВЫЙ МАРКЕР" in (marker.get("comments") or "").upper()
+    )
 
 
 def _resolve_docx_path(client: YandexDiskClient, report_path: str) -> str | None:
@@ -804,7 +1042,115 @@ def _build_comparison(old_summary: DocumentSummary, new_summary: DocumentSummary
             old_summary.parameters, new_summary.parameters, new_summary.parameter_status
         ),
         marker_diff=marker_diff,
+        new_parameters=new_summary.parameters,
+        new_parameter_status=new_summary.parameter_status,
     )
+
+
+# Обрезка длинных списков маркеров в брифе для LLM: на отчёте со 100+
+# маркерами полный перечень съест весь контекст модели, а для сводки
+# «что поменялось» хватает представительной выборки + счётчиков.
+_VERSION_BRIEF_MAX_MARKERS_PER_GROUP = 30
+
+# status из _format_parameter_changes (заливка ячейки в отчёте) ->
+# явная пометка для LLM, чтобы нарушения нормы не потерялись в сводке.
+_BRIEF_PARAMETER_STATUS_HINTS = {"bad": "НЕ В НОРМЕ", "warn": "на грани нормы"}
+
+
+def _brief_marker_line(marker: dict) -> str:
+    description = marker.get("description") or "—"
+    blocker_suffix = " (блокер)" if marker.get("blocker") else ""
+    return f"- {marker.get('tc_in', '')} — {description}{blocker_suffix}"
+
+
+def format_comparison_brief(
+    comparison: ReportComparison,
+    old_label: str = None,
+    new_label: str = None,
+    max_markers_per_group: int = _VERSION_BRIEF_MAX_MARKERS_PER_GROUP,
+) -> str:
+    """Компактный текстовый бриф различий двух версий отчёта — вход для
+    LLM-промпта сводки (см. ConclusionGenerator.summarize_version_changes).
+
+    Чистая функция: без Qt, без сети — легко тестируется. Детальные группы
+    (добавленные/удалённые/изменённые маркеры, параметры) обрезаются до
+    max_markers_per_group строк с хвостом «…и ещё N» — счётчики в заголовке
+    при этом всегда полные.
+    """
+    header = []
+    if old_label:
+        header.append(f"Старая версия: {old_label}")
+    if new_label:
+        header.append(f"Новая версия: {new_label}")
+    header.append(
+        f"Маркеров: {comparison.marker_count_old} → {comparison.marker_count_new} "
+        f"(отмечено «новый маркер»: {comparison.new_marker_count_old} → {comparison.new_marker_count_new}), "
+        f"блокеров: {comparison.blocker_count_old} → {comparison.blocker_count_new}."
+    )
+
+    # Текущее состояние новой версии (не diff): даёт LLM материал говорить
+    # и о том, что НЕ менялось — хронометраж, формат файла, текущая громкость.
+    body = []
+    new_parameters = comparison.new_parameters or {}
+    if new_parameters:
+        body.append("Текущие технические параметры новой версии:")
+        new_status = comparison.new_parameter_status or {}
+        for label in sorted(new_parameters):
+            label_status = new_status.get(label, {})
+            parts = []
+            for param, value in new_parameters[label].items():
+                hint = _BRIEF_PARAMETER_STATUS_HINTS.get(label_status.get(param))
+                parts.append(f"{param}: {value} ({hint})" if hint else f"{param}: {value}")
+            body.append(f"- {label}: " + "; ".join(parts))
+
+    changes = []
+    diff = comparison.marker_diff or {}
+
+    def _marker_group(title: str, markers: list) -> None:
+        if not markers:
+            return
+        changes.append(f"{title} ({len(markers)}):")
+        shown = markers[:max_markers_per_group]
+        changes.extend(_brief_marker_line(marker) for marker in shown)
+        rest = len(markers) - len(shown)
+        if rest:
+            changes.append(f"…и ещё {rest}.")
+
+    _marker_group("Добавленные маркеры", diff.get("added", []))
+    _marker_group("Удалённые маркеры", diff.get("removed", []))
+
+    changed = diff.get("changed", [])
+    if changed:
+        changes.append(f"Изменённые маркеры ({len(changed)}):")
+        shown = changed[:max_markers_per_group]
+        for entry in shown:
+            for item in entry.get("changes", []):
+                changes.append(
+                    f"- {entry.get('tc_in', '')}: {item['field']}: «{item['old']}» → «{item['new']}»"
+                )
+        rest = len(changed) - len(shown)
+        if rest:
+            changes.append(f"…и ещё {rest}.")
+
+    if comparison.parameter_changes:
+        changes.append("Изменения технических параметров:")
+        for change in comparison.parameter_changes:
+            for item in change.get("changes", []):
+                hint = _BRIEF_PARAMETER_STATUS_HINTS.get(item.get("status"))
+                suffix = f" ({hint})" if hint else ""
+                changes.append(
+                    f"- {change['label']}, {item['field']}: {item['old']} → {item['new']}{suffix}"
+                )
+
+    if changes:
+        body.append("Различия между версиями:")
+        body.extend(changes)
+    else:
+        body.append(
+            "Изменений в маркерах и технических параметрах между версиями не обнаружено — "
+            "отличаются только общие счётчики выше (или версии идентичны)."
+        )
+    return "\n".join(header + body)
 
 
 def compare_with_previous(
@@ -821,10 +1167,29 @@ def compare_with_previous(
     if previous_docx_path is None:
         return None
 
+    from docx import Document
+
     old_doc = Document(io.BytesIO(client.download_bytes(previous_docx_path)))
     new_doc = Document(str(new_local_docx_path))
+    old_summary = _summarize_document(old_doc)
+    new_summary = _summarize_document(new_doc)
 
-    return _build_comparison(_summarize_document(old_doc), _summarize_document(new_doc))
+    previous_csv_path = _find_csv_in_report_folder(client, previous_report_path)
+    local_csv_path = _find_local_marker_csv(new_local_docx_path)
+    try:
+        if previous_csv_path is not None:
+            _replace_summary_markers_from_csv(
+                old_summary, read_marker_csv_bytes(client.download_bytes(previous_csv_path))
+            )
+    except Exception as exc:
+        logger.warning("Не удалось прочитать CSV предыдущей версии: %s", exc)
+    try:
+        if local_csv_path is not None:
+            _replace_summary_markers_from_csv(new_summary, read_marker_csv(local_csv_path))
+    except Exception as exc:
+        logger.warning("Не удалось прочитать CSV текущей версии: %s", exc)
+
+    return _build_comparison(old_summary, new_summary)
 
 
 def compare_two_versions(
@@ -836,16 +1201,47 @@ def compare_two_versions(
 
     (например, первую версию с четвёртой) — без участия локального черновика.
     Возвращает None, если хотя бы одна версия не найдена.
+
+    Поиск .docx и скачивание обеих версий не зависят друг от друга, поэтому
+    каждый из этих двух шагов выполняется параллельно (в двух потоках) —
+    иначе вторая версия начинала бы искаться/скачиваться только после
+    полного завершения первой, и окно сравнения открывалось бы заметно
+    дольше. Скачивание запускается только если обе версии нашлись —
+    если хотя бы одна не найдена, ни один файл не скачивается.
     """
-    old_docx_path = _resolve_docx_path(client, old_report_path)
-    new_docx_path = _resolve_docx_path(client, new_report_path)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        old_docx_path, new_docx_path = executor.map(
+            lambda path: _resolve_docx_path(client, path), (old_report_path, new_report_path)
+        )
     if old_docx_path is None or new_docx_path is None:
         return None
 
-    old_doc = Document(io.BytesIO(client.download_bytes(old_docx_path)))
-    new_doc = Document(io.BytesIO(client.download_bytes(new_docx_path)))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        old_bytes, new_bytes = executor.map(client.download_bytes, (old_docx_path, new_docx_path))
 
-    return _build_comparison(_summarize_document(old_doc), _summarize_document(new_doc))
+    from docx import Document
+
+    old_doc = Document(io.BytesIO(old_bytes))
+    new_doc = Document(io.BytesIO(new_bytes))
+    old_summary = _summarize_document(old_doc)
+    new_summary = _summarize_document(new_doc)
+
+    csv_paths = (
+        _find_csv_in_report_folder(client, old_report_path),
+        _find_csv_in_report_folder(client, new_report_path),
+    )
+    for summary, csv_path, label in zip(
+        (old_summary, new_summary), csv_paths, ("старой", "новой")
+    ):
+        try:
+            if csv_path is not None:
+                _replace_summary_markers_from_csv(
+                    summary, read_marker_csv_bytes(client.download_bytes(csv_path))
+                )
+        except Exception as exc:
+            logger.warning("Не удалось прочитать CSV %s версии: %s", label, exc)
+
+    return _build_comparison(old_summary, new_summary)
 
 
 @dataclass

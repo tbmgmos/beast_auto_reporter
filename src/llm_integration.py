@@ -30,7 +30,7 @@ class LLMIntegration:
         self.config = config or {}
         llm_cfg = self.config.get('llm', {})
         
-        self.model = llm_cfg.get('model', 'gemma4:12b')
+        self.model = llm_cfg.get('model', 'gemma4:latest')
         self.temperature = llm_cfg.get('temperature', 0.7)
         self.max_tokens = llm_cfg.get('max_tokens', 2000)
         self.language = llm_cfg.get('language', 'ru')
@@ -206,7 +206,7 @@ if __name__ == "__main__":
     
     config = {
         'llm': {
-            'model': 'gemma4:12b',
+            'model': 'gemma4:latest',
             'temperature': 0.7,
             'language': 'ru'
         }

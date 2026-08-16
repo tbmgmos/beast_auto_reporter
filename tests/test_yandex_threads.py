@@ -10,8 +10,9 @@
 """
 
 import sys
+import time
 
-from PyQt5.QtCore import QCoreApplication, QTimer, pyqtSignal
+from PyQt5.QtCore import QCoreApplication, pyqtSignal
 
 from src.yandex_ui import threads as threads_module
 from src.yandex_ui.threads import _KeepAliveThread
@@ -19,6 +20,13 @@ from src.yandex_ui.threads import _KeepAliveThread
 
 def _get_app() -> QCoreApplication:
     return QCoreApplication.instance() or QCoreApplication(sys.argv)
+
+
+def _run_until(condition, timeout_seconds=10):
+    deadline = time.monotonic() + timeout_seconds
+    while not condition() and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.005)
 
 
 class _EmitAndReturnThread(_KeepAliveThread):
@@ -31,14 +39,13 @@ class _EmitAndReturnThread(_KeepAliveThread):
 
 
 def test_owner_can_drop_last_reference_in_completion_slot():
-    app = _get_app()
+    _get_app()
     holder = {}
     results = []
 
     def on_done(message):
         holder.pop("thread", None)  # последняя ссылка владельца — как в реальных слотах
         results.append(message)
-        QTimer.singleShot(0, app.quit)
 
     thread = _EmitAndReturnThread()
     thread.done_sig.connect(on_done)
@@ -47,14 +54,13 @@ def test_owner_can_drop_last_reference_in_completion_slot():
     assert thread in threads_module._RUNNING_THREADS
 
     del thread  # у теста тоже не должно остаться ссылки — держит только реестр
-    QTimer.singleShot(5000, app.quit)  # страховка от зависания теста
-    app.exec_()
+    _run_until(lambda: bool(results), timeout_seconds=5)
 
     assert results == ["result"]
 
 
 def test_registry_drains_after_threads_finish():
-    app = _get_app()
+    _get_app()
     finished_count = [0]
     total = 20
     holder = {}
@@ -62,8 +68,6 @@ def test_registry_drains_after_threads_finish():
     def on_done(key):
         holder.pop(key, None)
         finished_count[0] += 1
-        if finished_count[0] >= total:
-            QTimer.singleShot(0, app.quit)
 
     for i in range(total):
         thread = _EmitAndReturnThread()
@@ -71,15 +75,10 @@ def test_registry_drains_after_threads_finish():
         holder[i] = thread
         thread.start()
 
-    QTimer.singleShot(10000, app.quit)  # страховка от зависания теста
-    app.exec_()
+    _run_until(lambda: finished_count[0] >= total)
 
     assert finished_count[0] == total
     # Реестр не течёт: слот на finished снял регистрацию каждого потока.
     # Дожимаем возможные хвосты queued-доставки finished.
-    for _ in range(50):
-        if not threads_module._RUNNING_THREADS:
-            break
-        QTimer.singleShot(10, app.quit)
-        app.exec_()
+    _run_until(lambda: not threads_module._RUNNING_THREADS)
     assert not threads_module._RUNNING_THREADS

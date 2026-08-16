@@ -191,11 +191,31 @@ class ExactReportGenerator:
             peak_unit = "dBFS" if is_dcp_report else "dBTP"
             peak_label_for_logs = "SAMPLE PEAK" if is_dcp_report else "TRUE PEAK"
             peak_decimals = 2 if is_dcp_report else 1
+
+            if is_dcp_report:
+                rows_data = [
+                    ("51 DCP", "audio_51_c", "pdf_51_c"),
+                    ("Video ref", "video", None),
+                    ("Left", "audio_dcp_split_l", None),
+                    ("Right", "audio_dcp_split_r", None),
+                    ("Center", "audio_dcp_split_c", None),
+                    ("LFE", "audio_dcp_split_lfe", None),
+                    ("Left surround", "audio_dcp_split_ls", None),
+                    ("Right surround", "audio_dcp_split_rs", None),
+                ]
+            else:
+                rows_data = [
+                    ("2.0 cens", "audio_20_c", "pdf_20_c"),
+                    ("2.0 uncens", "audio_20_uc", "pdf_20_uc"),
+                    ("5.1 cens", "audio_51_c", "pdf_51_c"),
+                    ("5.1 uncens", "audio_51_uc", "pdf_51_uc"),
+                    ("VIDEO", "video", None),
+                ]
             
             # Таблица: 13 строк x 7 столбцов (как в референсном основном отчете)
             # Строки: 0=заголовок+дата, 1=отчет подготовил, 2=колонки,
             #         3-7=данные, 8=пустая, 9=индикаторы, 10=пустая, 11=ЗАКЛЮЧЕНИЕ, 12=текст
-            table = doc.add_table(rows=13, cols=7)
+            table = doc.add_table(rows=len(rows_data) + 8, cols=7)
             table.style = 'Table Grid'
             
             # Устанавливаем ширину колонок (точно по референсу)
@@ -272,15 +292,6 @@ class ExactReportGenerator:
                 cell = table.rows[2].cells[col]
                 cell.text = header
                 self._format_cell(cell, bg=HEADER_BG, bold=True, align="left", font_size=9, vertical_align="center")
-            
-            # Строки 3-7: Данные с цветовой индикацией
-            rows_data = [
-                ("2.0 cens", "audio_20_c", "pdf_20_c"),
-                ("2.0 uncens", "audio_20_uc", "pdf_20_uc"),
-                ("5.1 cens", "audio_51_c", "pdf_51_c"),
-                ("5.1 uncens", "audio_51_uc", "pdf_51_uc"),
-                ("VIDEO", "video", None)
-            ]
             
             # Fallback маппинг: если точный ключ не найден, пробуем альтернативы
             pdf_key_fallbacks = {
@@ -377,7 +388,9 @@ class ExactReportGenerator:
 
             # Проверяем, совпадают ли все аудиофайлы между собой
             audio_durations_ms = []
-            for key in ['audio_20_c', 'audio_51_c', 'audio_20_uc', 'audio_51_uc']:
+            for _label, key, _pdf_key in rows_data:
+                if not key.startswith('audio'):
+                    continue
                 if key in durations and durations[key] > 0:
                     audio_durations_ms.append(int(durations[key] * 1000))
             all_audio_match = len(audio_durations_ms) <= 1 or len(set(audio_durations_ms)) == 1
@@ -580,6 +593,17 @@ class ExactReportGenerator:
                                 break
                         if pdf_data is None:
                             logger.warning(f"  ⚠️ PDF data not found for {pdf_key} (tried: {fallback_keys})")
+
+                    # DCP Sample Peak измеряется приложением непосредственно по
+                    # аудио, поэтому он доступен и без внешнего PDF-отчёта.
+                    direct_sample_peak = data.get('sample_peak') if is_dcp_report else None
+                    if direct_sample_peak is not None:
+                        sign = "+" if direct_sample_peak > 0 else ""
+                        row.cells[4].text = (
+                            f"{sign}{self._fmt_metric(direct_sample_peak, decimals=peak_decimals)} {peak_unit}"
+                        )
+                        direct_peak_bg = OK_BG if direct_sample_peak <= 0 else BAD_BG
+                        self._format_cell(row.cells[4], bg=direct_peak_bg, align="center")
                     
                     if pdf_data is not None:
                         # Трекинг PDF-источника для предотвращения дублей
@@ -652,6 +676,21 @@ class ExactReportGenerator:
 
                             self._format_cell(row.cells[6], bg=format_bg, align="left")
                             logger.info(f"  Format added from audio: {format_text}")
+                    elif is_dcp_report and key.startswith('audio_dcp_split_'):
+                        peak_value = data.get('sample_peak')
+                        if peak_value is not None:
+                            sign = "+" if peak_value > 0 else ""
+                            row.cells[4].text = (
+                                f"{sign}{self._fmt_metric(peak_value, decimals=peak_decimals)} {peak_unit}"
+                            )
+                            peak_bg = OK_BG if peak_value <= 0 else BAD_BG
+                            self._format_cell(row.cells[4], bg=peak_bg, align="center")
+
+                        sr = int(data.get('sample_rate', 48000) or 48000) // 1000
+                        bd = str(data.get('bit_depth', 'PCM_24')).replace('PCM_', '')
+                        row.cells[6].text = f"PCM {sr}kHz {bd} bit split"
+                        format_bg = OK_BG if sr == 48 and bd == "24" else WARN_BG
+                        self._format_cell(row.cells[6], bg=format_bg, align="left")
                     
                     # Обработка случая когда есть только PDF, но нет аудио (с fallback логикой)
                     elif not has_audio and pdf_key:
@@ -772,15 +811,17 @@ class ExactReportGenerator:
                     logger.info(f"    cell[6] (format): '{row.cells[6].text}'")
                     logger.info(f"  === END SUMMARY ===\n")
             
-            # Строка 8: Пустая (объединенная)
-            row = table.rows[8]
+            service_row = 3 + len(rows_data)
+
+            # Пустая строка (объединенная)
+            row = table.rows[service_row]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
             self._format_cell(cell, align="left")
 
-            # Строка 9: Цветовые индикаторы (точно как в референсе)
-            row = table.rows[9]
+            # Цветовые индикаторы (точно как в референсе)
+            row = table.rows[service_row + 1]
             left_block = row.cells[0]
             left_block.merge(row.cells[1])
             left_block.merge(row.cells[2])
@@ -790,23 +831,23 @@ class ExactReportGenerator:
             self._format_cell(row.cells[5], bg="FCBA19", align="center")
             self._format_cell(row.cells[6], bg=LIGHT_BG, align="center")
 
-            # Строка 10: Пустая (объединенная)
-            row = table.rows[10]
+            # Пустая строка (объединенная)
+            row = table.rows[service_row + 2]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
             self._format_cell(cell, align="left")
 
-            # Строка 11: Заголовок "ЗАКЛЮЧЕНИЕ:" (объединенная)
-            row = table.rows[11]
+            # Заголовок "ЗАКЛЮЧЕНИЕ:" (объединенная)
+            row = table.rows[service_row + 3]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
             cell.text = "ЗАКЛЮЧЕНИЕ:"
             self._format_cell(cell, bg=HEADER_BG, bold=True, font_size=10, align="left")
             
-            # Строка 12: Область для заключений (объединенная, 2 подзаголовка)
-            row = table.rows[12]
+            # Область для заключений (объединенная, 2 подзаголовка)
+            row = table.rows[service_row + 4]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
@@ -880,10 +921,38 @@ class ExactReportGenerator:
             LIGHT_BG = "F5F5F5"
             OFFWHITE_BG = "FEFFFE"
 
-            # Таблица: 11 строк x 7 базовых столбцов (как в референсном M&E шаблоне)
-            # Строки: 0=заголовок+дата, 1=отчет подготовил, 2=колонки, 3-5=данные (2.0 ME, 5.1 ME, VIDEO),
-            #         6=пустой отступ, 7=индикаторы, 8=пустой отступ, 9=ЗАКЛЮЧЕНИЕ, 10=текст заключения
-            table = doc.add_table(rows=11, cols=7)
+            from src.me_tracks import iter_dynamic_me_pairs
+
+            def pick_audio_key(prefix: str):
+                for k in (f"audio_{prefix}_c", f"audio_{prefix}_uc", f"audio_{prefix}"):
+                    if tech_info and k in tech_info and tech_info[k]:
+                        return k
+                return None
+
+            def pick_pdf_key(prefix: str, audio_key: str):
+                if not tech_info:
+                    return None
+                if audio_key:
+                    if audio_key.endswith("_uc") and f"pdf_{prefix}_uc" in tech_info:
+                        return f"pdf_{prefix}_uc"
+                    if audio_key.endswith("_c") and f"pdf_{prefix}_c" in tech_info:
+                        return f"pdf_{prefix}_c"
+                for k in (f"pdf_{prefix}_c", f"pdf_{prefix}_uc", f"pdf_{prefix}"):
+                    if k in tech_info:
+                        return k
+                return None
+
+            audio_20_key = pick_audio_key("20")
+            audio_51_key = pick_audio_key("51")
+            rows_data = [
+                ("20 ME", audio_20_key or "audio_20_c", pick_pdf_key("20", audio_20_key)),
+                ("51 ME", audio_51_key or "audio_51_c", pick_pdf_key("51", audio_51_key)),
+            ]
+            rows_data.extend(iter_dynamic_me_pairs(tech_info or {}))
+            rows_data.append(("VIDEO", "video", None))
+
+            # 3 строки шапки + динамические дорожки + 5 служебных строк.
+            table = doc.add_table(rows=len(rows_data) + 8, cols=7)
             table.style = 'Table Grid'
             
             # Базовая сетка колонок (точно как в референсе):
@@ -967,40 +1036,6 @@ class ExactReportGenerator:
             row2.cells[6].text = "ФОРМАТ ФАЙЛА"
             self._format_cell(row2.cells[6], bg="D5D5D5", bold=True, align="center", font_size=9, vertical_align="center")
             
-            # Строки 3-5: Данные M&E (только 2.0 ME, 5.1 ME, VIDEO)
-            # Определяем правильные AUDIO/PDF ключи с приоритетом и соответствием
-            def pick_audio_key(prefix: str):
-                for k in (f"audio_{prefix}_c", f"audio_{prefix}_uc", f"audio_{prefix}"):
-                    if tech_info and k in tech_info and tech_info[k]:
-                        return k
-                return None
-            
-            def pick_pdf_key(prefix: str, audio_key: str):
-                if not tech_info:
-                    return None
-                # Пытаемся сопоставить с типом аудио (cens/uncens)
-                if audio_key:
-                    if audio_key.endswith("_uc") and f"pdf_{prefix}_uc" in tech_info:
-                        return f"pdf_{prefix}_uc"
-                    if audio_key.endswith("_c") and f"pdf_{prefix}_c" in tech_info:
-                        return f"pdf_{prefix}_c"
-                # Общий fallback
-                for k in (f"pdf_{prefix}_c", f"pdf_{prefix}_uc", f"pdf_{prefix}"):
-                    if k in tech_info:
-                        return k
-                return None
-            
-            audio_20_key = pick_audio_key("20")
-            audio_51_key = pick_audio_key("51")
-            pdf_20_key = pick_pdf_key("20", audio_20_key)
-            pdf_51_key = pick_pdf_key("51", audio_51_key)
-            
-            rows_data = [
-                ("2.0 ME", audio_20_key or "audio_20_c", pdf_20_key),
-                ("5.1 ME", audio_51_key or "audio_51_c", pdf_51_key),
-                ("VIDEO", "video", None)
-            ]
-            
             # Fallback маппинг для M&E (как в основной таблице)
             pdf_key_fallbacks = {
                 'pdf_20_c': ['pdf_20_c', 'pdf_20'],
@@ -1038,7 +1073,7 @@ class ExactReportGenerator:
                     durations[key] = tech_info[key].get('duration', 0)
 
             # Проверяем, совпадают ли все аудиофайлы между собой
-            audio_keys = [k for k in [audio_20_key, audio_51_key] if k]
+            audio_keys = [key for _label, key, _pdf_key in rows_data if key.startswith('audio')]
             audio_durations_ms = []
             for key in audio_keys:
                 if key in durations and durations[key] > 0:
@@ -1252,15 +1287,17 @@ class ExactReportGenerator:
                         row.cells[6].text = format_text
                         self._format_cell(row.cells[6], bg="00FA02", align="left")
             
-            # Строка 6: Пустой отступ перед индикаторами
-            row = table.rows[6]
+            service_row = 3 + len(rows_data)
+
+            # Пустой отступ перед индикаторами
+            row = table.rows[service_row]
             spacer_top = row.cells[0]
             for col in range(1, 7):
                 spacer_top.merge(row.cells[col])
             self._format_cell(spacer_top, align="left")
 
-            # Строка 7: Цветовые индикаторы (точно как в референсном M&E)
-            row = table.rows[7]
+            # Цветовые индикаторы (точно как в референсном M&E)
+            row = table.rows[service_row + 1]
             left_block = row.cells[0]
             left_block.merge(row.cells[1])
             left_block.merge(row.cells[2])
@@ -1279,23 +1316,23 @@ class ExactReportGenerator:
             row.cells[6].text = ""
             self._format_cell(row.cells[6], bg="F5F5F5", align="center", border=True)
             
-            # Строка 8: Пустой отступ после индикаторов
-            row = table.rows[8]
+            # Пустой отступ после индикаторов
+            row = table.rows[service_row + 2]
             spacer_bottom = row.cells[0]
             for col in range(1, 7):
                 spacer_bottom.merge(row.cells[col])
             self._format_cell(spacer_bottom, align="left")
 
-            # Строка 9: Заголовок "ЗАКЛЮЧЕНИЕ:"
-            row = table.rows[9]
+            # Заголовок "ЗАКЛЮЧЕНИЕ:"
+            row = table.rows[service_row + 3]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
             cell.text = "ЗАКЛЮЧЕНИЕ:"
             self._format_cell(cell, bold=True, font_size=10, align="left")
             
-            # Строка 10: Текст заключения (заголовки уже в тексте заключений)
-            row = table.rows[10]
+            # Текст заключения (заголовки уже в тексте заключений)
+            row = table.rows[service_row + 4]
             cell = row.cells[0]
             for col in range(1, 7):
                 cell.merge(row.cells[col])
@@ -1421,19 +1458,18 @@ class ExactReportGenerator:
             
             if is_me_report:
                 headers = [
-                    "Timecode In", "Timecode Out", "Description",
-                    "2.0 C", "5.1 C",
+                    "ID", "Timecode In", "Timecode Out", "Description",
+                    "2.0 ME", "5.1 ME", "2.0 DX", "5.1 DX", "2.0 OPT", "5.1 OPT",
                     "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"
                 ]
-                # Ширина удаленных UC-колонок добавлена в Description
-                widths_cm = [2.45, 2.40, 14.99, 1.27, 1.32, 1.98, 3.55, 3.48, 6.57]
+                widths_cm = [1.50, 2.45, 2.40, 8.31, 1.27, 1.32, 1.27, 1.32, 1.27, 1.32, 1.98, 3.55, 3.48, 6.57]
             else:
                 headers = [
-                    "Timecode In", "Timecode Out", "Description",
+                    "ID", "Timecode In", "Timecode Out", "Description",
                     "2.0 C", "2.0 UC", "5.1 C", "5.1 UC",
                     "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"
                 ]
-                widths_cm = [2.45, 2.40, 11.93, 1.27, 1.56, 1.32, 1.50, 1.98, 3.55, 3.48, 6.57]
+                widths_cm = [1.50, 2.45, 2.40, 10.43, 1.27, 1.56, 1.32, 1.50, 1.98, 3.55, 3.48, 6.57]
 
             # Создаем таблицу БЕЗ заголовочной строки с повторяющимся текстом
             table = doc.add_table(rows=1 + len(issues), cols=len(headers))
@@ -1464,7 +1500,7 @@ class ExactReportGenerator:
                 cell = table.rows[0].cells[col]
                 cell.text = header
                 # Фон #bdc0bf, шрифт Helvetica Neue, жирный, центрирование
-                self._format_cell(cell, bg="bdc0bf", font_name="Helvetica Neue", bold=True, align="center", font_size=9)
+                self._format_cell(cell, bg="bdc0bf", font_name="Helvetica Neue", bold=True, align="center", font_size=10)
             
             # Строки 1+: Данные с чередующимся фоном
             for row_idx, issue in enumerate(issues):
@@ -1482,24 +1518,29 @@ class ExactReportGenerator:
                 has_incorrect_type = self._check_incorrect_audio_type(description_clean)
                 
                 # Заполняем данные
-                row.cells[0].text = issue.timecode_in
-                row.cells[1].text = issue.timecode_out
-                row.cells[2].text = description_clean
-                row.cells[3].text = '*' if issue.audio_20_c else ''
+                row.cells[0].text = issue.marker_id or ''
+                row.cells[1].text = issue.timecode_in
+                row.cells[2].text = issue.timecode_out
+                row.cells[3].text = description_clean
                 if is_me_report:
-                    row.cells[4].text = '*' if issue.audio_51_c else ''
-                    row.cells[5].text = '*' if issue.blocker else ''
-                    row.cells[6].text = '*' if issue.fix_required else ''
-                    row.cells[7].text = '*' if issue.comment_required else ''
-                    row.cells[8].text = issue.comments
+                    track_values = dict(getattr(issue, 'me_tracks', {}) or {})
+                    track_values.setdefault('me_20', bool(issue.audio_20_c))
+                    track_values.setdefault('me_51', bool(issue.audio_51_c))
+                    for offset, track_key in enumerate(('me_20', 'me_51', 'dx_20', 'dx_51', 'opt_20', 'opt_51')):
+                        row.cells[4 + offset].text = '*' if track_values.get(track_key) else ''
+                    row.cells[10].text = '*' if issue.blocker else ''
+                    row.cells[11].text = '*' if issue.fix_required else ''
+                    row.cells[12].text = '*' if issue.comment_required else ''
+                    row.cells[13].text = issue.comments
                 else:
-                    row.cells[4].text = '*' if issue.audio_20_uc else ''
-                    row.cells[5].text = '*' if issue.audio_51_c else ''
-                    row.cells[6].text = '*' if issue.audio_51_uc else ''
-                    row.cells[7].text = '*' if issue.blocker else ''
-                    row.cells[8].text = '*' if issue.fix_required else ''
-                    row.cells[9].text = '*' if issue.comment_required else ''
-                    row.cells[10].text = issue.comments
+                    row.cells[4].text = '*' if issue.audio_20_c else ''
+                    row.cells[5].text = '*' if issue.audio_20_uc else ''
+                    row.cells[6].text = '*' if issue.audio_51_c else ''
+                    row.cells[7].text = '*' if issue.audio_51_uc else ''
+                    row.cells[8].text = '*' if issue.blocker else ''
+                    row.cells[9].text = '*' if issue.fix_required else ''
+                    row.cells[10].text = '*' if issue.comment_required else ''
+                    row.cells[11].text = issue.comments
                 
                 # Определяем цвет фона
                 if is_new_marker:
@@ -1512,21 +1553,27 @@ class ExactReportGenerator:
                 
                 # Форматируем каждую ячейку
                 for col_idx, cell in enumerate(row.cells):
-                    # Определяем цвет текста для Description (col 2)
-                    text_color = "FF0000" if col_idx == 2 and has_incorrect_type else None
+                    # Определяем цвет текста для Description (col 3)
+                    text_color = "FF0000" if col_idx == 3 and has_incorrect_type else None
                     
                     # Фон только для некоторых столбцов (как в референсе)
                     if is_me_report:
-                        shaded_columns = [0, 1, 3, 4, 5, 6, 7, 8]
+                        shaded_columns = [0, 1, 2] + list(range(4, 14))
                     else:
-                        shaded_columns = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10]
+                        shaded_columns = [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11]
 
                     if col_idx in shaded_columns:
-                        self._format_cell(cell, bg=bg_color, font_name="Helvetica Neue", text_color=text_color)
+                        self._format_cell(
+                            cell, bg=bg_color, font_name="Helvetica Neue",
+                            font_size=10, text_color=text_color,
+                        )
                     else:
-                        # Description (col 2) без фона (если не НОВЫЙ МАРКЕР)
+                        # Description (col 3) без фона (если не НОВЫЙ МАРКЕР)
                         desc_bg = bg_color if is_new_marker else "auto"
-                        self._format_cell(cell, bg=desc_bg, font_name="Helvetica Neue", text_color=text_color)
+                        self._format_cell(
+                            cell, bg=desc_bg, font_name="Helvetica Neue",
+                            font_size=10, text_color=text_color,
+                        )
                 
                 if has_incorrect_type:
                     logger.info(f"Строка {row_idx + 1}: Некорректный тип фонограммы - красный текст")

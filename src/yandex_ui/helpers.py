@@ -54,7 +54,19 @@ def _quick_look_preview(path) -> None:
 
 
 def _send_system_notification(title: str, message: str) -> None:
-    """Показывает нативное macOS-уведомление (Центр уведомлений) через osascript."""
+    """Показывает нативное macOS-уведомление (Центр уведомлений) через osascript.
+
+    Пробовали слать через NSUserNotificationCenter (pyobjc), чтобы задать
+    свою иконку вместо иконки Script Editor — не сработало: при запуске из
+    обычного venv-python процесс регистрируется в системе под bundle id
+    "org.python.python" ("Python"), а не как само приложение, и у этого
+    общего для любого Python-скрипта идентификатора уведомления не
+    разрешены (или никогда не запрашивались) в Системных настройках — API
+    отрабатывает без ошибки, но система молча ничего не показывает.
+    osascript, в отличие от этого, шлёт от имени Script Editor/System
+    Events, у которых разрешение уже есть — надёжный путь, хоть и без
+    кастомной иконки.
+    """
     try:
         safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
         safe_message = message.replace("\\", "\\\\").replace('"', '\\"')
@@ -89,12 +101,21 @@ def _format_disk_file_size(size) -> str:
 
 
 def _format_disk_modified_date(modified: str) -> str:
-    """ISO 8601 из API Диска -> «ДД.ММ.ГГГГ ЧЧ:ММ»."""
+    """ISO 8601 из API Диска -> «ДД.ММ.ГГГГ ЧЧ:ММ» по московскому времени.
+
+    API Яндекс.Диска отдаёт modified со своим смещением (обычно UTC) — без
+    явного приведения к Europe/Moscow strftime() показывал бы "местное"
+    время из ответа API как есть, на 3 часа расходясь с реальным московским.
+    """
     if not modified:
         return ""
     try:
         from datetime import datetime
-        return datetime.fromisoformat(modified).strftime("%d.%m.%Y %H:%M")
+        from zoneinfo import ZoneInfo
+        parsed = datetime.fromisoformat(modified)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(ZoneInfo("Europe/Moscow"))
+        return parsed.strftime("%d.%m.%Y %H:%M")
     except ValueError:
         return modified
 
@@ -153,4 +174,10 @@ def _relative_time_label(iso_string) -> str:
     hours = int(delta_seconds // 3600)
     if hours < 24:
         return f"{hours} ч. назад"
+    # Duration, not a local-midnight boundary, defines the first day bucket.
+    # Around midnight a 25-hour-old UTC timestamp may be two calendar dates
+    # behind in the local timezone, while users still naturally read it as
+    # "yesterday".
+    if hours < 48:
+        return "вчера"
     return _relative_date_label(parsed.astimezone().date())

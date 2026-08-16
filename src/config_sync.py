@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from src.app_paths import CONFIG_DIR, atomic_write_text
+from src.marker_identity import load_marker_identities, save_marker_identities
+from src.marker_registry_sync import sync_all_marker_chains
 from src.report_uploader import (
     NPR_ALIASES_FILE,
     load_series_aliases,
@@ -152,6 +154,55 @@ def _ensure_remote_root(client: YandexDiskClient) -> None:
     client.mkdir(SYNC_REMOTE_ROOT)
 
 
+def _synced_account_path():
+    return CONFIG_DIR / ".sync_base" / "_account.txt"
+
+
+def _current_account_login(client: YandexDiskClient) -> str | None:
+    """Логин аккаунта Диска, к которому привязан текущий токен — самый
+
+    дешёвый запрос API (get_disk_info, тот же, что и для проверки токена),
+    используется как признак "это тот же аккаунт, что и в прошлый раз".
+    """
+    user = client.get_disk_info().get("user") or {}
+    login = user.get("login")
+    return str(login) if login else None
+
+
+def _load_synced_account() -> str | None:
+    path = _synced_account_path()
+    if not path.exists():
+        return None
+    try:
+        login = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning(f"Не удалось прочитать сохранённый аккаунт синхронизации: {exc}")
+        return None
+    return login or None
+
+
+def _save_synced_account(login: str) -> None:
+    try:
+        atomic_write_text(_synced_account_path(), login)
+    except OSError as exc:
+        logger.warning(f"Не удалось сохранить аккаунт синхронизации: {exc}")
+
+
+def _reset_all_base_snapshots() -> None:
+    """Сбрасывает все base-снэпшоты (см. merge_dicts) к пустым — используется
+
+    при обнаруженной смене аккаунта Диска: снэпшот с прошлого аккаунта
+    описывает состояние ЕГО папки /Beast Auto Reporter/sync, а не новой.
+    Не сбрасывая его, merge_dicts принял бы пустую/чужую папку нового
+    аккаунта за "кто-то удалил всё, что было" и стёр бы локальные алиасы.
+    С пустым base локальные данные не теряются — превращаются в "новые",
+    подтверждаются локально и заливаются в свежую папку на новом аккаунте
+    (см. bootstrap-случай в merge_dicts/sync_dict_config).
+    """
+    for config in SYNCABLE_DICT_CONFIGS:
+        save_base_snapshot(config.name, {})
+
+
 @dataclass(frozen=True)
 class SyncableDictConfig:
     name: str
@@ -178,6 +229,12 @@ SYNCABLE_DICT_CONFIGS: list[SyncableDictConfig] = [
         load_custom_corrections,
         save_custom_corrections,
         "spellcheck_custom_corrections.json",
+    ),
+    SyncableDictConfig(
+        "marker_identities",
+        load_marker_identities,
+        save_marker_identities,
+        "marker_identities.json",
     ),
 ]
 
@@ -279,10 +336,15 @@ class SyncSummary:
     dict_results: list[DictSyncResult]
     uploaded_reports_changed: bool
     conflicts: list[str] = field(default_factory=list)
+    marker_registry_changed: bool = False
 
     @property
     def changed(self) -> bool:
-        return self.uploaded_reports_changed or any(r.changed for r in self.dict_results)
+        return (
+            self.uploaded_reports_changed
+            or self.marker_registry_changed
+            or any(r.changed for r in self.dict_results)
+        )
 
 
 def sync_all(client: YandexDiskClient) -> SyncSummary:
@@ -290,13 +352,38 @@ def sync_all(client: YandexDiskClient) -> SyncSummary:
 
     ConfigSyncThread. Каждый файл — небольшой JSON, последовательные
     запросы вместо параллельных не создают заметной задержки.
+
+    Перед синком проверяется, не сменился ли аккаунт Диска с прошлого раза
+    (см. _current_account_login) — если да, base-снэпшоты сбрасываются
+    (_reset_all_base_snapshots), а _ensure_remote_root ниже создаёт папку
+    синка заново уже в новом аккаунте (mkdir идемпотентен — на "старом"
+    аккаунте, где папка уже есть, это просто no-op).
     """
+    account_login = _current_account_login(client)
+    synced_account = _load_synced_account()
+    if (
+        account_login is not None
+        and synced_account is not None
+        and account_login != synced_account
+    ):
+        logger.info(f"Синхронизация конфигов: обнаружена смена аккаунта Диска ({account_login}) — сбрасываем base-снэпшоты")
+        _reset_all_base_snapshots()
+
     _ensure_remote_root(client)
     dict_results = [sync_dict_config(client, config) for config in SYNCABLE_DICT_CONFIGS]
     uploaded_reports_changed = sync_uploaded_reports(client)
     conflicts = [f"{result.name}:{key}" for result in dict_results for key in result.conflicts]
+    marker_registry_changed, marker_conflicts = sync_all_marker_chains(
+        client, registry_path=CONFIG_DIR / "marker_registry_v3.json"
+    )
+    conflicts.extend(f"marker_registry:{value}" for value in marker_conflicts)
+
+    if account_login is not None:
+        _save_synced_account(account_login)
+
     return SyncSummary(
         dict_results=dict_results,
         uploaded_reports_changed=uploaded_reports_changed,
         conflicts=conflicts,
+        marker_registry_changed=marker_registry_changed,
     )

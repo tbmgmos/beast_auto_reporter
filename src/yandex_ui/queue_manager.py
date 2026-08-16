@@ -21,12 +21,15 @@ class YandexUploadQueueManager(QObject):
     (см. UploadQueue.mark_failed_or_retry) и без всплывающих диалогов —
     если папка сериала не найдена, job просто ждёт в очереди со статусом
     "needs_folder" до ручного решения через YandexUploadQueueDialog.
+    Отдельные паузы: офлайн (нет связи с Диском — ждём сеть) и протухший
+    токен (401 — ждём повторного входа, см. _on_job_auth_expired).
     """
 
     queue_changed = pyqtSignal()
     job_needs_attention = pyqtSignal()
     job_uploaded = pyqtSignal(str, str)  # (local_folder, remote_folder_path)
     queue_paused_offline = pyqtSignal(bool)
+    auth_expired = pyqtSignal(str)  # error message — 401 от Диска, нужен повторный вход
 
     STATE_FILE = CONFIG_DIR / "yandex_queue.json"
     _LEGACY_STATE_FILE = Path.home() / ".beast_auto_reporter_yandex_queue.json"
@@ -47,6 +50,10 @@ class YandexUploadQueueManager(QObject):
         self._offline = False
         self._offline_check_scheduled = False
         self._closing = False
+        # Пауза после 401: пока токен не сменится (повторный вход), новые
+        # попытки бессмысленны — упадут с тем же 401.
+        self._auth_expired = False
+        self._expired_token = None
         self.queue_changed.connect(self._persist_queue)
         # Восстановленные после перезапуска job'ы (queued/needs_folder) —
         # продолжаем обработку сразу, если токен уже есть.
@@ -88,6 +95,14 @@ class YandexUploadQueueManager(QObject):
     def _process_next(self) -> None:
         if self._closing:
             return
+        if self._auth_expired:
+            # Пауза после 401 — ждём, пока токен сменится (повторный вход
+            # любым путём: через наш диалог или настройки). get_token дешёвый
+            # (кэш Связки ключей), так что сверять можно при каждом вызове.
+            token = self._get_token()
+            if not token or token == self._expired_token:
+                return
+            self._auth_expired = False
         if self.queue.is_uploading():
             return
         job = self.queue.next_queued()
@@ -120,6 +135,7 @@ class YandexUploadQueueManager(QObject):
         self._active_thread.finished_upload.connect(lambda success, message: self._on_job_finished(job, success, message))
         self._active_thread.needs_folder.connect(lambda message: self._on_job_needs_folder(job, message))
         self._active_thread.network_unavailable.connect(lambda message: self._on_job_network_unavailable(job, message))
+        self._active_thread.auth_expired.connect(lambda message: self._on_job_auth_expired(job, message))
         self._active_thread.start()
 
     def _try_fallback_alias_for_job(self, job) -> None:
@@ -181,6 +197,26 @@ class YandexUploadQueueManager(QObject):
         # (_on_job_finished) — иначе пришлось бы синхронно гадать об исходе
         # ещё не начавшейся асинхронной попытки, что даёт ложное "снова
         # онлайн" на долю секунды перед повторным падением в офлайн.
+        self._process_next()
+
+    def _on_job_auth_expired(self, job, message: str) -> None:
+        # 401 — токен отозван/истёк. Как и при офлайне, не тратим retry-
+        # попытки job'а (mark_failed_or_retry): возвращаем его в "queued"
+        # и ждём повторного входа — без нового токена любая попытка упадёт
+        # так же. Очередь при этом на паузе (см. _process_next).
+        self._expired_token = self._get_token()
+        self.queue.retry(job)
+        self.queue_changed.emit()
+        if not self._auth_expired:
+            self._auth_expired = True
+            self.auth_expired.emit(message)
+
+    def resume_after_relogin(self) -> None:
+        """Продолжает очередь после повторного входа в Яндекс (вызывает UI).
+
+        Пауза снимается только если токен действительно сменился — см.
+        проверку в _process_next; вызов без смены токена безвреден.
+        """
         self._process_next()
 
     def _on_job_needs_folder(self, job, message: str) -> None:

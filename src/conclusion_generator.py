@@ -18,13 +18,65 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.csv_importer import Issue
+from src.gigachat_service import GigaChatService
+from src.groq_service import GroqService
 from src.marker_translation_service import MarkerTranslationService
 from src.ollama_service import OllamaService
 from src.technical_info_extractor import format_fps
+from src.yandexgpt_service import YandexGPTService
 
 logger = logging.getLogger(__name__)
 
 STYLE_EXAMPLES_PATH = Path(__file__).resolve().with_name("manual_conclusion_style_examples.json")
+
+# «Якорные» куски текста маркера, которые LLM не должна терять или путать
+# между пунктами заключения при перефразировании — см. _extract_anchor_tokens.
+_QUOTE_ANCHOR_RE = re.compile(r'[«"]([^»"]+)[»"]')
+_NUMERIC_UNIT_ANCHOR_RE = re.compile(
+    r'(?:~\s*)?-?\d+(?:[.,]\d+)?\s*(?:кадр\w*|дБ|LUFS|LRA|сек\w*|мс|fps|кГц|Гц)',
+    re.IGNORECASE,
+)
+
+
+def _extract_anchor_tokens(text: str) -> set:
+    """Извлекает из текста маркера дословные «якоря» — цитаты в кавычках
+
+    (конкретные слова/реплики) и числа с единицами измерения (величины
+    смещения, громкости и т.п.). Эти детали LLM обязана сохранять дословно
+    (см. промпт: "ДЕТАЛИЗАЦИЯ (КРИТИЧНО)"), поэтому пропажа якоря из текста
+    пункта или его появление в чужом пункте — надёжный признак того, что
+    модель перепутала или потеряла деталь при перефразировании.
+    """
+    if not text:
+        return set()
+    anchors = set()
+    for match in _QUOTE_ANCHOR_RE.finditer(text):
+        quoted = match.group(1).strip()
+        if quoted:
+            anchors.add(quoted.lower())
+    for match in _NUMERIC_UNIT_ANCHOR_RE.finditer(text):
+        anchors.add(re.sub(r'\s+', ' ', match.group(0).strip().lower()))
+    return anchors
+
+
+# Промпт для summarize_version_changes. Подстановка — через .replace
+# ("{brief}" -> бриф), а не .format: в тексте брифа могут встречаться
+# фигурные скобки из описаний маркеров, и экранировать их негде.
+_VERSION_SUMMARY_PROMPT = """Ты — помощник звукорежиссёра, который готовит отчёты об ошибках (QC-отчёты) для сериалов.
+
+Ниже — текущие технические параметры новой версии отчёта и машинный список её различий со старой версией. Сформулируй по этим данным связную подробную сводку на русском языке: что исправлено, что добавлено, каковы сейчас ключевые технические показатели и что требует внимания.
+
+Правила:
+- 5–10 предложений обычным текстом, без списков, заголовков и markdown-разметки.
+- Опирайся ТОЛЬКО на данные ниже — ничего не додумывай и не интерпретируй за пределами фактов.
+- Обязательно назови ключевые технические параметры новой версии со значениями: громкость (LOUDNESS), пики (TRUE PEAK/SAMPLE PEAK), LRA, хронометраж, формат файла — те, что есть в данных. Отдельно отметь, все ли они в норме.
+- Таймкоды приводи как есть; если изменений много, не перечисляй все подряд — назови самые важные (в первую очередь блокеры) и общее количество.
+- Блокеры и параметры с пометкой «НЕ В НОРМЕ» в новой версии упомяни обязательно и явно.
+- Если блокеры или нарушения нормы по сравнению со старой версией исчезли — отметь это как улучшение.
+- Пиши сразу по существу, без вступлений вроде «В новой версии отчёта…».
+
+Данные:
+{brief}"""
 
 
 class ConclusionGenerator:
@@ -41,13 +93,64 @@ class ConclusionGenerator:
         self.config = config or {}
         self._manual_style_examples_cache = None
         self.ollama_service = OllamaService(self.config)
-        self.marker_translation_service = MarkerTranslationService(self.config, self.ollama_service)
+        self.groq_service = GroqService(self.config)
+        self.yandexgpt_service = YandexGPTService(self.config)
+        self.gigachat_service = GigaChatService(self.config)
+        self.marker_translation_service = MarkerTranslationService(self.config, self._ollama_generate)
         self.llm_model = self.ollama_service.model
         self.llm_temperature = self.ollama_service.temperature
         self.llm_max_tokens = self.ollama_service.max_tokens
         self.llm_timeout = self.ollama_service.timeout
         self.ollama_host = self.ollama_service.host
-        logger.info(f"ConclusionGenerator инициализирован (LLM: {use_llm})")
+
+        llm_cfg = self.config.get("llm", {})
+
+        # Ollama по умолчанию даёт модели окно всего 4096 токенов независимо
+        # от заявленного максимума (у gemma4 — 131072) — на больших маркер-
+        # листах (100+ маркеров) промпт+ответ вплотную подходят к этому
+        # потолку (см. реальный замер: 2051 токен промпта + 2000 на ответ на
+        # файле из 107 маркеров, запас 45 токенов). Держим больше про запас.
+        self.num_ctx = int(llm_cfg.get("num_ctx", 8192))
+
+        # "ollama" (по умолчанию, локально), "groq", "yandexgpt" или "gigachat"
+        # (облако, для больших маркер-листов — см. UI-переключатель и подсказку
+        # в главном окне). YandexGPT/GigaChat — варианты для регионов, где Groq/
+        # OpenAI/Anthropic недоступны без VPN; GigaChat к тому же бесплатен
+        # (1 млн токенов/мес), в отличие от YandexGPT.
+        self.llm_provider = llm_cfg.get("provider", "ollama")
+
+        # Пороги автовыбора облачного провайдера (см. maybe_auto_select_provider):
+        # объём (число маркеров) ИЛИ разнообразие типов проблем — любой из двух
+        # признаков сам по себе означает, что локальной gemma4 будет труднее.
+        self.auto_select_marker_threshold = int(llm_cfg.get("auto_select_marker_threshold", 40))
+        self.auto_select_distinct_types_threshold = int(llm_cfg.get("auto_select_distinct_types_threshold", 6))
+        # Функция опциональна — переключается флажком в меню выбора модели
+        # (см. _show_model_picker в главном окне).
+        self.auto_select_llm_enabled = bool(llm_cfg.get("auto_select_enabled", True))
+
+        logger.info(f"ConclusionGenerator инициализирован (LLM: {use_llm}, провайдер: {self.llm_provider})")
+
+    def set_llm_model(self, model: str) -> None:
+        """Переключает модель Ollama на лету (без пересоздания генератора) —
+
+        используется UI-переключателем моделей рядом с индикатором AI-генерации.
+        """
+        self.llm_model = model
+        self.ollama_service.model = model
+
+    def set_llm_provider(self, provider: str) -> None:
+        """Переключает провайдера ("ollama"/"groq") на лету — используется
+
+        тем же UI-переключателем, что и set_llm_model.
+        """
+        self.llm_provider = provider
+
+    def set_auto_select_llm_enabled(self, enabled: bool) -> None:
+        """Включает/выключает автовыбор облачного провайдера (см.
+
+        maybe_auto_select_provider) — переключается флажком в меню выбора модели.
+        """
+        self.auto_select_llm_enabled = enabled
 
     def check_ollama_status(self) -> bool:
         """Проверка доступности Ollama через настроенный host."""
@@ -57,13 +160,132 @@ class ConclusionGenerator:
         """Детальный статус: доступен ли Ollama и установлена ли нужная модель."""
         return self.ollama_service.get_status()
 
+    def get_groq_status(self) -> dict:
+        """Детальный статус подключения к Groq (задан ли ключ, отвечает ли API)."""
+        return self.groq_service.get_status()
+
+    def get_yandexgpt_status(self) -> dict:
+        """Детальный статус подключения к YandexGPT (заданы ли ключ и folder_id)."""
+        return self.yandexgpt_service.get_status()
+
+    def get_gigachat_status(self) -> dict:
+        """Детальный статус подключения к GigaChat (задан ли ключ, отвечает ли OAuth)."""
+        return self.gigachat_service.get_status()
+
+    # Порядок предпочтения облачных провайдеров при автовыборе: GigaChat —
+    # бесплатный и без VPN; YandexGPT — без VPN, но платный с первого токена;
+    # Groq — обычно требует VPN в РФ. Пробуем в порядке убывания удобства для
+    # пользователя, а не просто первый настроенный.
+    _AUTO_SELECT_PROVIDER_PRIORITY = ("gigachat", "yandexgpt", "groq")
+
+    def _provider_has_credentials(self, provider: str) -> bool:
+        if provider == "groq":
+            return bool(self.groq_service.get_api_key())
+        if provider == "yandexgpt":
+            return bool(self.yandexgpt_service.get_api_key() and self.yandexgpt_service.get_folder_id())
+        if provider == "gigachat":
+            return bool(self.gigachat_service.get_auth_key())
+        return False
+
+    def _probe_provider_reachable(self, provider: str, timeout: int = 4) -> bool:
+        """Быстрая проверка реальной доступности с укороченным таймаутом —
+
+        чтобы автовыбор не подвисал на десятки секунд, если, например, Groq
+        недоступен без VPN. YandexGPTService.check_status() сети не дёргает
+        по design (см. её докстринг) — там проверяются только учётные данные.
+        """
+        service = {
+            "groq": self.groq_service,
+            "yandexgpt": self.yandexgpt_service,
+            "gigachat": self.gigachat_service,
+        }[provider]
+        original_timeout = service.timeout
+        service.timeout = timeout
+        try:
+            return service.check_status()
+        except Exception:
+            return False
+        finally:
+            service.timeout = original_timeout
+
+    def count_distinct_issue_types(self, issues: List[Issue], report_type: str = "main") -> int:
+        """Число различных group_type среди маркеров — грубая мера
+
+        «разнообразия» списка (см. maybe_auto_select_provider): много непохожих
+        друг на друга проблем сложнее обобщить корректно, чем даже большое,
+        но однородное количество маркеров одного типа.
+        """
+        return len({self._classify_single_issue(issue, report_type) for issue in issues})
+
+    def maybe_auto_select_provider(self, issues: List[Issue], report_type: str = "main") -> tuple:
+        """Решает, стоит ли на время генерации ЭТОГО заключения переключиться
+
+        с локальной Ollama на облачный провайдер — по объёму маркер-листа ИЛИ
+        разнообразию типов проблем (см. auto_select_marker_threshold/
+        auto_select_distinct_types_threshold). Не трогает провайдера, если
+        пользователь уже сам выбрал что-то отличное от "ollama" — автовыбор
+        только помогает с локальной моделью, а не переопределяет явный выбор.
+
+        Возвращает (provider_or_None, cloud_unavailable): provider_or_None —
+        что временно подставить вызывающему коду (или None — остаться на
+        Ollama); cloud_unavailable=True — сложность/объём оправдывали облако,
+        но ни один настроенный облачный провайдер не отозвался (чтобы вызывающий
+        код мог один раз ненавязчиво предупредить пользователя).
+        """
+        if not self.use_llm or self.llm_provider != "ollama" or not self.auto_select_llm_enabled:
+            return None, False
+
+        marker_count = len(issues)
+        distinct_types = self.count_distinct_issue_types(issues, report_type)
+        if marker_count < self.auto_select_marker_threshold and distinct_types < self.auto_select_distinct_types_threshold:
+            return None, False
+
+        any_configured = False
+        for provider in self._AUTO_SELECT_PROVIDER_PRIORITY:
+            if not self._provider_has_credentials(provider):
+                continue
+            any_configured = True
+            if self._probe_provider_reachable(provider):
+                return provider, False
+
+        return None, any_configured
+
     def _ollama_generate(self, prompt: str, *, model: Optional[str] = None, options: Optional[dict] = None) -> str:
-        """Единая обёртка над вызовом Ollama."""
+        """Единая обёртка над вызовом LLM — локальной Ollama или одного из
+
+        облачных провайдеров (Groq/YandexGPT/GigaChat), в зависимости от
+        self.llm_provider (переключается в UI).
+        """
+        if self.llm_provider == "groq":
+            return self.groq_service.generate(prompt, model=model, options=options or {})
+        if self.llm_provider == "yandexgpt":
+            return self.yandexgpt_service.generate(prompt, model=model, options=options or {})
+        if self.llm_provider == "gigachat":
+            return self.gigachat_service.generate(prompt, model=model, options=options or {})
         return self.ollama_service.generate(
             prompt,
             model=model or self.llm_model,
             options=options or {},
         )
+
+    def summarize_version_changes(self, comparison, old_label: str = None, new_label: str = None) -> str:
+        """Связная LLM-сводка различий между двумя версиями отчёта — по готовому
+
+        ReportComparison (см. report_uploader.compare_two_versions /
+        compare_with_previous). Данные для промпта собираются
+        format_comparison_brief'ом — сама функция только формулирует их
+        человеческим языком. Идёт через текущего провайдера
+        (_ollama_generate); основной сценарий — provider="groq" (быстро и
+        без локальной модели), но работает и с Ollama/YandexGPT.
+        """
+        from src.report_uploader import format_comparison_brief
+
+        brief = format_comparison_brief(comparison, old_label=old_label, new_label=new_label)
+        prompt = _VERSION_SUMMARY_PROMPT.replace("{brief}", brief)
+        logger.info("Генерация сводки изменений между версиями отчёта (провайдер: %s)...", self.llm_provider)
+        # Низкая температура: задача пересказа фактов, не творческая.
+        # num_predict ограничен — подробной сводке хватает десятка предложений.
+        return self._ollama_generate(prompt, options={"temperature": 0.2, "num_predict": 900}).strip()
 
     def _load_manual_style_examples(self) -> list:
         """Загружает ручные эталонные примеры заключений из docx-выборки."""
@@ -164,7 +386,7 @@ class ConclusionGenerator:
         lra_values_20 = []
         lra_values_51 = []
         
-        for pdf_key in ['pdf_20_c', 'pdf_20_uc', 'pdf_20', 'pdf_51_c', 'pdf_51_uc', 'pdf_51']:
+        for pdf_key in [key for key in tech_info if str(key).startswith('pdf_')]:
             if pdf_key in tech_info and tech_info[pdf_key]:
                 pdf_data = tech_info[pdf_key]
                 is_20 = "20" in pdf_key
@@ -296,7 +518,7 @@ class ConclusionGenerator:
         # Проверяем порядок каналов (только 5.1) и формат 48/24
         STANDARD_51_ORDER = "L R C LFE Ls Rs"
 
-        for audio_key in ['audio_51_c', 'audio_51_uc', 'audio_20_c', 'audio_20_uc']:
+        for audio_key in [key for key in tech_info if str(key).startswith('audio_')]:
             if audio_key not in tech_info or not tech_info[audio_key]:
                 continue
             data = tech_info[audio_key]
@@ -333,7 +555,7 @@ class ConclusionGenerator:
         has_video = False
         has_audio = False
         
-        for key in ['audio_20_c', 'audio_51_c', 'audio_20_uc', 'audio_51_uc', 'video']:
+        for key in [key for key in tech_info if str(key).startswith('audio_')] + ['video']:
             if key in tech_info and tech_info[key]:
                 data = tech_info[key]
                 duration = data.get('duration')
@@ -389,6 +611,9 @@ class ConclusionGenerator:
                 'audio_51_c': '5.1 cens',
                 'audio_51_uc': '5.1 uncens',
             }
+            for audio_key in tech_info:
+                if str(audio_key).startswith('audio_') and audio_key not in track_labels:
+                    track_labels[audio_key] = str(audio_key).replace('audio_me_', '').replace('_20', ' 2.0').replace('_51', ' 5.1').upper()
 
             # Проверка кратности кадру (с допуском 0.5 мс)
             def is_frame_aligned(duration_seconds, fps=25):
@@ -699,6 +924,7 @@ class ConclusionGenerator:
                 options={
                     'temperature': min(self.llm_temperature, 0.2),  # тех. текст должен быть стабильнее
                     'num_predict': min(self.llm_max_tokens, 400),
+                    'num_ctx': self.num_ctx,
                 }
             )
             
@@ -758,14 +984,16 @@ class ConclusionGenerator:
                 expected_items += 1
 
         # ШАГ 2: LLM пишет заключение-саммари (если AI включен и есть что суммировать)
+        # _write_conclusion_with_llm пишет по кусочкам: структуру уже решил Python
+        # (см. python_conclusion выше), LLM только заполняет формулировки и сама
+        # откатывается на python-текст для тех пунктов, где не справилась — поэтому
+        # отдельная валидация всего результата целиком (как раньше) больше не нужна.
         if self.use_llm and expected_items >= 3:
             try:
                 llm_conclusion = self._write_conclusion_with_llm(blockers, groups, report_type)
-                if llm_conclusion and self._validate_polished(python_conclusion, llm_conclusion, report_type):
-                    logger.info("✅ Заключение написано через AI")
+                if llm_conclusion:
+                    logger.info("✅ Заключение написано через AI (по пунктам, с python-фолбэком)")
                     return llm_conclusion
-                else:
-                    logger.warning("AI-заключение не прошло валидацию, используем Python-версию")
             except Exception as e:
                 logger.warning(f"AI недоступен ({e}), используем Python-версию")
 
@@ -820,299 +1048,158 @@ class ConclusionGenerator:
         }
         return base_group_type in separate_types
 
-    def _prepare_marker_data_for_llm(self, blockers: List[Issue], groups: dict, report_type: str = "main") -> str:
-        """
-        Подготавливает структурированные данные маркеров для LLM.
-        Передаёт ПОЛНЫЕ описания, чтобы LLM могла написать осмысленное саммари.
-        """
-        lines = []
-
-        # Блокеры
-        if blockers:
-            lines.append("БЛОКЕРЫ (критические проблемы):")
-            for b in blockers:
-                marker_text = self._issue_text(b)
-                is_title = self._is_title_card_issue(marker_text)
-                note = " [без TC в заключении]" if self._should_omit_timecode_in_conclusion(
-                    b, self._classify_single_issue(b, report_type), report_type
-                ) else ""
-                lines.append(f"  {b.timecode_in} | {marker_text}" + (" [заставка]" if is_title else "") + note)
-            lines.append("")
-
-        # Сгруппированные обычные проблемы
-        if groups:
-            lines.append("ОБЫЧНЫЕ ПРОБЛЕМЫ (по группам):")
-            for group_type, items in groups.items():
-                group_label = self._contextual_group_label(group_type)
-
-                lines.append(f"  [{group_label}] — {len(items)} маркер(ов):")
-                for item in items:
-                    marker_text = self._issue_text(item)
-                    note = " [без TC в заключении]" if self._should_omit_timecode_in_conclusion(
-                        item, group_type, report_type
-                    ) else ""
-                    lines.append(f"    {item.timecode_in} | {marker_text}{note}")
-                lines.append("")
-
-        return '\n'.join(lines)
-
     def _write_conclusion_with_llm(self, blockers: List[Issue], groups: dict, report_type: str = "main") -> str:
         """
-        LLM пишет заключение-саммари на основе полных данных маркеров.
-        Python контролирует: данные, валидацию, формат.
-        LLM контролирует: формулировки, обобщение, стиль.
+        LLM пишет заключение по кусочкам: Python уже решил структуру (сколько
+        пунктов, какого они kind, какие у них таймкоды —
+        _build_expected_structured_items), LLM для каждого пункта отдельно
+        получает только его маркеры и пишет ОДНО предложение-саммари.
+
+        Раньше один большой вызов сам решал и структуру, и формулировки —
+        из-за этого модель либо не помещала все маркеры в контекст (см.
+        num_ctx), либо на больших маркер-листах галлюцинировала, подставляя
+        вместо реальных данных примеры из своего же промпта, либо просто
+        группировала иначе, чем Python, и весь ответ браковался целиком (см.
+        разбор реальных отчётов в этой сессии). При поблочной генерации
+        каждый вызов маленький и видит только свои 1-4 маркера, а при сбое
+        одного пункта откатывается только он (_summarize_item_with_llm), а
+        не всё заключение сразу.
         """
         is_me = report_type in ("me", "me_ours")
-        marker_data = self._prepare_marker_data_for_llm(blockers, groups, report_type)
-        manual_examples_block = self._build_manual_style_examples_block("me" if is_me else "main")
+        expected_items = self._build_expected_structured_items(blockers, groups, report_type)
 
-        # Считаем ожидаемое количество пунктов для подсказки LLM
-        if is_me:
-            # В M&E: regular + blockers объединяются по типам → каждый тип = 1 пункт
-            all_type_chunks = []
-            for group_type, items in groups.items():
-                if group_type == 'другие_проблемы':
-                    all_type_chunks.extend(f'__unique_{i}' for i in range(len(items)))
-                    continue
-                all_type_chunks.extend(
-                    f"{group_type}__chunk_{idx}"
-                    for idx, _chunk in enumerate(self._build_me_issue_chunks(group_type, items))
-                )
-            for blocker in blockers:
-                gt = self._classify_single_issue(blocker, report_type)
-                all_type_chunks.append(gt if gt != 'другие_проблемы' else f'__blocker_{blocker.timecode_in}')
-            expected_items = len(set(all_type_chunks))
+        lines = []
+        for expected_item in expected_items:
+            llm_text = self._summarize_item_with_llm(expected_item, is_me)
+            rendered = None
+            if llm_text:
+                rendered = self._format_structured_llm_item({
+                    "omit_timecode": expected_item["omit_timecode"],
+                    "timecodes": expected_item["timecodes"],
+                    "text": llm_text,
+                })
+            lines.append(rendered or expected_item["line"])
+
+        return "По субъективной оценке выявлены следующие недочёты:\n\n" + "\n".join(f"-    {line}" for line in lines)
+
+    def _build_item_summary_prompt(self, expected_item: dict, is_me: bool) -> str:
+        """Короткий промпт на один пункт заключения — только маркеры этого
+
+        конкретного пункта, без общей JSON-схемы и без банка примеров с
+        конкретными таймкодами (в этой сессии именно длинный общий промпт с
+        примерами провоцировал модель копировать их вместо реальных данных
+        на больших маркер-листах).
+        """
+        source_texts = expected_item.get("source_issue_texts") or []
+        count = len(source_texts)
+        markers_block = "\n".join(f"- {t}" for t in source_texts)
+
+        domain_hint = (
+            "Контекст: это M&E-дорожка (без диалогов — только музыка, синхронные "
+            "шумы и звуковая атмосфера; голос актёра здесь — проблема, а не норма).\n\n"
+            if is_me else ""
+        )
+
+        if count <= 1:
+            count_rule = (
+                "Единичное замечание — НЕ обобщай его, перескажи суть ПОЛНОСТЬЮ, "
+                "сохрани все детали (конкретные слова в кавычках, величины, названия)."
+            )
+        elif count <= 3:
+            count_rule = (
+                f"{count} маркера/маркеров — сохрани конкретику каждого (это ещё не "
+                "«частые повторения», обобщать вместо перечисления рано), но "
+                "сформулируй компактно одним предложением."
+            )
         else:
-            expected_items = len(blockers)
-            for group_type, items in groups.items():
-                if group_type == 'другие_проблемы':
-                    expected_items += len(items)
-                else:
-                    expected_items += 1
+            count_rule = (
+                f"{count} маркеров одного типа — обобщи КОНКРЕТНО одной фразой, "
+                "не перечисляя каждый по отдельности. НЕ приводи дословные цитаты/"
+                "реплики из отдельных маркеров — это уже не обобщение, а перечисление, "
+                "если в фразе набирается несколько цитат подряд. Если среди них есть "
+                "РАЗНЫЕ источники/подтипы (например: реплики актёра, речь из радио/ТВ/"
+                "фильма в кадре, иностранный язык) — коротко назови эти категории "
+                "(например, «в репликах персонажей, речи из смартфона и анимационных "
+                "фрагментах»), не своди всё к одному слову вроде «реплики актёров», но "
+                "и не превращай фразу в список конкретных слов/реплик в кавычках."
+            )
 
-        if is_me:
-            prompt = f"""Ты — эксперт по контролю качества аудио для кинопроизводства. Напиши заключение-саммари для M&E (Music & Effects) дорожки строго на основе предоставленных данных маркер-листа.
+        style_block = self._build_manual_style_examples_block("me" if is_me else "main")
 
-КОНТЕКСТ M&E:
-M&E — это дорожка без диалогов. Содержит только музыку, синхронные шумы (шаги, звуки действий) и звуковую атмосферу. Голос актёров в M&E — это проблема (блокер), а не норма.
+        return f"""Ты — эксперт по контролю качества аудио для кинопроизводства.
+{domain_hint}Маркеры одной проблемы из маркер-листа:
+{markers_block}
 
-ДАННЫЕ МАРКЕР-ЛИСТА:
-{marker_data}
+{style_block}
 
-{manual_examples_block}
-
-ЗАДАЧА: Напиши заключение из ~{expected_items} пунктов. Каждый пункт — саммари одной проблемы или группы проблем.
-ВАЖНО: Пиши ТОЛЬКО о проблемах из данных. НЕ выдумывай проблем, которых нет в маркер-листе.
-ОСОБО ВАЖНО: По стилю ориентируйся на ручные примеры из docx. Сохраняй конкретику, не подменяй её общими словами и обобщай только тогда, когда проблема действительно системная.
-
-ФОРМАТ:
-Верни СТРОГО JSON-объект без markdown-обёртки и без пояснений.
-Схема:
-{{
-  "title": "По субъективной оценке выявлены следующие недочёты:",
-  "items": [
-    {{
-      "kind": "blocker|specific|general",
-      "timecodes": ["HH:MM:SS:FF"],
-      "omit_timecode": false,
-      "text": "текст пункта БЕЗ префикса На таймкоде/На таймкодах и без точки в конце"
-    }}
-  ]
-}}
-
-ПОРЯДОК ПУНКТОВ (СТРОГО!):
-1. СНАЧАЛА — блокеры (реплики актёров, вздохи, тональные реакции)
-2. ПОТОМ — обычные частные проблемы (шумы, атмосфера, музыка и т.д.) с таймкодами
-3. ПОСЛЕДНИМИ — обобщённые проблемы без таймкодов
-
-ОТДЕЛЬНОЕ ПРАВИЛО ДЛЯ M&E-ГОЛОСОВЫХ ГРУПП:
-- НЕ смешивай в один пункт разные типы голосового материала
-- "реплики актёров", "разборчивые гуры", "разборчивые реплики в гурах", "отсутствие гуров" и "материал для optional track" — это РАЗНЫЕ группы
-- Если в маркере сказано вынести материал в отдельный или optional track, не переформулируй это как обычные "реплики актёров"
-- Голоса из объявлений, радио, ТВ, переводов, громкоговорителей и подобных источников описывай как материал для optional track, если это следует из маркера
-- НЕ смешивай проблемы саунд-дизайна и отличий от оригинальной дорожки с фоновыми шумами, синхронными шумами и музыкой
-
-ОТДЕЛЬНОЕ ПРАВИЛО ДЛЯ M&E-ПОДТИПОВ ПРОБЛЕМ:
-- Различай 6 смысловых доменов и не склеивай их:
-  1. отсутствуют синхронные шумы
-  2. отсутствуют фоновые шумы
-  3. отсутствует музыка
-  4. синхронные шумы отличаются от оригинальной звуковой дорожки
-  5. фоновые шумы отличаются от оригинальной звуковой дорожки
-  6. музыка отличается от оригинальной звуковой дорожки
-- Если в маркере сказано "не хватает", "отсутствует", "пропали" — это группа отсутствия, а НЕ "отличается от оригинала"
-- Если в маркере сказано "отличается", "ярче", "тише", "в мастере звучит иначе", "другая реверберация", "по звучанию не совпадает" — это группа отличия от оригинала, а НЕ отсутствия
-- Если маркер про шаги, рукопожатие, движение рук, удары, взаимодействие с предметами, одежду, двери, бумагу и другие действия в кадре — это синхронные шумы
-- Если маркер про атмосферу помещения, шум улицы, шум салона, фон, room tone — это фоновые шумы
-- Если маркер про музыку, песню, музыкальные инструменты, фоновую музыку — это музыка
-
-ПРАВИЛА ПО КОЛИЧЕСТВУ МАРКЕРОВ ОДНОГО ТИПА:
-- 1 маркер → с таймкодом, ИСПОЛЬЗУЙ реальное описание из маркера (не шаблон): "На таймкоде TC описание"
-- 2 маркера → оба таймкода + реальное описание: "На таймкодах TC1 и TC2 описание"
-- 3+ маркеров → обобщи БЕЗ таймкодов, но КОНКРЕТНО: "В нескольких фрагментах описание"
-- Если маркер в данных помечен как "[без TC в заключении]" — НЕ пиши его таймкод, даже если он один
-- В поле "text" НЕ дублируй "На таймкоде", "На таймкодах", буллеты, заголовок и двоеточия после TC
-
-ДЕТАЛИЗАЦИЯ (КРИТИЧНО):
-- Для 1-2 маркеров: ПЕРЕДАЙ СУТЬ из реального описания маркера — конкретный звук, тип шума, что именно происходит
-- Не заменяй конкретику шаблоном: вместо "посторонние шумы" пиши "гул кондиционера" или "звук улицы"
-- Для 3+ маркеров: укажи тип проблемы достаточно конкретно, чтобы читатель понял без прослушивания
-- Не объединяй в один пункт разнонаправленные изменения одной среды: усиление, ослабление и изменение звучания фона описывай раздельно
-
-ПРАВИЛА ДЛЯ БЛОКЕРОВ (реплики/вздохи актёров):
-- 1 блокер → с таймкодом: "На таймкоде TC присутствует реплика актёра..."
-- 2+ блокеров одного типа → обобщи без таймкодов: "В нескольких фрагментах присутствуют реплики актёров"
-- НЕ смешивай реплики и вздохи в одном пункте если их несколько
-
-ЗАПРЕЩЁННЫЕ КОНСТРУКЦИИ:
-- "на данном таймкоде", "в данном фрагменте", "здесь" — пустые слова, убирай
-- "возможно", "вероятно", "предположительно" — пиши утвердительно
-- "ощущение, что", "создаётся впечатление" — пиши прямо
-- Точки в конце пунктов
-- Выводы, рекомендации, оценочные суждения
-
-ПРИМЕРЫ ХОРОШИХ ФОРМУЛИРОВОК ДЛЯ M&E:
-ПЛОХО: "-    На таймкоде 00:15:22:10 присутствуют посторонние шумы"
-ХОРОШО: "-    На таймкоде 00:15:22:10 слышен гул кондиционера в паузах между музыкой"
-
-ПЛОХО: "-    В нескольких фрагментах отсутствуют синхронные шумы"
-ХОРОШО: "-    В нескольких фрагментах отсутствуют синхронные шумы шагов и движений"
-
-ПЛОХО: "-    В фонограмме присутствуют проблемы с атмосферой"
-ХОРОШО: "-    На таймкодах 00:23:15:00 и 00:45:30:12 звуковая атмосфера улицы обрывается на склейке"
-
-ПЛОХО: "-    В нескольких фрагментах проблемы с саунд-дизайном"
-ХОРОШО: "-    В нескольких фрагментах синхронные шумы отличаются от оригинальной звуковой дорожки"
-
-ПЛОХО: "-    В нескольких фрагментах отсутствует звук"
-ХОРОШО: "-    В нескольких фрагментах отсутствуют фоновые шумы"
-
-ПЛОХО: "-    На таймкоде 01:02:13:11 отсутствуют синхронные шумы"
-ХОРОШО: "-    На таймкоде 01:02:13:11 звуки ударов пальцами по столу отличаются от оригинальной звуковой дорожки"
-
-ПЛОХО: "-    На таймкоде 01:10:00:00 отдельная проблема с рукопожатием"
-ХОРОШО: "-    На таймкоде 01:10:00:00 отсутствует звук рукопожатия"
-
-ПРИМЕР ЭТАЛОННОГО M&E ЗАКЛЮЧЕНИЯ:
--    На таймкодах 00:05:11:00 и 00:23:44:08 отсутствуют синхронные шумы шагов
--    На таймкоде 00:15:22:10 слышен гул кондиционера в паузах между музыкой
--    В нескольких фрагментах звуковая атмосфера не соответствует пространству в кадре
--    На таймкоде 00:42:18:05 музыкальная тема задваивается — слышна дублирующая дорожка
--    В нескольких фрагментах присутствуют реплики актёров
-
-Напиши ТОЛЬКО заключение:"""
-        else:
-            prompt = f"""Ты — эксперт по контролю качества аудио для кинопроизводства. Напиши заключение-саммари строго на основе предоставленных данных маркер-листа.
-
-ДАННЫЕ МАРКЕР-ЛИСТА:
-{marker_data}
-
-{manual_examples_block}
-
-ЗАДАЧА: Напиши заключение СТРОГО из {expected_items} пунктов. Каждый пункт — саммари одной проблемы или группы проблем из данных выше.
-ВАЖНО: Пиши ТОЛЬКО о проблемах из данных. НЕ выдумывай проблем, которых нет в маркер-листе.
-ОСОБО ВАЖНО: По стилю ориентируйся на ручные примеры из docx. Если маркер конкретный — сохраняй его лексику и смысл, а не заменяй абстрактным пересказом.
-
-ФОРМАТ:
-Верни СТРОГО JSON-объект без markdown-обёртки и без пояснений.
-Схема:
-{{
-  "title": "По субъективной оценке выявлены следующие недочёты:",
-  "items": [
-    {{
-      "kind": "blocker|specific|general",
-      "timecodes": ["HH:MM:SS:FF"],
-      "omit_timecode": false,
-      "text": "текст пункта БЕЗ префикса На таймкоде/На таймкодах и без точки в конце"
-    }}
-  ]
-}}
-
-ПОРЯДОК ПУНКТОВ (СТРОГО!):
-1. СНАЧАЛА — блокеры, КАЖДЫЙ ОТДЕЛЬНЫМ пунктом с таймкодом: "На таймкоде TC описание". НЕ объединяй блокеры!
-2. ПОТОМ — частные проблемы С таймкодами (единичные маркеры, группы из 2-3 с перечислением TC)
-3. ПОСЛЕДНИМИ — обобщённые проблемы БЕЗ таймкодов (группы из 4+ маркеров, заставки)
+Напиши ОДНО предложение — саммари этой проблемы для заключения.
+{count_rule}
 
 ПРАВИЛА:
-- Блокеры про заставки — БЕЗ таймкода
-- Любой маркер, помеченный в данных как "[без TC в заключении]" — описывай БЕЗ таймкода
-- Группа из 1 маркера — с таймкодом, передай полный смысл маркера
-- Группа из 2-3 маркеров (несинхронность, реверберация, отсутствие звука) — перечисли таймкоды: "На таймкодах TC1, TC2 и TC3 ..."
-- Группа из 4+ маркеров — обобщи одной фразой БЕЗ таймкодов
-- Прочее — каждый маркер отдельным пунктом с таймкодом
-- В поле "text" НЕ пиши "На таймкоде", "На таймкодах", буллеты и заголовок
-- НЕ добавляй выводов, рекомендаций, точек в конце пунктов
+- Используй только маркеры выше — не привноси факты, которых там нет
+- Не меняй смысл маркеров и не делай выводов сверх того, что в них написано
+- Сохраняй конкретные слова в кавычках, величины смещения, названия — дословно
+- Пиши утвердительно, без "возможно"/"вероятно"
+- Не пиши "на данном таймкоде"/"в данном фрагменте" — это пустые слова
+- Не пиши таймкод, буллет и точку в конце — только саму фразу
+- Не поясняй эти правила и не пиши ничего, кроме самой фразы
 
-ДЕТАЛИЗАЦИЯ (КРИТИЧНО — НЕ ТЕРЯТЬ ДЕТАЛИ):
-- Для блокеров и единичных проблем ОБЯЗАТЕЛЬНО сохраняй ВСЕ важные детали: конкретные слова (например "Бля"), величины смещения (например "~8 кадров"), названия эффектов, имена персонажей, конкретные звуки
-- Единичный маркер = полный пересказ его сути. НЕ обобщай единичные маркеры!
-- Для обобщённых групп (4+ маркеров) — кратко, но точно опиши тип проблемы
+Напиши ТОЛЬКО фразу:"""
 
-ЗАПРЕЩЁННЫЕ КОНСТРУКЦИИ (НЕ ИСПОЛЬЗУЙ):
-- "на данном таймкоде" — таймкод уже указан в начале пункта, НЕ дублируй
-- "в данном фрагменте", "в данном месте", "здесь" — это пустые слова, убирай
-- "возможно", "вероятно", "предположительно", "скорее всего" — пиши утвердительно
-- "ощущение, что", "создаётся впечатление", "складывается впечатление" — пиши прямо
-- "по субъективным ощущениям" — это и так субъективная оценка
-- НЕ повторяй одно и то же слово в одном пункте
-Вместо: "на данном таймкоде возможно присутствует незамаскированное слово"
-Пиши: "присутствует незамаскированное слово"
+    def _summarize_item_with_llm(self, expected_item: dict, is_me: bool) -> Optional[str]:
+        """Просит LLM сформулировать ОДНО предложение для уже готового
 
-ПРИМЕРЫ ПЛОХИХ И ХОРОШИХ ФОРМУЛИРОВОК:
-ПЛОХО (дублирование, «возможно»): "-    На таймкоде 01:15:45:23 на данном таймкоде возможно присутствует незамаскированное слово «Бля»"
-ХОРОШО (чисто, утвердительно): "-    На таймкоде 01:15:45:23 присутствует незамаскированное слово «Бля», звучащее слитно со словом «Пугачёвы»"
+        (структуру решил Python) пункта заключения. При пустом ответе, сбое
+        Ollama или потере обязательных деталей маркера — None, вызывающий
+        код (_write_conclusion_with_llm) откатывается на python-текст именно
+        этого пункта, а не всего заключения.
+        """
+        if not expected_item.get("source_issue_texts"):
+            return None
 
-ПЛОХО (пустой оборот): "-    На таймкоде 01:00:49:06 в данном фрагменте видео не синхронно"
-ХОРОШО: "-    На таймкоде 01:00:49:06 видеофайл не синхронен со звуковыми дорожками (смещение ~8 кадров)"
+        prompt = self._build_item_summary_prompt(expected_item, is_me)
+        try:
+            raw = self._ollama_generate(
+                prompt,
+                options={
+                    "temperature": self.llm_temperature,
+                    "num_predict": 200,
+                    "num_ctx": 2048,
+                },
+            )
+        except Exception as exc:
+            logger.debug(f"LLM-саммари пункта не удалось получить: {exc}")
+            return None
 
-ПЛОХО (потеряны детали): "-    На таймкоде 01:12:29:05 проблема с фоновым шумом"
-ХОРОШО: "-    На таймкоде 01:12:29:05 слышна склейка фонового шума моря"
-
-ПРИМЕР ЭТАЛОННОГО ЗАКЛЮЧЕНИЯ (порядок: блокеры → частные → общие):
--    На таймкоде 01:00:49:06 видеофайл не синхронен со звуковыми дорожками (смещение ~8 кадров)
--    На таймкоде 01:01:45:13 отсутствует маскировка нецензурной лексики (слово «Бля»)
--    На таймкодах 01:11:42:06 и 01:11:44:22 реплики несинхронны с изображением
--    На таймкоде 01:12:29:05 слышна склейка фонового шума моря
--    В фонограмме присутствуют посторонние щёлкающие звуки и яркие звуки слюны
--    В нескольких фрагментах изменяется реверберация на речи актёров — вместо реверберации автомобиля звучит реверберация крупного помещения
-
-Напиши ТОЛЬКО заключение:"""
-
-        logger.info(
-            f"Генерация заключения через {self.llm_model} "
-            f"(ожидаем ~{expected_items} пунктов, тип: {report_type}, host: {self.ollama_host})..."
-        )
-
-        raw_result = self._ollama_generate(
-            prompt,
-            options={
-                'temperature': self.llm_temperature,
-                'num_predict': self.llm_max_tokens,
-                'top_p': 0.9,
-            }
-        )
-        structured = self._format_structured_llm_output(raw_result, blockers, groups, report_type)
-        if structured:
-            return structured
-        return self._clean_llm_output(raw_result)
-
-    @staticmethod
-    def _extract_json_object(text: str) -> Optional[str]:
-        """Пытается извлечь JSON-объект из сырого ответа LLM."""
+        text = raw.strip().strip('"').strip()
         if not text:
             return None
 
-        stripped = text.strip()
-        if stripped.startswith("```"):
-            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-            stripped = re.sub(r"\s*```$", "", stripped)
-
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end <= start:
+        lower = text.lower()
+        if any(kw in lower for kw in ("рекоменд", "в целом", "итого", "вывод", "резюм")):
+            logger.debug(f"LLM-саммари содержит вывод/рекомендацию вместо описания: {text!r}")
             return None
 
-        return stripped[start:end + 1]
+        # Якоря (цитаты/числа) обязаны сохраниться дословно только для 1-3
+        # маркеров — там промпт (_build_item_summary_prompt, count_rule)
+        # прямо требует полного пересказа/сохранения конкретики. Для 4+
+        # маркеров правило противоположное: "обобщи КОНКРЕТНО, не перечисляя
+        # каждый" — требовать при этом дословного присутствия ВСЕХ цитат
+        # из всех объединяемых маркеров невозможно математически (сама и
+        # просили обобщить), и это раньше приводило к тому, что валидная
+        # обобщённая формулировка отклонялась и молча заменялась на голый
+        # python-фолбэк (см. разбор реального GAMES-отчёта в этой сессии).
+        source_count = len(expected_item.get("source_issue_texts") or [])
+        required_anchors = expected_item.get("anchors") or set()
+        if required_anchors and source_count <= 3:
+            missing = required_anchors - _extract_anchor_tokens(text)
+            if missing:
+                logger.debug(
+                    f"LLM-саммари потеряло детали маркера {sorted(missing)}, используем python-текст"
+                )
+                return None
+
+        return text
 
     @staticmethod
     def _format_timecode_list(timecodes: List[str]) -> str:
@@ -1133,13 +1220,34 @@ M&E — это дорожка без диалогов. Содержит толь
             return []
         return re.findall(r'\d{2}:\d{2}:\d{2}:\d{2}', text)
 
-    def _build_structured_contract_item(self, kind: str, line: str) -> dict:
-        """Строит ожидаемый structured item по итоговой строке Python-генерации."""
+    def _build_structured_contract_item(
+        self, kind: str, line: str, source_issues: Optional[List[Issue]] = None,
+    ) -> dict:
+        """Строит один пункт заключения по той же python-логике, что и
+
+        python-фолбэк (см. _python_format_conclusion) — используется и как
+        сам фолбэк ("line"), и как техзадание для LLM-саммари конкретно
+        этого пункта (_write_conclusion_with_llm/_summarize_item_with_llm).
+
+        source_issues — маркеры, из которых собран этот пункт. Якоря (цитаты,
+        числа с единицами) достаются ИЗ НИХ, а не из Python-версии текста —
+        сама Python-строка уже перефразирует и не годится в эталон для
+        дословных деталей.
+        """
         clean_line = line.strip()
+        anchors = set()
+        source_texts = []
+        for issue in source_issues or []:
+            issue_text = self._issue_text(issue)
+            anchors |= _extract_anchor_tokens(issue_text)
+            source_texts.append(issue_text)
         return {
             "kind": kind,
             "timecodes": self._extract_timecodes_from_text(clean_line),
             "omit_timecode": not clean_line.startswith("На таймкод"),
+            "anchors": anchors,
+            "source_issue_texts": [t for t in source_texts if t],
+            "line": clean_line,
         }
 
     def _build_expected_structured_items(self, blockers: List[Issue], groups: dict, report_type: str = "main") -> List[dict]:
@@ -1173,6 +1281,7 @@ M&E — это дорожка без диалогов. Содержит толь
                     target.append(self._build_structured_contract_item(
                         "blocker" if group_type in blocker_types else "general",
                         line,
+                        source_issues=[item],
                     ))
 
                 items = regular_items
@@ -1183,9 +1292,9 @@ M&E — это дорожка без диалогов. Содержит толь
                     for item in items:
                         line = f"На таймкоде {item.timecode_in} {self._summarize_description(self._issue_text(item))}"
                         if group_type in blocker_types:
-                            blocker_items.append(self._build_structured_contract_item("blocker", line))
+                            blocker_items.append(self._build_structured_contract_item("blocker", line, source_issues=[item]))
                         else:
-                            specific_items.append(self._build_structured_contract_item("specific", line))
+                            specific_items.append(self._build_structured_contract_item("specific", line, source_issues=[item]))
                     continue
 
                 chunks = self._build_me_issue_chunks(group_type, items)
@@ -1193,13 +1302,13 @@ M&E — это дорожка без диалогов. Содержит толь
                     chunk_items = chunk['items']
                     line = self._format_me_issue_line(group_type, chunk_items, report_type)
                     if group_type in blocker_types:
-                        blocker_items.append(self._build_structured_contract_item("blocker", line))
+                        blocker_items.append(self._build_structured_contract_item("blocker", line, source_issues=chunk_items))
                     elif chunk['force_specific'] or len(chunk_items) <= 2:
-                        specific_items.append(self._build_structured_contract_item("specific", line))
+                        specific_items.append(self._build_structured_contract_item("specific", line, source_issues=chunk_items))
                     elif group_type == 'заставки' or len(chunk_items) >= 3:
-                        general_items.append(self._build_structured_contract_item("general", line))
+                        general_items.append(self._build_structured_contract_item("general", line, source_issues=chunk_items))
                     else:
-                        specific_items.append(self._build_structured_contract_item("specific", line))
+                        specific_items.append(self._build_structured_contract_item("specific", line, source_issues=chunk_items))
 
             return blocker_items + specific_items + general_items
 
@@ -1207,7 +1316,7 @@ M&E — это дорожка без диалогов. Содержит толь
             no_tc_items, regular_items = self._split_general_timeline_items(group_type, items, report_type)
             for item in no_tc_items:
                 line = self._format_issue_without_timecode(item)
-                general_items.append(self._build_structured_contract_item("general", line))
+                general_items.append(self._build_structured_contract_item("general", line, source_issues=[item]))
 
             items = regular_items
             if not items:
@@ -1216,22 +1325,22 @@ M&E — это дорожка без диалогов. Содержит толь
             count = len(items)
             if group_type == 'заставки':
                 line = self._format_generalized_issue(group_type, items, report_type)
-                general_items.append(self._build_structured_contract_item("general", line))
+                general_items.append(self._build_structured_contract_item("general", line, source_issues=items))
                 continue
 
             if group_type == 'другие_проблемы':
                 for item in items:
                     line = f"На таймкоде {item.timecode_in} {self._summarize_description(self._issue_text(item))}"
-                    specific_items.append(self._build_structured_contract_item("specific", line))
+                    specific_items.append(self._build_structured_contract_item("specific", line, source_issues=[item]))
                 continue
 
             if count == 1:
                 if self._should_omit_timecode_in_conclusion(items[0], group_type, report_type):
                     line = self._format_issue_without_timecode(items[0])
-                    general_items.append(self._build_structured_contract_item("general", line))
+                    general_items.append(self._build_structured_contract_item("general", line, source_issues=[items[0]]))
                 else:
                     line = f"На таймкоде {items[0].timecode_in} {self._summarize_description(self._issue_text(items[0]))}"
-                    specific_items.append(self._build_structured_contract_item("specific", line))
+                    specific_items.append(self._build_structured_contract_item("specific", line, source_issues=[items[0]]))
             elif count in [2, 3] and self._is_important_type(group_type, report_type):
                 timecodes = [item.timecode_in for item in items]
                 if count == 2:
@@ -1239,10 +1348,10 @@ M&E — это дорожка без диалогов. Содержит толь
                 else:
                     tc_text = f"{timecodes[0]}, {timecodes[1]} и {timecodes[2]}"
                 line = f"На таймкодах {tc_text} {self._format_multiple_issue(group_type, items, report_type)}"
-                specific_items.append(self._build_structured_contract_item("specific", line))
+                specific_items.append(self._build_structured_contract_item("specific", line, source_issues=items))
             else:
                 line = self._format_generalized_issue(group_type, items, report_type)
-                general_items.append(self._build_structured_contract_item("general", line))
+                general_items.append(self._build_structured_contract_item("general", line, source_issues=items))
 
         for blocker in blockers:
             group_type = self._classify_single_issue(blocker, report_type)
@@ -1250,97 +1359,9 @@ M&E — это дорожка без диалогов. Содержит толь
                 line = self._format_issue_without_timecode(blocker, use_blocker_summary=True)
             else:
                 line = f"На таймкоде {blocker.timecode_in} {self._summarize_blocker(self._issue_text(blocker))}"
-            blocker_items.append(self._build_structured_contract_item("blocker", line))
+            blocker_items.append(self._build_structured_contract_item("blocker", line, source_issues=[blocker]))
 
         return blocker_items + specific_items + general_items
-
-    def _validate_structured_llm_payload(
-        self,
-        payload: dict,
-        blockers: Optional[List[Issue]] = None,
-        groups: Optional[dict] = None,
-        report_type: str = "main",
-    ) -> bool:
-        """Проверяет structured JSON от LLM до сборки финального текста."""
-        items = payload.get("items")
-        if not isinstance(items, list) or not items:
-            logger.warning("Structured-валидация: отсутствует непустой список items")
-            return False
-
-        valid_kinds = {"blocker", "specific", "general"}
-        kind_order = {"blocker": 0, "specific": 1, "general": 2}
-        previous_kind_rank = -1
-
-        expected_items = None
-        if blockers is not None and groups is not None:
-            expected_items = self._build_expected_structured_items(blockers, groups, report_type)
-            if len(items) != len(expected_items):
-                logger.warning(
-                    "Structured-валидация: кол-во items отличается "
-                    f"(Python: {len(expected_items)}, AI: {len(items)})"
-                )
-                return False
-
-        for index, item in enumerate(items):
-            if not isinstance(item, dict):
-                logger.warning(f"Structured-валидация: item #{index + 1} не является объектом")
-                return False
-
-            kind = str(item.get("kind", "")).strip().lower()
-            if kind not in valid_kinds:
-                logger.warning(f"Structured-валидация: item #{index + 1} содержит неизвестный kind '{kind}'")
-                return False
-            if kind_order[kind] < previous_kind_rank:
-                logger.warning(f"Structured-валидация: item #{index + 1} нарушает порядок kind")
-                return False
-            previous_kind_rank = kind_order[kind]
-
-            omit_timecode = item.get("omit_timecode")
-            if not isinstance(omit_timecode, bool):
-                logger.warning(f"Structured-валидация: item #{index + 1} содержит не-bool omit_timecode")
-                return False
-
-            timecodes = item.get("timecodes")
-            if not isinstance(timecodes, list):
-                logger.warning(f"Structured-валидация: item #{index + 1} содержит не-list timecodes")
-                return False
-            cleaned_timecodes = [str(tc).strip() for tc in timecodes if str(tc).strip()]
-
-            text = str(item.get("text", "")).strip()
-            if not text:
-                logger.warning(f"Structured-валидация: item #{index + 1} не содержит текста")
-                return False
-
-            if omit_timecode and cleaned_timecodes:
-                logger.warning(f"Structured-валидация: item #{index + 1} не должен содержать таймкоды")
-                return False
-
-            if expected_items is None:
-                continue
-
-            expected_item = expected_items[index]
-            if kind != expected_item["kind"]:
-                logger.warning(
-                    f"Structured-валидация: item #{index + 1} имеет kind '{kind}', "
-                    f"ожидался '{expected_item['kind']}'"
-                )
-                return False
-
-            if omit_timecode != expected_item["omit_timecode"]:
-                logger.warning(
-                    f"Structured-валидация: item #{index + 1} имеет omit_timecode={omit_timecode}, "
-                    f"ожидалось {expected_item['omit_timecode']}"
-                )
-                return False
-
-            if cleaned_timecodes != expected_item["timecodes"]:
-                logger.warning(
-                    f"Structured-валидация: item #{index + 1} содержит неверные timecodes "
-                    f"(AI: {cleaned_timecodes}, Python: {expected_item['timecodes']})"
-                )
-                return False
-
-        return True
 
     def _format_structured_llm_item(self, item: dict) -> Optional[str]:
         """Собирает финальную строку заключения из одного JSON item."""
@@ -1372,171 +1393,6 @@ M&E — это дорожка без диалогов. Содержит толь
 
         prefix = "На таймкоде" if len(timecodes) == 1 else "На таймкодах"
         return f"{prefix} {tc_text} {text}"
-
-    def _format_structured_llm_output(
-        self,
-        text: str,
-        blockers: Optional[List[Issue]] = None,
-        groups: Optional[dict] = None,
-        report_type: str = "main",
-    ) -> Optional[str]:
-        """
-        Основной путь постобработки AI-ответа:
-        ожидаем JSON-структуру и собираем финальное заключение Python'ом.
-        """
-        json_text = self._extract_json_object(text)
-        if not json_text:
-            return None
-
-        try:
-            payload = json.loads(json_text)
-        except Exception as exc:
-            logger.warning(f"Не удалось распарсить JSON-ответ LLM: {exc}")
-            return None
-
-        if not isinstance(payload, dict):
-            return None
-
-        if not self._validate_structured_llm_payload(payload, blockers, groups, report_type):
-            return None
-
-        title = str(payload.get("title") or "По субъективной оценке выявлены следующие недочёты:").strip()
-        items = payload.get("items")
-
-        formatted_items = []
-        for item in items:
-            line = self._format_structured_llm_item(item)
-            if line:
-                formatted_items.append(f"-    {line}")
-
-        if not formatted_items:
-            return None
-
-        if not title.startswith("По субъективной оценке"):
-            title = "По субъективной оценке выявлены следующие недочёты:"
-
-        return title + "\n\n" + "\n".join(formatted_items)
-
-    def _clean_llm_output(self, text: str) -> str:
-        """Очистка вывода LLM: нормализация формата, удаление мусора и механических оборотов."""
-        import re
-
-        # Убираем "TC:" которые LLM может копировать из данных
-        text = re.sub(r'(?:TC:\s*)', '', text)
-        # Убираем двоеточие после таймкода (На таймкоде HH:MM:SS:FF: -> без двоеточия)
-        text = re.sub(r'(На таймкод[еа]х?\s+[\d:,\s и]+\d{2}:\d{2}:\d{2}:\d{2}):\s*', r'\1 ', text)
-        # Убираем точки в конце пунктов
-        text = re.sub(r'\.\s*$', '', text, flags=re.MULTILINE)
-
-        lines = text.split('\n')
-        result_lines = []
-
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                if result_lines and result_lines[-1].startswith("По субъективной оценке"):
-                    result_lines.append("")
-                continue
-
-            if stripped.startswith("По субъективной оценке"):
-                result_lines.append(stripped)
-                continue
-
-            if stripped.startswith('-'):
-                content = stripped.lstrip('-').strip()
-
-                # Очищаем содержимое пункта от механических оборотов
-                # Разделяем "На таймкоде TC" от описания и чистим описание
-                tc_match = re.match(
-                    r'(На таймкод[еа]х?\s+[\d:,\s и]+\d{2}:\d{2}:\d{2}:\d{2})\s+(.*)',
-                    content
-                )
-                if tc_match:
-                    tc_part = tc_match.group(1)
-                    desc_part = tc_match.group(2)
-                    desc_part = self._clean_marker_description(desc_part)
-                    content = f"{tc_part} {desc_part}"
-                else:
-                    # Пункт без реального таймкода — полная очистка через общий метод
-                    content = self._clean_marker_description(content)
-
-                result_lines.append(f"-    {content}")
-                continue
-
-            # Продолжение предыдущей строки
-            if result_lines and result_lines[-1].startswith("-    "):
-                result_lines[-1] += " " + stripped
-
-        if not result_lines or not result_lines[0].startswith("По субъективной оценке"):
-            result_lines.insert(0, "")
-            result_lines.insert(0, "По субъективной оценке выявлены следующие недочёты:")
-
-        return '\n'.join(result_lines)
-
-    def _validate_polished(self, original: str, polished: str, report_type: str = "main") -> bool:
-        """
-        Валидация AI-заключения: структура должна быть корректной.
-        """
-        import re
-
-        is_me = report_type in ("me", "me_ours")
-
-        def count_items(text):
-            return len([l for l in text.split('\n') if l.strip().startswith('-')])
-
-        def extract_all_timecodes(text):
-            return set(re.findall(r'\d{2}:\d{2}:\d{2}:\d{2}', text))
-
-        def extract_blocker_timecodes(text):
-            return set(re.findall(r'На таймкод[ае]х?\s+(\d{2}:\d{2}:\d{2}:\d{2})', text))
-
-        orig_items = count_items(original)
-        pol_items = count_items(polished)
-
-        # AI не должен менять количество смысловых пунктов:
-        # это приводит к ложным обобщениям или, наоборот, к повторному дроблению группы.
-        if orig_items != pol_items:
-            logger.warning(f"Валидация: кол-во пунктов отличается (Python: {orig_items}, AI: {pol_items})")
-            return False
-
-        pol_all_tc = extract_all_timecodes(polished)
-
-        # Все таймкоды, которые Python-черновик решил показать явно,
-        # должны остаться и в AI-версии.
-        orig_required_tc = extract_all_timecodes(original)
-        missing_required_tc = orig_required_tc - pol_all_tc
-        if missing_required_tc:
-            logger.warning(f"Валидация: пропущены обязательные TC: {missing_required_tc}")
-            return False
-
-        # Дополнительная проверка блокеров для основного отчёта.
-        # В M&E блокеры могут быть обобщены, поэтому отдельную проверку не усиливаем.
-        if not is_me:
-            orig_blocker_tc = extract_blocker_timecodes(original)
-            missing_blocker_tc = orig_blocker_tc - pol_all_tc
-            if missing_blocker_tc:
-                logger.warning(f"Валидация: пропущены TC блокеров: {missing_blocker_tc}")
-                return False
-
-        # Стартовый таймкод в заключении не показываем:
-        # это служебный маркер для общих проблем всей фонограммы/видео.
-        if re.search(r'На таймкод[еа]х?\s+.*(?:00:00:00:00|01:00:00:00)', polished):
-            logger.warning("Валидация: в AI-заключении появился стартовый таймкод")
-            return False
-
-        # Заголовок должен быть
-        if "По субъективной оценке" not in polished:
-            logger.warning("Валидация: отсутствует заголовок")
-            return False
-
-        # Не должно быть выводов/рекомендаций
-        lower = polished.lower()
-        if any(kw in lower for kw in ['рекоменд', 'в целом', 'итого', 'вывод', 'резюм']):
-            logger.warning("Валидация: обнаружены выводы/рекомендации")
-            return False
-
-        logger.info(f"Валидация пройдена ({pol_items} пунктов, {len(pol_all_tc)} TC, тип: {report_type})")
-        return True
 
     def _collapse_repeated_issues(self, items: List[Issue]) -> list:
         """
@@ -2658,11 +2514,23 @@ M&E — это дорожка без диалогов. Содержит толь
     def _is_important_type(self, group_type: str, report_type: str = "main") -> bool:
         """Проверка, является ли тип проблемы важным для перечисления таймкодов"""
         group_type = self._base_group_type(group_type)
-        important = ['несинхронность', 'отсутствие_звука', 'маскировка', 'реверберация']
+        # проблемы_реплик — уже "важный" тип для M&E (ниже) и уже держится
+        # отдельным пунктом для main-блокеров (см. _should_keep_blocker_separate) —
+        # отсутствие его здесь для обычных (не-блокерных) main-групп было
+        # несоответствием: 2-3 разных по сути маркера неразборчивости реплик
+        # (например, про разных персонажей в разных местах серии) молча
+        # схлопывались в одно расплывчатое обобщение вместо перечисления
+        # таймкодов, как для несинхронности/отсутствия звука.
+        # шипение — та же история: реальный кейс с двумя маркерами шипения на
+        # РАЗНЫХ конкретных репликах («Не парься...», «Ты мне нравишься очень»)
+        # схлопывался в общую фразу без таймкодов, хотя это два разных места.
+        important = [
+            'несинхронность', 'отсутствие_звука', 'маскировка', 'реверберация',
+            'проблемы_реплик', 'шипение',
+        ]
         if report_type in ("me", "me_ours"):
             important += [
                 'саунд_дизайн',
-                'проблемы_реплик',
                 'разборчивые_гуры',
                 'реплики_в_гурах',
                 'отсутствие_гуров',
@@ -2772,6 +2640,23 @@ M&E — это дорожка без диалогов. Содержит толь
             return "резко меняется звучание фонового шума"
         elif group_type == 'атмосфера__noise_jump':
             return "слышны скачки или склейки фонового шума"
+        elif base_group_type == 'щелчки_слюна':
+            # Тот же баг класса, что и с 'шипение' ниже — этой ветки не было
+            # вообще, случай 2-3 маркеров проваливался в generic "присутствуют
+            # проблемы" (см. _format_generalized_issue — там для 4+ такая же
+            # логика уже есть).
+            has_clicks = any(any(kw in self._issue_text(i).lower()
+                                for kw in ['щелч', 'щёлк', 'клик', 'click', 'цокан', 'щелкающ'])
+                            for i in items)
+            has_saliva = any(any(kw in self._issue_text(i).lower()
+                                for kw in ['слюна', 'слюн'])
+                            for i in items)
+            if has_clicks and has_saliva:
+                return "присутствуют посторонние щёлкающие звуки и яркие звуки слюны"
+            elif has_saliva:
+                return "присутствуют яркие звуки слюны"
+            else:
+                return "присутствуют посторонние щёлкающие звуки"
 
         if base_group_type == 'несинхронность':
             if is_me:
@@ -2819,6 +2704,13 @@ M&E — это дорожка без диалогов. Содержит толь
             return "слышен свистящий высокочастотный призвук"
         elif group_type == 'шипение__high_freq':
             return "слышен посторонний высокочастотный призвук"
+        elif base_group_type == 'шипение':
+            # Раньше этой ветки не было вообще (только под if is_me: ниже) —
+            # для report_type="main" без конкретного подтипа код проваливался
+            # в generic "присутствуют проблемы" (см. реальный баг: LLM-ответ
+            # для этого пункта отклонён anchor-проверкой, а python-фолбэк
+            # оказался пустым по содержанию).
+            return "слышно постороннее шипение"
         # M&E-специфичные фразы для типов без отдельной обработки выше
         if is_me:
             if base_group_type == 'атмосфера':

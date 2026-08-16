@@ -103,3 +103,85 @@ def test_save_token_failure_returns_false_and_does_not_cache(monkeypatch):
 
 def test_quote_for_security_escapes_quotes_and_backslashes():
     assert secret_store._quote_for_security('a"b\\c') == '"a\\"b\\\\c"'
+
+
+def test_groq_key_and_yandex_token_are_cached_independently(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _result(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert secret_store.save_token("yandex-tok") is True
+    assert secret_store.save_groq_key("gsk_groq-key") is True
+
+    # Оба читаются из кэша, без новых субпроцессов, и не путают друг друга.
+    assert secret_store.load_token() == "yandex-tok"
+    assert secret_store.load_groq_key() == "gsk_groq-key"
+    assert len(calls) == 2
+
+
+def test_load_groq_key_returns_empty_when_not_stored(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _result(44, stderr="not found"))
+    assert secret_store.load_groq_key() == ""
+
+
+def test_delete_groq_key_treats_missing_entry_as_success(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _result(44))
+    assert secret_store.delete_groq_key() is True
+
+
+def test_yandexgpt_key_and_folder_id_are_cached_independently(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _result(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert secret_store.save_yandexgpt_key("AQVN_test-key") is True
+    assert secret_store.save_yandexgpt_folder_id("b1g...folder") is True
+
+    assert secret_store.load_yandexgpt_key() == "AQVN_test-key"
+    assert secret_store.load_yandexgpt_folder_id() == "b1g...folder"
+    assert len(calls) == 2
+
+
+def test_load_yandexgpt_key_returns_empty_when_not_stored(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _result(44, stderr="not found"))
+    assert secret_store.load_yandexgpt_key() == ""
+
+
+def test_delete_yandexgpt_folder_id_treats_missing_entry_as_success(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _result(44))
+    assert secret_store.delete_yandexgpt_folder_id() is True
+
+
+def test_gigachat_key_is_cached_independently_from_groq(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _result(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert secret_store.save_groq_key("gsk_groq-key") is True
+    assert secret_store.save_gigachat_key("Y2xpZW50OnNlY3JldA==") is True
+
+    assert secret_store.load_groq_key() == "gsk_groq-key"
+    assert secret_store.load_gigachat_key() == "Y2xpZW50OnNlY3JldA=="
+    assert len(calls) == 2
+
+
+def test_load_gigachat_key_returns_empty_when_not_stored(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _result(44, stderr="not found"))
+    assert secret_store.load_gigachat_key() == ""
+
+
+def test_delete_gigachat_key_treats_missing_entry_as_success(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _result(44))
+    assert secret_store.delete_gigachat_key() is True

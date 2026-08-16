@@ -8,8 +8,8 @@ import csv
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict
-from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
 
 # Добавляем корневую директорию в путь
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -36,6 +36,8 @@ class Issue:
     description_original: str = ""
     description_ru: str = ""
     source_language: str = "unknown"
+    marker_id: str = ""
+    me_tracks: Dict[str, bool] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.description_original:
@@ -47,7 +49,15 @@ class Issue:
 class CSVImporter:
     """Класс для импорта проблем из CSV"""
     
-    def __init__(self):
+    def __init__(self, config: Optional[dict] = None, generate_fn: Optional[Callable[..., str]] = None):
+        """
+        generate_fn — вызов LLM для батч-проверки орфографии (см.
+        SpellcheckService.correct_texts_batch); обычно ConclusionGenerator.
+        _ollama_generate, чтобы проверка опечаток шла через тот же
+        провайдер (Ollama/Groq/YandexGPT/GigaChat), что выбран в UI. None —
+        только локальный алгоритм (pymorphy3/pyspellchecker).
+        """
+        self._spellcheck = SpellcheckService(config=config, generate_fn=generate_fn)
         logger.info("CSVImporter инициализирован")
     
     def _get_column_value(self, row: Dict, *column_names: str) -> str:
@@ -100,12 +110,15 @@ class CSVImporter:
         """Предварительный скан CSV на опечатки — БЕЗ изменения данных.
 
         Возвращает список предложений для диалога ревью (см.
-        src/spellcheck_review.py): [{"timecode", "field", "old", "new"}, ...].
-        Ошибки скана не поднимаются — пустой список просто означает
-        «показывать нечего», генерация продолжается без исправлений.
+        src/spellcheck_review.py): [{"timecode", "field", "old", "new",
+        "context"}, ...]. "context" — полный текст поля, где нашлась
+        опечатка, нужен диалогу, чтобы показать слово не в отрыве, а внутри
+        живого маркера. Ошибки скана не поднимаются — пустой список просто
+        означает «показывать нечего», генерация продолжается без исправлений.
         """
         proposals: List[Dict] = []
         try:
+            rows = []
             for _row_count, row in self._iter_rows(csv_path):
                 timecode_in = self._get_column_value(row, 'Timecode In', 'TC IN', 'TC_IN')
                 if not timecode_in:
@@ -114,14 +127,23 @@ class CSVImporter:
                     ("Описание", self._get_column_value(row, 'Description', 'ОПИСАНИЕ ПРОБЛЕМЫ', 'ОПИСАНИЕ')),
                     ("Комментарии", self._get_column_value(row, 'КОММЕНТАРИИ', 'COMMENTS')),
                 ]
+                rows.append((timecode_in, fields))
+
+            # Один batch-запрос на весь маркер-лист (LLM либо локальный
+            # алгоритм внутри correct_texts_batch) вместо отдельного вызова
+            # на каждое поле — см. SpellcheckService.correct_texts_batch.
+            texts = [text for _tc, fields in rows for _label, text in fields]
+            corrections_by_text = self._spellcheck.correct_texts_batch(texts)
+
+            for timecode_in, fields in rows:
                 for field_label, text in fields:
-                    _fixed, fixes = SpellcheckService.correct_text(text)
-                    for old, new in fixes:
+                    for old, new in corrections_by_text.get(text, []):
                         proposals.append({
                             "timecode": timecode_in,
                             "field": field_label,
                             "old": old,
                             "new": new,
+                            "context": text,
                         })
         except Exception as exc:
             logger.warning(f"Скан орфографии CSV не удался: {exc}")
@@ -148,9 +170,27 @@ class CSVImporter:
         try:
             logger.info(f"Импорт проблем из CSV: {csv_path}")
 
-            row_count = 0
+            rows = list(self._iter_rows(csv_path))
+            total_rows = len(rows)
             spelling_fixes_count = 0
-            for row_count, row in self._iter_rows(csv_path):
+
+            # approved_corrections is None — «авто» режим (нет предварительного
+            # скана/диалога, например прямой вызов в тестах): считаем batch'ем
+            # уверенные исправления и применяем их все. Если множество передано
+            # явно (даже пустое) — оно уже получено из scan_spelling + диалога
+            # ревью, повторный вызов LLM не нужен, просто подставляем одобренные
+            # пары (см. SpellcheckService.apply_pairs).
+            auto_corrections: Dict[str, List[Tuple[str, str]]] = {}
+            if approved_corrections is None:
+                texts = []
+                for _row_count, row in rows:
+                    if not self._get_column_value(row, 'Timecode In', 'TC IN', 'TC_IN'):
+                        continue
+                    texts.append(self._get_column_value(row, 'Description', 'ОПИСАНИЕ ПРОБЛЕМЫ', 'ОПИСАНИЕ'))
+                    texts.append(self._get_column_value(row, 'КОММЕНТАРИИ', 'COMMENTS'))
+                auto_corrections = self._spellcheck.correct_texts_batch(texts)
+
+            for row_count, row in rows:
                 # Получаем таймкод (пробуем английский и русский варианты)
                 timecode_in = self._get_column_value(row, 'Timecode In', 'TC IN', 'TC_IN')
 
@@ -162,36 +202,47 @@ class CSVImporter:
                 raw_description = self._get_column_value(row, 'Description', 'ОПИСАНИЕ ПРОБЛЕМЫ', 'ОПИСАНИЕ')
                 raw_comments = self._get_column_value(row, 'КОММЕНТАРИИ', 'COMMENTS')
 
-                # Проверка орфографии (RU/EN): автоисправление либо
-                # только одобренные пользователем замены
-                description, description_fixes = SpellcheckService.correct_text(
-                    raw_description, approved=approved_corrections)
-                comments, comments_fixes = SpellcheckService.correct_text(
-                    raw_comments, approved=approved_corrections)
+                # Проверка орфографии (RU/EN): автоисправление либо только
+                # одобренные пользователем замены — без повторного скана.
+                if approved_corrections is None:
+                    description, description_fixes = SpellcheckService.apply_pairs(
+                        raw_description, auto_corrections.get(raw_description, []))
+                    comments, comments_fixes = SpellcheckService.apply_pairs(
+                        raw_comments, auto_corrections.get(raw_comments, []))
+                else:
+                    description, description_fixes = SpellcheckService.apply_pairs(
+                        raw_description, approved_corrections)
+                    comments, comments_fixes = SpellcheckService.apply_pairs(
+                        raw_comments, approved_corrections)
 
                 for old, new in description_fixes + comments_fixes:
                     spelling_fixes_count += 1
                     logger.info(f"  Строка {row_count}: орфография '{old}' → '{new}'")
 
+                from src.me_tracks import marker_track_values
+
+                me_tracks = marker_track_values(row)
                 issue = Issue(
                     timecode_in=timecode_in,
                     timecode_out=self._get_column_value(row, 'Timecode Out', 'TC OUT', 'TC_OUT'),
                     description=description,
                     description_original=raw_description,
-                    audio_20_c=self._get_column_value(row, '2.0 C') == '*',
+                    audio_20_c=me_tracks['me_20'],
                     audio_20_uc=self._get_column_value(row, '2.0 UC') == '*',
-                    audio_51_c=self._get_column_value(row, '5.1 C') == '*',
+                    audio_51_c=me_tracks['me_51'],
                     audio_51_uc=self._get_column_value(row, '5.1 UC') == '*',
                     blocker=self._get_column_value(row, 'БЛОКЕР', 'BLOCKER') == '*',
                     fix_required=self._get_column_value(row, 'ТРЕБУЕТ ИСПРАВЛЕНИЯ', 'FIX REQUIRED') == '*',
                     comment_required=self._get_column_value(row, 'ТРЕБУЕТ КОММЕНТАРИЯ', 'COMMENT REQUIRED') == '*',
-                    comments=comments
+                    me_tracks=me_tracks,
+                    comments=comments,
+                    marker_id=self._get_column_value(row, 'ID'),
                 )
 
                 issues.append(issue)
                 logger.debug(f"Строка {row_count}: {timecode_in} - {issue.description[:30]}...")
 
-            logger.info(f"✅ Импортировано {len(issues)} проблем из {row_count} строк CSV")
+            logger.info(f"✅ Импортировано {len(issues)} проблем из {total_rows} строк CSV")
             if spelling_fixes_count:
                 logger.info(f"✅ Автоисправлено опечаток (орфография RU/EN): {spelling_fixes_count}")
             

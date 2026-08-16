@@ -1,11 +1,12 @@
 import io
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 from urllib.error import HTTPError
 
 import pytest
 
-from src.yandex_disk_client import YandexDiskClient, YandexDiskError
+from src.yandex_disk_client import YandexDiskClient, YandexDiskError, parse_tag
 
 
 class DummyResponse:
@@ -63,6 +64,33 @@ def test_get_meta_raises_on_missing_resource():
     with patch("src.yandex_disk_client.urlopen", side_effect=error):
         with pytest.raises(YandexDiskError):
             client.get_meta("отчеты/Show/e01/report.docx")
+
+
+def test_set_custom_properties_sends_patch_with_json_body():
+    client = YandexDiskClient("test-token")
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        captured.append((request.get_method(), request.full_url, request.data, request.headers))
+        return DummyResponse(b"{}")
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=fake_urlopen):
+        client.set_custom_properties("отчеты/Show/e01", {"beast_tag_color": "#FF3B30"})
+
+    method, url, data, headers = captured[0]
+    assert method == "PATCH"
+    assert "path=" in url
+    assert json.loads(data) == {"custom_properties": {"beast_tag_color": "#FF3B30"}}
+    assert headers.get("Content-type") == "application/json"
+
+
+def test_set_custom_properties_raises_on_error():
+    client = YandexDiskClient("test-token")
+    error = HTTPError(url="x", code=404, msg="Not Found", hdrs=None, fp=None)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=error):
+        with pytest.raises(YandexDiskError):
+            client.set_custom_properties("отчеты/Show/e01", {"beast_tag_color": None})
 
 
 def test_list_folder_returns_items():
@@ -162,9 +190,77 @@ def test_mkdir_raises_409_when_parent_path_missing():
     assert exc_info.value.error_code == "DiskPathDoesntExistsError"
 
 
+def test_mkdir_retries_on_locked_resource_then_succeeds():
+    # 423 DiskResourceLockedError — временное состояние (над ресурсом
+    # выполняется другая операция), обычно проходит само за пару секунд.
+    client = YandexDiskClient("test-token")
+    body = io.BytesIO(b'{"error": "DiskResourceLockedError"}')
+    locked_error = HTTPError(url="x", code=423, msg="Locked", hdrs=None, fp=body)
+    attempts = [locked_error, locked_error, DummyResponse(b"{}")]
+
+    def fake_urlopen(request, timeout=None):
+        result = attempts.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=fake_urlopen), \
+         patch("src.yandex_disk_client.time.sleep") as mock_sleep:
+        client.mkdir("отчеты/Show/e06")  # не должно поднимать исключение
+
+    assert mock_sleep.call_count == 2
+
+
+def test_mkdir_gives_up_after_exhausting_lock_retries():
+    client = YandexDiskClient("test-token")
+    body = io.BytesIO(b'{"error": "DiskResourceLockedError"}')
+    error = HTTPError(url="x", code=423, msg="Locked", hdrs=None, fp=body)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=error), \
+         patch("src.yandex_disk_client.time.sleep") as mock_sleep:
+        with pytest.raises(YandexDiskError) as exc_info:
+            client.mkdir("отчеты/Show/e06")
+
+    assert exc_info.value.status_code == 423
+    assert mock_sleep.call_count == 3  # длина _TRANSIENT_ERROR_RETRY_DELAYS_SEC
+
+
+def test_mkdir_retries_on_server_error_then_succeeds():
+    # 500/502/503 и т.п. — временный сбой на стороне серверов Диска,
+    # не связан с самим запросом; тоже проходит само за пару секунд.
+    client = YandexDiskClient("test-token")
+    error_500 = HTTPError(url="x", code=500, msg="Server Error", hdrs=None, fp=None)
+    attempts = [error_500, error_500, DummyResponse(b"{}")]
+
+    def fake_urlopen(request, timeout=None):
+        result = attempts.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=fake_urlopen), \
+         patch("src.yandex_disk_client.time.sleep") as mock_sleep:
+        client.mkdir("отчеты/Show/e06")  # не должно поднимать исключение
+
+    assert mock_sleep.call_count == 2
+
+
+def test_mkdir_gives_up_after_exhausting_server_error_retries():
+    client = YandexDiskClient("test-token")
+    error = HTTPError(url="x", code=503, msg="Service Unavailable", hdrs=None, fp=None)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=error), \
+         patch("src.yandex_disk_client.time.sleep") as mock_sleep:
+        with pytest.raises(YandexDiskError) as exc_info:
+            client.mkdir("отчеты/Show/e06")
+
+    assert exc_info.value.status_code == 503
+    assert mock_sleep.call_count == 3  # длина _TRANSIENT_ERROR_RETRY_DELAYS_SEC
+
+
 def test_mkdir_raises_on_other_errors():
     client = YandexDiskClient("test-token")
-    error = HTTPError(url="x", code=500, msg="Server Error", hdrs=None, fp=None)
+    error = HTTPError(url="x", code=400, msg="Bad Request", hdrs=None, fp=None)
 
     with patch("src.yandex_disk_client.urlopen", side_effect=error):
         with pytest.raises(YandexDiskError):
@@ -241,6 +337,21 @@ def test_upload_bytes_gets_href_then_puts_data_directly():
     assert put_call[2] == b'{"a": 1}'
 
 
+def test_upload_bytes_can_request_non_overwriting_allocation_lock():
+    client = YandexDiskClient("test-token")
+    captured = []
+    responses = iter([DummyResponse(b'{"href": "https://upload.example/put"}'), DummyResponse(b"")])
+
+    def fake_urlopen(request, timeout=None):
+        captured.append(request.full_url)
+        return next(responses)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=fake_urlopen):
+        client.upload_bytes(b"lock", "/Beast Auto Reporter/locks/x", overwrite=False)
+
+    assert "overwrite=false" in captured[0]
+
+
 def test_upload_bytes_raises_when_no_href_returned():
     client = YandexDiskClient("test-token")
 
@@ -283,6 +394,20 @@ def test_move_raises_on_conflict():
     with patch("src.yandex_disk_client.urlopen", side_effect=error):
         with pytest.raises(YandexDiskError):
             client.move("отчеты/Show/e01", "отчеты/Show/e02")
+
+
+def test_move_does_not_retry_server_error():
+    client = YandexDiskClient("test-token")
+    error = HTTPError(url="x", code=500, msg="Server Error", hdrs=None, fp=None)
+
+    with patch("src.yandex_disk_client.urlopen", side_effect=[error, DummyResponse(b"{}")] ) as mock_urlopen, \
+         patch("src.yandex_disk_client.time.sleep") as mock_sleep:
+        with pytest.raises(YandexDiskError) as exc_info:
+            client.move("отчеты/Show/e01", "отчеты/Show/e02")
+
+    assert exc_info.value.status_code == 500
+    assert mock_urlopen.call_count == 1
+    mock_sleep.assert_not_called()
 
 
 def test_delete_sends_delete_with_permanently_false_by_default():
@@ -364,3 +489,24 @@ def test_download_to_file_writes_content_and_reports_progress(tmp_path):
 
     assert local_path.read_bytes() == b"file content"
     assert progress_calls == [(12, 12)]
+
+
+def test_parse_tag_returns_none_for_missing_or_empty_properties():
+    assert parse_tag(None) is None
+    assert parse_tag({}) is None
+
+
+def test_parse_tag_requires_color():
+    assert parse_tag({"beast_tag_comment": "просто заметка"}) is None
+
+
+def test_parse_tag_returns_color_and_comment():
+    assert parse_tag({"beast_tag_color": "#FF3B30", "beast_tag_comment": "срочно"}) == ("#FF3B30", "срочно")
+
+
+def test_parse_tag_defaults_comment_to_empty_string():
+    assert parse_tag({"beast_tag_color": "#FF3B30"}) == ("#FF3B30", "")
+
+
+def test_parse_tag_ignores_unrelated_custom_properties():
+    assert parse_tag({"some_other_app_key": "value"}) is None

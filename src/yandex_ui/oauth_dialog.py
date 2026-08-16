@@ -10,12 +10,14 @@ from __future__ import annotations
 import logging
 import webbrowser
 
-from PyQt5.QtCore import QThread, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QSize, QThread, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPushButton,
-    QVBoxLayout,
+    QVBoxLayout, QWidget,
 )
+
+from src.icons import make_icon
 
 logger = logging.getLogger(__name__)
 
@@ -95,34 +97,80 @@ class YandexOAuthDialog(QDialog):
 
         self.setWindowTitle("Вход в Яндекс")
         self.setModal(True)
-        self.setFixedWidth(360)
+        self.setFixedWidth(380)
         self.setStyleSheet("QDialog { background: #FFFFFF; }")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(14)
 
         self.status_label = QLabel("Получаем код подтверждения…")
-        self.status_label.setFont(QFont(".AppleSystemUIFont", 12))
+        self.status_label.setFont(QFont(".AppleSystemUIFont", 13, QFont.DemiBold))
         self.status_label.setStyleSheet("color: #1D1D1F;")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        # Карточка с кодом: код + кнопка копирования рядом — код всё равно
+        # нужно перепечатать (или скопировать) на странице Яндекса, поэтому
+        # явная кнопка удобнее, чем полагаться на то, что пользователь
+        # догадается выделить текст мышью самостоятельно.
+        code_card = QWidget()
+        code_card.setObjectName("codeCard")
+        code_card.setStyleSheet("""
+            QWidget#codeCard {
+                background: #F0F6FF;
+                border: 1px solid #D6E6FF;
+                border-radius: 10px;
+            }
+        """)
+        code_row = QHBoxLayout(code_card)
+        code_row.setContentsMargins(8, 8, 8, 8)
+        code_row.setSpacing(6)
+        code_row.addStretch()
+
         self.code_label = QLabel("")
-        code_font = QFont("Menlo", 26, QFont.DemiBold)
-        # Моноширинный шрифт с интервалом между буквами — код нужно вручную
-        # перепечатать на странице Яндекса, а пропорциональный системный
-        # шрифт визуально путает похожие символы (0/O, 1/l, b/6) и слипает
-        # соседние буквы без интервала. setLetterSpacing не меняет сам текст
-        # (Qt.TextSelectableByMouse copy/paste по-прежнему даёт исходный код).
-        code_font.setLetterSpacing(QFont.PercentageSpacing, 160)
-        self.code_label.setFont(code_font)
-        self.code_label.setStyleSheet("color: #007AFF; background: #F0F6FF; "
-                                       "border-radius: 8px; padding: 10px;")
+        # Моноширинный шрифт без QFont.setLetterSpacing — на части систем
+        # процентный интервал у Qt не просто раздвигает буквы, а искажает
+        # форму самих глифов (видели на скриншоте: код читался как ряд
+        # незнакомых значков). Разделяем буквы настоящими пробелами прямо
+        # в тексте — работает предсказуемо независимо от рендеринга шрифта.
+        # self._user_code хранит код БЕЗ пробелов — именно его копирует
+        # кнопка «Скопировать»; в code_label — только для показа глазами.
+        self.code_label.setFont(QFont("Menlo", 20, QFont.DemiBold))
+        self.code_label.setStyleSheet("color: #007AFF; background: transparent;")
         self.code_label.setAlignment(Qt.AlignCenter)
         self.code_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.code_label.setVisible(False)
-        layout.addWidget(self.code_label)
+        # Явная высота с большим запасом — на части систем QLabel считает
+        # sizeHint по метрикам ЗАПРОШЕННОГО шрифта, а рисует уже ПОДСТАВЛЕННЫМ
+        # (если Menlo резолвится не один в один), из-за чего расчётная высота
+        # оказывается меньше реально отрисованной, и буквы обрезаются сверху
+        # или снизу. Задаём высоту руками вместо того, чтобы доверять
+        # автоматическому sizeHint — 46px с большим запасом для 20pt шрифта.
+        self.code_label.setMinimumHeight(46)
+        self._user_code = ""
+        code_row.addWidget(self.code_label)
+        code_row.addStretch()
+
+        self.copy_code_btn = QPushButton()
+        self.copy_code_btn.setFixedSize(30, 30)
+        self.copy_code_btn.setToolTip("Скопировать код")
+        self.copy_code_btn.setCursor(Qt.PointingHandCursor)
+        self.copy_code_btn.setStyleSheet("""
+            QPushButton {
+                background: #FFFFFF;
+                border: 1px solid #D6E6FF;
+                border-radius: 8px;
+            }
+            QPushButton:hover { background: #E5F1FF; }
+        """)
+        self.copy_code_btn.setIcon(make_icon("copy", "#007AFF", 14))
+        self.copy_code_btn.setIconSize(QSize(14, 14))
+        self.copy_code_btn.clicked.connect(self._copy_code)
+        code_row.addWidget(self.copy_code_btn)
+
+        code_card.setVisible(False)
+        self.code_card = code_card
+        layout.addWidget(code_card)
 
         self.hint_label = QLabel("")
         self.hint_label.setFont(QFont(".AppleSystemUIFont", 10))
@@ -165,16 +213,29 @@ class YandexOAuthDialog(QDialog):
 
     def _on_code_ready(self, user_code: str, verification_url: str):
         self._verification_url = verification_url
+        self._user_code = user_code
         self.status_label.setText("Введите этот код на странице Яндекса:")
-        self.code_label.setText(user_code)
-        self.code_label.setVisible(True)
+        self.code_label.setText(" ".join(user_code))
+        self.code_card.setVisible(True)
         self.hint_label.setText(
-            f"Открылся браузер ({verification_url}). Если страница не открылась "
-            f"сама — нажмите «Открыть браузер ещё раз»."
+            "Открылся браузер для подтверждения. Если страница не открылась "
+            "сама — нажмите «Открыть браузер ещё раз»."
         )
         self.hint_label.setVisible(True)
         self.reopen_browser_btn.setVisible(True)
         self._open_browser()
+
+    def _copy_code(self):
+        # Копируем self._user_code (без пробелов-разделителей), а не
+        # текст из code_label — иначе в буфер попадёт "n d u i q d h o"
+        # вместо "nduiqdho", и вставка на странице Яндекса не сработает.
+        if not self._user_code:
+            return
+        QApplication.clipboard().setText(self._user_code)
+        # Кратко подтверждаем копирование сменой иконки — без этого клик по
+        # маленькой кнопке без текста не даёт никакой обратной связи.
+        self.copy_code_btn.setIcon(make_icon("check", "#34C759", 14))
+        QTimer.singleShot(1200, lambda: self.copy_code_btn.setIcon(make_icon("copy", "#007AFF", 14)))
 
     def _open_browser(self):
         if not self._verification_url:
@@ -191,11 +252,11 @@ class YandexOAuthDialog(QDialog):
 
     def _on_failed(self, message: str):
         self.status_label.setText(f"Не удалось войти: {message}")
-        self.code_label.setVisible(False)
+        self.code_card.setVisible(False)
 
     def _on_expired(self):
         self.status_label.setText("Код истёк — попробуйте ещё раз.")
-        self.code_label.setVisible(False)
+        self.code_card.setVisible(False)
 
     def done(self, r):
         # Cancel/крестик — останавливаем поллинг, иначе фоновый поток

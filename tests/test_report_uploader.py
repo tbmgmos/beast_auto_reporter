@@ -8,6 +8,7 @@ from docx.oxml.ns import qn
 
 from src.report_filename import parse_report_filename
 from src.report_uploader import (
+    alias_key_for_path,
     compare_two_versions,
     compare_with_previous,
     diff_markers,
@@ -17,17 +18,21 @@ from src.report_uploader import (
     find_previous_report,
     find_series_folder,
     forget_series_alias,
+    group_versions_by_category,
     list_report_versions,
     list_series_aliases,
     load_series_aliases,
     load_uploaded_reports,
+    load_variant_overrides,
     NPR_ALIASES_FILE,
     remember_series_alias,
     remember_uploaded_report,
     resolve_manual_pick_target,
     resolve_target_path,
+    set_variant_override,
     SeriesFolderNotFoundError,
     upload_folder,
+    upload_paths_recursive,
 )
 from src.yandex_disk_client import YandexDiskError
 
@@ -111,12 +116,17 @@ def test_resolve_target_path_reuses_existing_series_folder(tmp_path):
 
 
 def test_list_report_versions_returns_all_matching_oldest_to_newest():
+    # META (см. выше) — вариант "MnE": в выдачу должны попасть только
+    # другие MnE-версии того же эпизода, не обычный (без variant) отчёт
+    # рядом в той же папке — это отдельная, не связанная цепочка версий.
     client = MagicMock()
     client.list_folder.return_value = [
         {"name": "отчет_Nepreklonniy_vozrast_s01_e02_MnE_2025_06_23_rus", "type": "dir",
          "path": "disk:/e02/v2"},
-        {"name": "отчет_Nepreklonniy_vozrast_s01_e02_2025_05_19_rus", "type": "dir",
+        {"name": "отчет_Nepreklonniy_vozrast_s01_e02_MnE_2025_05_19_rus", "type": "dir",
          "path": "disk:/e02/v1"},
+        {"name": "отчет_Nepreklonniy_vozrast_s01_e02_2025_05_20_rus", "type": "dir",
+         "path": "disk:/e02/no_variant"},
         {"name": "отчет_Nepreklonniy_vozrast_s01_e01_2025_01_01_rus", "type": "dir",
          "path": "disk:/e02/other_episode"},
         {"name": "readme.txt", "type": "file", "path": "disk:/e02/readme.txt"},
@@ -127,6 +137,21 @@ def test_list_report_versions_returns_all_matching_oldest_to_newest():
     assert [v["path"] for v in versions] == ["disk:/e02/v1", "disk:/e02/v2"]
     assert versions[0]["date"].isoformat() == "2025-05-19"
     assert versions[1]["date"].isoformat() == "2025-06-23"
+
+
+def test_list_report_versions_excludes_mismatched_variant():
+    meta_no_variant = parse_report_filename("отчет_Nepreklonniy_vozrast_s01_e02_2025_07_14_rus.docx")
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "отчет_Nepreklonniy_vozrast_s01_e02_2025_05_19_rus", "type": "dir",
+         "path": "disk:/e02/plain"},
+        {"name": "отчет_Nepreklonniy_vozrast_s01_e02_MnE_2025_05_19_rus", "type": "dir",
+         "path": "disk:/e02/mne"},
+    ]
+
+    versions = list_report_versions(client, "отчеты/Nepreklonniy_vozrast/e02", meta_no_variant)
+
+    assert [v["path"] for v in versions] == ["disk:/e02/plain"]
 
 
 def test_list_report_versions_without_meta_returns_all_report_entries():
@@ -142,6 +167,97 @@ def test_list_report_versions_without_meta_returns_all_report_entries():
     versions = list_report_versions(client, "отчеты/Show/e48")
 
     assert [v["path"] for v in versions] == ["disk:/e48/old", "disk:/e48/new"]
+
+
+def test_list_report_versions_sorts_by_embedded_date_not_upload_time_for_nonstandard_names():
+    # Реальный регресс: отчёт с нестандартным именем (не совпадает с
+    # REPORT_PATTERN — другой формат сезона/эпизода), написанный ДАВНО, но
+    # ЗАГРУЖЕННЫЙ на Диск только что — раньше сортировался по времени
+    # загрузки (modified) и выглядел "самым новым", хотя по дате в имени
+    # он самый старый.
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "отчет_MAZHOR_DUBAI_2025_03_01_rus", "type": "dir",
+         "path": "disk:/e08/old_content_recent_upload", "modified": "2026-07-22T10:00:00+00:00"},
+        {"name": "отчет_MAZHOR_DUBAI_2025_11_28_rus", "type": "dir",
+         "path": "disk:/e08/new_content_older_upload", "modified": "2026-01-01T10:00:00+00:00"},
+    ]
+
+    versions = list_report_versions(client, "отчеты/Show/e08")
+
+    # По дате В ИМЕНИ (2025-03-01 vs 2025-11-28) "old_content_recent_upload"
+    # старше, несмотря на то что modified (дата загрузки) у него куда позже.
+    assert [v["path"] for v in versions] == ["disk:/e08/old_content_recent_upload", "disk:/e08/new_content_older_upload"]
+
+
+def test_group_versions_by_category_separates_variants():
+    versions = [
+        {"path": "/a/main", "label": "отчет_Show_s01_e05_2026_04_05_rus"},
+        {"path": "/a/me", "label": "отчет_Show_s01_e05_ME_2026_04_05_rus"},
+        {"path": "/a/ad", "label": "отчет_Show_s01_e05_AD_2026_04_05_rus"},
+    ]
+
+    groups = group_versions_by_category(versions)
+
+    assert [v["path"] for v in groups["main"]] == ["/a/main"]
+    assert [v["path"] for v in groups["me"]] == ["/a/me"]
+    assert [v["path"] for v in groups["ad"]] == ["/a/ad"]
+
+
+def test_group_versions_by_category_finds_marker_inside_compound_tag():
+    # Реальный регресс: "cens_AD" не разбирается REPORT_PATTERN целиком,
+    # но лёгкое сканирование всё равно находит "AD" по границам слова —
+    # эта версия не должна смешиваться с группой "main".
+    versions = [
+        {"path": "/a/ad1", "label": "отчет_besprintsipnye_v_pitere_s01_e08_cens_AD_2025_06_11_rus"},
+        {"path": "/a/mne1", "label": "отчет_Nepreklonniy_vozrast_s01_e08_MnE_2025_08_11_rus"},
+    ]
+
+    groups = group_versions_by_category(versions)
+
+    assert [v["path"] for v in groups["ad"]] == ["/a/ad1"]
+    assert [v["path"] for v in groups["me"]] == ["/a/mne1"]
+
+
+def test_group_versions_by_category_respects_manual_override():
+    versions = [{"path": "/a/weird", "label": "weird_folder_name"}]
+
+    groups = group_versions_by_category(versions, overrides={"/a/weird": "AD"})
+
+    assert [v["path"] for v in groups["ad"]] == ["/a/weird"]
+
+
+def test_group_versions_by_category_dcp_override():
+    versions = [{"path": "/a/dcp", "label": "DCP +18"}]
+
+    groups = group_versions_by_category(versions, overrides={"/a/dcp": "DCP"})
+
+    assert [v["path"] for v in groups["dcp"]] == ["/a/dcp"]
+
+
+def test_group_versions_by_category_merges_cens_uncens_into_main():
+    # CENS/UNCENS — признак цензурирования основного отчёта, а не отдельный
+    # параллельный тип поставки (см. categorize_variant) — версии должны
+    # сравниваться в ОДНОЙ цепочке с обычными "main"-версиями, а не
+    # теряться в отдельной несвязанной группе.
+    versions = [
+        {"path": "/a/v1", "label": "отчет_Show_s01_e08_2025_06_10_rus"},
+        {"path": "/a/v2", "label": "отчет_Show_s01_e08_2025_06_11_rus"},
+        {"path": "/a/v3_uncens", "label": "отчет_Show_s01_e08_uncens_2025_06_23_rus"},
+    ]
+
+    groups = group_versions_by_category(versions)
+
+    assert [v["path"] for v in groups["main"]] == ["/a/v1", "/a/v2", "/a/v3_uncens"]
+    assert "other" not in groups
+
+
+def test_group_versions_by_category_override_main_beats_auto_detected_marker():
+    versions = [{"path": "/a/x", "label": "отчет_Show_s01_e05_ME_2026_04_05_rus"}]
+
+    groups = group_versions_by_category(versions, overrides={"/a/x": "MAIN"})
+
+    assert [v["path"] for v in groups["main"]] == ["/a/x"]
 
 
 def test_find_previous_report_picks_latest_same_episode():
@@ -287,6 +403,59 @@ def test_compare_with_previous_returns_none_when_no_docx_in_folder(tmp_path):
     client.download_bytes.assert_not_called()
 
 
+def test_compare_with_previous_finds_docx_without_report_prefix_in_legacy_folder(tmp_path):
+    # Реальный регресс: папки, загруженные ДО введения соглашения об имени
+    # с префиксом «отчет_», могут содержать .docx без этого префикса и в
+    # имени самого файла (не только папки) — например
+    # «one_last_sin_s01_e01_Master_uncens_2025_05_14.docx». Раньше это
+    # давало «Не удалось прочитать выбранную версию отчёта» на совершенно
+    # читаемом файле.
+    new_docx_path = tmp_path / "отчет_Show.docx"
+    Document().save(new_docx_path)
+
+    old_bytes_io = io.BytesIO()
+    Document().save(old_bytes_io)
+
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "one_last_sin_s01_e01_Master_uncens_2025_05_14.docx", "type": "file",
+         "path": "disk:/e01/legacy/one_last_sin_s01_e01_Master_uncens_2025_05_14.docx"},
+        {"name": "~$one_last_sin_s01_e01_Master_uncens_2025_05_14.docx", "type": "file",
+         "path": "disk:/e01/legacy/~$one_last_sin_s01_e01_Master_uncens_2025_05_14.docx"},
+    ]
+    client.download_bytes.return_value = old_bytes_io.getvalue()
+
+    comparison = compare_with_previous(client, "disk:/e01/legacy", new_docx_path)
+
+    client.download_bytes.assert_called_once_with(
+        "disk:/e01/legacy/one_last_sin_s01_e01_Master_uncens_2025_05_14.docx"
+    )
+    assert comparison is not None
+
+
+def test_compare_with_previous_prefers_report_prefixed_docx_over_legacy_one(tmp_path):
+    # Если в папке ЕСТЬ файл с современным префиксом — он приоритетнее
+    # любого другого .docx рядом, даже если тот встретился в списке раньше.
+    new_docx_path = tmp_path / "отчет_Show.docx"
+    Document().save(new_docx_path)
+
+    old_bytes_io = io.BytesIO()
+    Document().save(old_bytes_io)
+
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "unrelated_notes.docx", "type": "file", "path": "disk:/e01/v1/unrelated_notes.docx"},
+        {"name": "отчет_Show_s01_e01_2025_06_23_rus.docx", "type": "file",
+         "path": "disk:/e01/v1/отчет_Show_s01_e01_2025_06_23_rus.docx"},
+    ]
+    client.download_bytes.return_value = old_bytes_io.getvalue()
+
+    comparison = compare_with_previous(client, "disk:/e01/v1", new_docx_path)
+
+    client.download_bytes.assert_called_once_with("disk:/e01/v1/отчет_Show_s01_e01_2025_06_23_rus.docx")
+    assert comparison is not None
+
+
 def _set_cell_bg(cell, fill: str):
     """Имитирует заливку ячейки, как это делает ExactReportGenerator._format_cell."""
     tc_pr = cell._tc.get_or_add_tcPr()
@@ -364,6 +533,140 @@ def test_compare_with_previous_counts_markers(tmp_path):
     assert comparison.parameter_changes == []
 
 
+def test_compare_with_previous_finds_marker_table_regardless_of_header_case(tmp_path):
+    # Реальный регресс: проверка заголовка таблицы маркеров была
+    # регистрозависимой ("Timecode In" ровно так), в отличие от всех
+    # остальных сравнений заголовков в этой же функции (БЛОКЕР/КОММЕНТАРИИ/
+    # TIMECODE OUT/DESCRIPTION — все через .upper()). Если в конкретном
+    # .docx заголовок сохранился в другом регистре (например, из другого
+    # источника, не сгенерированного этим приложением), таблица маркеров
+    # молча не находилась вообще — сравнение показывало 0 маркеров для
+    # обеих версий сразу, даже если реально они были.
+    def _make_docx_with_uppercase_headers(path, marker_count):
+        doc = Document()
+        table = doc.add_table(rows=1 + marker_count, cols=3)
+        headers = ["TIMECODE IN", "timecode out", "Description"]  # разный регистр
+        for col, header in enumerate(headers):
+            table.rows[0].cells[col].text = header
+        for row_idx in range(marker_count):
+            table.rows[1 + row_idx].cells[0].text = f"00:00:{row_idx:02d}"
+        doc.save(path)
+
+    new_docx_path = tmp_path / "отчет_Show.docx"
+    _make_docx_with_uppercase_headers(new_docx_path, marker_count=3)
+
+    old_bytes_io = io.BytesIO()
+    _make_docx_with_uppercase_headers(old_bytes_io, marker_count=2)
+
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "отчет_Show_s01_e02_2025_06_23_rus.docx", "type": "file",
+         "path": "disk:/e02/v1/отчет_Show_s01_e02_2025_06_23_rus.docx"},
+    ]
+    client.download_bytes.return_value = old_bytes_io.getvalue()
+
+    comparison = compare_with_previous(client, "disk:/e02/v1", new_docx_path)
+
+    assert (comparison.marker_count_old, comparison.marker_count_new) == (2, 3)
+
+
+def test_compare_with_previous_finds_marker_table_with_merged_title_row(tmp_path):
+    # Реальный регресс (старый формат отчёта): первая строка таблицы —
+    # объединённый титул «MARKER LIST» на всю ширину, а сами заголовки
+    # колонок («Timecode In»/…) — во ВТОРОЙ строке. Раньше парсер смотрел
+    # только row[0], видел «MARKER LIST», не находил «Timecode In» и молча
+    # пропускал всю таблицу — сравнение показывало 0 маркеров для обеих
+    # версий, хотя реально их были десятки.
+    def _make_docx_with_merged_title_row(path, marker_count):
+        doc = Document()
+        table = doc.add_table(rows=2 + marker_count, cols=4)
+        # row 0 — объединённый титул (эмулируем: одинаковый текст во всех ячейках)
+        for cell in table.rows[0].cells:
+            cell.text = "MARKER LIST"
+        # row 1 — настоящие заголовки колонок
+        for col, header in enumerate(["Timecode In", "Timecode Out", "Description", "БЛОКЕР"]):
+            table.rows[1].cells[col].text = header
+        # row 2+ — данные
+        for row_idx in range(marker_count):
+            table.rows[2 + row_idx].cells[0].text = f"00:00:{row_idx:02d}"
+            table.rows[2 + row_idx].cells[3].text = "*" if row_idx == 0 else ""
+        doc.save(path)
+
+    new_docx_path = tmp_path / "отчет_Show.docx"
+    _make_docx_with_merged_title_row(new_docx_path, marker_count=3)
+
+    old_bytes_io = io.BytesIO()
+    _make_docx_with_merged_title_row(old_bytes_io, marker_count=2)
+
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "отчет_Show_s01_e02_2025_06_23_rus.docx", "type": "file",
+         "path": "disk:/e02/v1/отчет_Show_s01_e02_2025_06_23_rus.docx"},
+    ]
+    client.download_bytes.return_value = old_bytes_io.getvalue()
+
+    comparison = compare_with_previous(client, "disk:/e02/v1", new_docx_path)
+
+    assert (comparison.marker_count_old, comparison.marker_count_new) == (2, 3)
+    assert (comparison.blocker_count_old, comparison.blocker_count_new) == (1, 1)
+
+
+def _nest_table_in_textbox(doc, table):
+    # Переносит уже созданную таблицу внутрь текстового блока (w:txbxContent),
+    # эмулируя структуру .docx, экспортированного из Pages: таблица перестаёт
+    # быть прямым потомком тела документа, поэтому штатный doc.tables её не
+    # видит (возвращает пустой список), а _iter_all_tables — находит.
+    from src.report_uploader import _summarize_document  # noqa: F401 (гарантия импорта модуля)
+    tbl_el = table._tbl
+    body = doc.element.body
+    body.remove(tbl_el)
+    wrapper = OxmlElement("w:p")
+    txbx = OxmlElement("w:txbxContent")
+    txbx.append(tbl_el)
+    wrapper.append(txbx)
+    body.append(wrapper)
+
+
+def test_summarize_document_reads_tables_nested_in_textboxes():
+    # Реальный регресс: у старых отчётов (экспорт из Pages) и таблица
+    # маркеров, и таблица параметров лежат ВНУТРИ текстовых блоков, а не на
+    # верхнем уровне тела документа. python-docx doc.tables возвращает
+    # только таблицы верхнего уровня и пропускает вложенные — сравнение
+    # видело 0 маркеров и «без изменений» по параметрам, хотя данные есть.
+    from src.report_uploader import _summarize_document
+
+    doc = Document()
+    # Таблица маркеров: титул «MARKER LIST», строка заголовков, 2 маркера +
+    # пустая строка-заглушка (как в реальных отчётах Pages).
+    marker_table = doc.add_table(rows=5, cols=4)
+    for cell in marker_table.rows[0].cells:
+        cell.text = "MARKER LIST"
+    for col, header in enumerate(["Timecode In", "Timecode Out", "Description", "БЛОКЕР"]):
+        marker_table.rows[1].cells[col].text = header
+    marker_table.rows[2].cells[0].text = "01:00:00:00"
+    marker_table.rows[2].cells[3].text = "*"
+    marker_table.rows[3].cells[0].text = "01:00:05:00"
+    # rows[4] оставляем полностью пустой — не должна считаться маркером
+    _nest_table_in_textbox(doc, marker_table)
+
+    # Таблица параметров — тоже вложенная.
+    param_table = doc.add_table(rows=2, cols=4)
+    for col, header in enumerate(["ДОРОЖКА", "ХРОНОМЕТРАЖ", "LOUDNESS", "TRUE PEAK"]):
+        param_table.rows[0].cells[col].text = header
+    for col, val in enumerate(["2.0 cens", "0:35:00", "-23.0 LUFS", "-2.0 dBTP"]):
+        param_table.rows[1].cells[col].text = val
+    _nest_table_in_textbox(doc, param_table)
+
+    assert doc.tables == []  # штатный API вложенные таблицы не видит (репро бага)
+
+    summary = _summarize_document(doc)
+
+    assert summary.marker_count == 2  # 2 реальных маркера, пустая строка не в счёт
+    assert summary.blocker_count == 1
+    assert list(summary.parameters.keys()) == ["2.0 cens"]
+    assert summary.parameters["2.0 cens"]["LOUDNESS"] == "-23.0 LUFS"
+
+
 def test_compare_with_previous_reports_parameter_changes(tmp_path):
     new_docx_path = tmp_path / "отчет_Show.docx"
     _make_report_docx(
@@ -392,6 +695,65 @@ def test_compare_with_previous_reports_parameter_changes(tmp_path):
     loudness_change = next(c for c in change["changes"] if c["field"] == "Громкость")
     assert loudness_change["old"] == "-23.0 LUFS"
     assert loudness_change["new"] == "-24.5 LUFS"
+
+
+def test_summarize_document_reads_true_peak_from_merged_chronometrage_me_table():
+    # Реальная структура M&E-таблицы (см. exact_report_generator._generate_me_table):
+    # заголовок «ХРОНОМЕТРАЖ» объединён на 3 сетевые колонки (python-docx
+    # повторяет текст объединённой ячейки для каждой из них), а колонки
+    # LOUDNESS/LRA в этом шаблоне вообще отсутствуют — только TRUE PEAK.
+    # Раньше было подозрение, что из-за повтора заголовка парсер теряет
+    # True Peak — на реальном файле (отчет_ulichnaya_eda..._ME_...) и в
+    # этом тесте показано, что значение считывается корректно и не теряется.
+    from src.report_uploader import _summarize_document
+
+    doc = Document()
+    table = doc.add_table(rows=2, cols=7)
+    header_row = table.rows[0]
+    header_row.cells[0].text = "ДОРОЖКА"
+    header_row.cells[1].text = "НАЗВАНИЕ ФАЙЛОВ"
+    chrono = header_row.cells[2]
+    chrono.merge(header_row.cells[3])
+    chrono.merge(header_row.cells[4])
+    chrono.text = "ХРОНОМЕТРАЖ"
+    header_row.cells[5].text = "TRUE PEAK"
+    header_row.cells[6].text = "ФОРМАТ ФАЙЛА"
+
+    data_row = table.rows[1]
+    data_row.cells[0].text = "2.0 ME"
+    data_row.cells[1].text = "ulichnaya_eda_s01_e05_20_ME_2026_04_05_v1"
+    data_row.cells[2].text = "0:37:44.916"
+    data_row.cells[5].text = "-0.5 dBTP"
+    data_row.cells[6].text = "PCM 48kHz 24 bit L R"
+
+    summary = _summarize_document(doc)
+
+    assert summary.parameters["2.0 ME"]["TRUE PEAK"] == "-0.5 dBTP"
+    assert "LOUDNESS" not in summary.parameters["2.0 ME"]
+    assert "LRA" not in summary.parameters["2.0 ME"]
+
+
+def test_summarize_document_reads_sample_peak_for_dcp_reports():
+    # DCP-отчёты используют колонку «SAMPLE PEAK» вместо «TRUE PEAK» (см.
+    # exact_report_generator.py:189, is_dcp_report) — должна читаться
+    # так же надёжно, под своим собственным ключом.
+    from src.report_uploader import _summarize_document
+
+    doc = Document()
+    table = doc.add_table(rows=2, cols=7)
+    headers = ["ДОРОЖКА", "НАЗВАНИЕ ФАЙЛОВ", "ХРОНОМЕТРАЖ", "LOUDNESS", "SAMPLE PEAK", "LRA", "ФОРМАТ ФАЙЛА"]
+    for col, header in enumerate(headers):
+        table.rows[0].cells[col].text = header
+    data_row = table.rows[1]
+    data_row.cells[0].text = "5.1 cens"
+    data_row.cells[3].text = "-14.7 LUFS"
+    data_row.cells[4].text = "+0.60 dBFS"
+    data_row.cells[5].text = "20.8 LU"
+
+    summary = _summarize_document(doc)
+
+    assert summary.parameters["5.1 cens"]["SAMPLE PEAK"] == "+0.60 dBFS"
+    assert summary.parameters["5.1 cens"]["LOUDNESS"] == "-14.7 LUFS"
 
 
 def test_compare_two_versions_compares_two_remote_reports_without_local_draft(tmp_path):
@@ -501,6 +863,7 @@ def test_upload_folder_uploads_all_files_non_recursively(tmp_path):
     subdir.mkdir()
     (subdir / "nested.txt").write_text("nested")
     (tmp_path / ".DS_Store").write_text("junk")  # дотфайлы не загружаются
+    (tmp_path / "~$отчет_Show.docx").write_text("lock")  # lock-файл Word не загружается
 
     client = MagicMock()
 
@@ -512,6 +875,53 @@ def test_upload_folder_uploads_all_files_non_recursively(tmp_path):
         "отчеты/Show/e48/Show.pdf",
         "отчеты/Show/e48/отчет_Show.docx",
     ]
+
+
+def test_upload_paths_recursive_handles_mixed_files_and_nested_folder(tmp_path):
+    # Как Finder отдаёт drop: обычный файл рядом с папкой (в т.ч. с
+    # вложенной подпапкой) одним списком local_paths.
+    single_file = tmp_path / "extra.wav"
+    single_file.write_text("audio")
+
+    folder = tmp_path / "Project"
+    folder.mkdir()
+    (folder / "top.txt").write_text("top")
+    (folder / ".DS_Store").write_text("junk")  # дотфайлы не загружаются
+    nested = folder / "sub"
+    nested.mkdir()
+    (nested / "deep.txt").write_text("deep")
+
+    client = MagicMock()
+    progress_calls = []
+
+    upload_paths_recursive(
+        client, [single_file, folder], "отчеты/Show/e01",
+        progress_callback=lambda done, total: progress_calls.append((done, total)),
+    )
+
+    uploaded_remote_paths = sorted(call.args[1] for call in client.upload.call_args_list)
+    assert uploaded_remote_paths == [
+        "отчеты/Show/e01/Project/sub/deep.txt",
+        "отчеты/Show/e01/Project/top.txt",
+        "отчеты/Show/e01/extra.wav",
+    ]
+    # Родительская папка "Project" должна была быть создана до подпапки "sub"
+    mkdir_paths = [call.args[0] for call in client.mkdir.call_args_list]
+    assert mkdir_paths.index("отчеты/Show/e01/Project") < mkdir_paths.index("отчеты/Show/e01/Project/sub")
+    assert progress_calls[-1] == (3, 3)
+
+
+def test_upload_paths_recursive_does_not_recreate_same_folder_twice(tmp_path):
+    folder = tmp_path / "Project"
+    folder.mkdir()
+    (folder / "a.txt").write_text("a")
+    (folder / "b.txt").write_text("b")
+
+    client = MagicMock()
+    upload_paths_recursive(client, [folder], "отчеты/Show/e01")
+
+    mkdir_calls = [call.args[0] for call in client.mkdir.call_args_list]
+    assert mkdir_calls.count("отчеты/Show/e01/Project") == 1
 
 
 def test_diff_markers_detects_added_removed_and_changed():
@@ -591,6 +1001,48 @@ def test_compare_with_previous_builds_marker_diff(tmp_path):
     assert change["changes"] == [
         {"field": "Описание", "old": "провал громкости", "new": "провал громкости стал глубже"},
     ]
+
+
+def test_compare_with_previous_prefers_csv_persistent_id_for_moved_marker(tmp_path):
+    marker_id = "M1"
+    new_docx_path = tmp_path / "отчет_Show.docx"
+    _make_report_docx(
+        new_docx_path,
+        markers=[{"tc_in": "01:00:10", "description": "Щелчок исправлен"}],
+        track_params={},
+    )
+    (tmp_path / "Show.csv").write_text(
+        f"ID\tTimecode In\tTimecode Out\tDescription\n"
+        f"{marker_id}\t01:00:10:00\t\tЩелчок исправлен\n",
+        encoding="utf-8",
+    )
+
+    old_bytes_io = io.BytesIO()
+    _make_report_docx(
+        old_bytes_io,
+        markers=[{"tc_in": "01:00:01", "description": "Щелчок"}],
+        track_params={},
+    )
+    old_csv = (
+        f"ID\tTimecode In\tTimecode Out\tDescription\n"
+        f"{marker_id}\t01:00:01:00\t\tЩелчок\n"
+    ).encode("utf-8")
+
+    client = MagicMock()
+    client.list_folder.return_value = [
+        {"name": "отчет_Show.docx", "type": "file", "path": "disk:/v1/отчет_Show.docx"},
+        {"name": "Show.csv", "type": "file", "path": "disk:/v1/Show.csv"},
+    ]
+    client.download_bytes.side_effect = lambda path: old_csv if path.endswith(".csv") else old_bytes_io.getvalue()
+
+    comparison = compare_with_previous(client, "disk:/v1", new_docx_path)
+
+    assert comparison.marker_diff["added"] == []
+    assert comparison.marker_diff["removed"] == []
+    assert comparison.marker_diff["changed"][0]["id"] == marker_id
+    assert {change["field"] for change in comparison.marker_diff["changed"][0]["changes"]} == {
+        "Timecode In", "Описание",
+    }
 
 
 def test_forget_uploaded_reports_removes_only_listed_entries(tmp_path):
@@ -929,6 +1381,25 @@ def test_list_series_aliases_empty(tmp_path):
     assert list_series_aliases(tmp_path / "missing.json") == []
 
 
+def test_alias_key_for_path_finds_matching_key(tmp_path):
+    path = tmp_path / "aliases.json"
+    remember_series_alias("Zebra_show", "/отчеты/Zebra", path)
+    remember_series_alias("Alpha_show", "/отчеты/Alpha", path)
+
+    assert alias_key_for_path("/отчеты/Alpha", path) == "alpha_show"
+
+
+def test_alias_key_for_path_returns_none_when_unmatched(tmp_path):
+    path = tmp_path / "aliases.json"
+    remember_series_alias("Zebra_show", "/отчеты/Zebra", path)
+
+    assert alias_key_for_path("/отчеты/Unrelated", path) is None
+
+
+def test_alias_key_for_path_missing_file_returns_none(tmp_path):
+    assert alias_key_for_path("/отчеты/Alpha", tmp_path / "missing.json") is None
+
+
 def test_remember_uploaded_report_round_trip(tmp_path):
     path = tmp_path / "uploads.json"
     remember_uploaded_report("/local/a", "/отчеты/Show/e01/report_a", path)
@@ -981,3 +1452,36 @@ def test_load_uploaded_reports_corrupt_file_returns_empty(tmp_path):
     path.write_text("not valid json{{{", encoding="utf-8")
 
     assert load_uploaded_reports(path) == []
+
+
+def test_set_variant_override_round_trip(tmp_path):
+    path = tmp_path / "variant_overrides.json"
+    set_variant_override("/отчеты/Show/weird_folder", "ME", path)
+
+    assert load_variant_overrides(path) == {"/отчеты/Show/weird_folder": "ME"}
+
+
+def test_set_variant_override_none_clears_existing_entry(tmp_path):
+    path = tmp_path / "variant_overrides.json"
+    set_variant_override("/отчеты/Show/weird_folder", "AD", path)
+    set_variant_override("/отчеты/Show/weird_folder", None, path)
+
+    assert load_variant_overrides(path) == {}
+
+
+def test_set_variant_override_none_on_missing_entry_is_a_noop(tmp_path):
+    path = tmp_path / "variant_overrides.json"
+    set_variant_override("/отчеты/Show/weird_folder", None, path)
+
+    assert load_variant_overrides(path) == {}
+
+
+def test_load_variant_overrides_missing_file_returns_empty(tmp_path):
+    assert load_variant_overrides(tmp_path / "missing.json") == {}
+
+
+def test_load_variant_overrides_corrupt_file_returns_empty(tmp_path):
+    path = tmp_path / "variant_overrides.json"
+    path.write_text("not valid json{{{", encoding="utf-8")
+
+    assert load_variant_overrides(path) == {}
