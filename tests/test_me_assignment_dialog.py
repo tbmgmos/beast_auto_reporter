@@ -36,6 +36,25 @@ class _PdfExtractor:
         }
 
 
+@pytest.mark.parametrize(
+    ("file_name", "expected"),
+    [
+        ("episode_L.wav", "l"),
+        ("episode_R.wav", "r"),
+        ("episode_C.wav", "c"),
+        ("episode_LFE.wav", "lfe"),
+        ("episode_Ls.wav", "ls"),
+        ("episode_Rs.wav", "rs"),
+    ],
+)
+def test_dcp_split_detection_accepts_unknown_mono_metadata(app_module, file_name, expected):
+    assert app_module.detect_dcp_split_channel(file_name, channels=0) == expected
+
+
+def test_dcp_split_detection_rejects_confirmed_multichannel_file(app_module):
+    assert app_module.detect_dcp_split_channel("episode_L.wav", channels=6) is None
+
+
 def test_only_generic_wav_requires_manual_assignment_not_pdf(app_module, monkeypatch, tmp_path):
     audio = tmp_path / "A003_017_0825XZ.wav"
     pdf = tmp_path / "meter_export_001.pdf"

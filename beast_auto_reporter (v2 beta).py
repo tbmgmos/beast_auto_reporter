@@ -27,7 +27,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.1.4"
 
 
 def load_app_config() -> dict:
@@ -360,8 +360,16 @@ _DCP_SPLIT_CHANNEL_PATTERNS = (
 )
 
 
-def detect_dcp_split_channel(name: str):
-    """Return the canonical 5.1 split channel encoded in a mono filename."""
+def detect_dcp_split_channel(name: str, channels: int = None):
+    """Return the canonical DCP split channel encoded in a mono filename.
+
+    Some WAV readers return ``0`` when channel metadata is unavailable.  A
+    recognizable L/R/C/LFE/Ls/Rs filename must still reach the DCP table in
+    that case, while a confirmed stereo/multichannel file must never be
+    treated as a split channel.
+    """
+    if channels is not None and channels > 1:
+        return None
     stem = Path(name).stem
     for channel, pattern in _DCP_SPLIT_CHANNEL_PATTERNS:
         if pattern.search(stem):
@@ -1991,8 +1999,8 @@ def analyze_files_for_preview(files_data: dict, report_type: str = "standard") -
         suffix = "uc" if cens_state == "uc" else "c"
         channel_final = channel_meta or channel_hint
         dcp_split_channel = (
-            detect_dcp_split_channel(filename)
-            if report_type == "dcp" and channels == 1
+            detect_dcp_split_channel(filename, channels)
+            if report_type == "dcp"
             else None
         )
         if dcp_split_channel:
@@ -3326,8 +3334,8 @@ class ProcessingThread(QThread):
                 is_51 = channels >= 6  # 6 каналов = 5.1
                 is_20 = channels == 2  # 2 канала = 2.0
                 dcp_split_channel = (
-                    detect_dcp_split_channel(filename)
-                    if self.report_type == "dcp" and channels == 1
+                    detect_dcp_split_channel(filename, channels)
+                    if self.report_type == "dcp"
                     else None
                 )
                 

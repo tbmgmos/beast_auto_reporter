@@ -20,6 +20,18 @@ def test_imports_plain_utf8_csv(tmp_path):
     assert issues[0].blocker is True
 
 
+def test_import_prefers_beast_id_over_nuendo_numeric_id(tmp_path):
+    content = (
+        "ID,Beast ID,Timecode In,Timecode Out,Description\n"
+        "7,M42,01:00:05:00,01:00:07:00,щелчок\n"
+    )
+
+    issues = _write_and_import(tmp_path, content)
+
+    assert len(issues) == 1
+    assert issues[0].marker_id == "M42"
+
+
 def test_imports_csv_with_bom(tmp_path):
     # Excel при экспорте «CSV UTF-8» ставит BOM в начало файла. С обычным
     # utf-8 BOM прилипал к первому заголовку ('﻿Timecode In'), колонка

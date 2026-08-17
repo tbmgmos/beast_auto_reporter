@@ -163,6 +163,23 @@ def test_browser_dialog_switches_finder_view_modes(app):
     dlg.close()
 
 
+def test_browser_dialog_coalesces_icon_refreshes(app):
+    dlg = _make_browser_dialog(app)
+    dlg._set_view_mode("icons", persist=False)
+
+    with patch.object(dlg, "_refresh_icon_view") as refresh:
+        for index in range(25):
+            dlg.tree.addTopLevelItem(QTreeWidgetItem([f"folder-{index}"]))
+
+        # Все rowsInserted до следующего прохода event loop дают одну задачу.
+        assert dlg._icon_refresh_pending is True
+        assert refresh.call_count == 0
+        app.processEvents()
+        assert refresh.call_count == 1
+
+    dlg.close()
+
+
 def test_browser_column_view_keeps_each_selected_folder_as_a_column(app):
     dlg = _make_browser_dialog(app)
     dlg._folder_listing_cache["/отчеты"] = [

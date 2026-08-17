@@ -195,13 +195,13 @@ class ExactReportGenerator:
             if is_dcp_report:
                 rows_data = [
                     ("51 DCP", "audio_51_c", "pdf_51_c"),
-                    ("Video ref", "video", None),
                     ("Left", "audio_dcp_split_l", None),
                     ("Right", "audio_dcp_split_r", None),
                     ("Center", "audio_dcp_split_c", None),
                     ("LFE", "audio_dcp_split_lfe", None),
                     ("Left surround", "audio_dcp_split_ls", None),
                     ("Right surround", "audio_dcp_split_rs", None),
+                    ("VIDEO", "video", None),
                 ]
             else:
                 rows_data = [
@@ -1458,18 +1458,18 @@ class ExactReportGenerator:
             
             if is_me_report:
                 headers = [
-                    "ID", "Timecode In", "Timecode Out", "Description",
+                    "Timecode In", "Timecode Out", "Description", "ID",
                     "2.0 ME", "5.1 ME", "2.0 DX", "5.1 DX", "2.0 OPT", "5.1 OPT",
                     "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"
                 ]
-                widths_cm = [1.50, 2.45, 2.40, 8.31, 1.27, 1.32, 1.27, 1.32, 1.27, 1.32, 1.98, 3.55, 3.48, 6.57]
+                widths_cm = [2.45, 2.40, 8.31, 1.50, 1.27, 1.32, 1.27, 1.32, 1.27, 1.32, 1.98, 3.55, 3.48, 6.57]
             else:
                 headers = [
-                    "ID", "Timecode In", "Timecode Out", "Description",
+                    "Timecode In", "Timecode Out", "Description", "ID",
                     "2.0 C", "2.0 UC", "5.1 C", "5.1 UC",
                     "БЛОКЕР", "ТРЕБУЕТ ИСПРАВЛЕНИЯ", "ТРЕБУЕТ КОММЕНТАРИЯ", "КОММЕНТАРИИ"
                 ]
-                widths_cm = [1.50, 2.45, 2.40, 10.43, 1.27, 1.56, 1.32, 1.50, 1.98, 3.55, 3.48, 6.57]
+                widths_cm = [2.45, 2.40, 10.43, 1.50, 1.27, 1.56, 1.32, 1.50, 1.98, 3.55, 3.48, 6.57]
 
             # Создаем таблицу БЕЗ заголовочной строки с повторяющимся текстом
             table = doc.add_table(rows=1 + len(issues), cols=len(headers))
@@ -1518,10 +1518,10 @@ class ExactReportGenerator:
                 has_incorrect_type = self._check_incorrect_audio_type(description_clean)
                 
                 # Заполняем данные
-                row.cells[0].text = issue.marker_id or ''
-                row.cells[1].text = issue.timecode_in
-                row.cells[2].text = issue.timecode_out
-                row.cells[3].text = description_clean
+                row.cells[0].text = issue.timecode_in
+                row.cells[1].text = issue.timecode_out
+                row.cells[2].text = description_clean
+                row.cells[3].text = issue.marker_id or ''
                 if is_me_report:
                     track_values = dict(getattr(issue, 'me_tracks', {}) or {})
                     track_values.setdefault('me_20', bool(issue.audio_20_c))
@@ -1553,14 +1553,14 @@ class ExactReportGenerator:
                 
                 # Форматируем каждую ячейку
                 for col_idx, cell in enumerate(row.cells):
-                    # Определяем цвет текста для Description (col 3)
-                    text_color = "FF0000" if col_idx == 3 and has_incorrect_type else None
+                    # Определяем цвет текста для Description (col 2)
+                    text_color = "FF0000" if col_idx == 2 and has_incorrect_type else None
                     
                     # Фон только для некоторых столбцов (как в референсе)
                     if is_me_report:
-                        shaded_columns = [0, 1, 2] + list(range(4, 14))
+                        shaded_columns = [0, 1, 3] + list(range(4, 14))
                     else:
-                        shaded_columns = [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11]
+                        shaded_columns = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
                     if col_idx in shaded_columns:
                         self._format_cell(
@@ -1568,7 +1568,7 @@ class ExactReportGenerator:
                             font_size=10, text_color=text_color,
                         )
                     else:
-                        # Description (col 3) без фона (если не НОВЫЙ МАРКЕР)
+                        # Description (col 2) без фона (если не НОВЫЙ МАРКЕР)
                         desc_bg = bg_color if is_new_marker else "auto"
                         self._format_cell(
                             cell, bg=desc_bg, font_name="Helvetica Neue",

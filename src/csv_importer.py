@@ -236,7 +236,7 @@ class CSVImporter:
                     comment_required=self._get_column_value(row, 'ТРЕБУЕТ КОММЕНТАРИЯ', 'COMMENT REQUIRED') == '*',
                     me_tracks=me_tracks,
                     comments=comments,
-                    marker_id=self._get_column_value(row, 'ID'),
+                    marker_id=self._get_column_value(row, 'Beast ID', 'Beast Marker ID', 'ID'),
                 )
 
                 issues.append(issue)

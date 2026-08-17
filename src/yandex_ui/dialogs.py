@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from PyQt5.QtCore import QEvent, QMimeData, QRect, QSettings, QSize, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QMimeData, QRect, QSettings, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QDrag, QFont, QIcon
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QComboBox, QCompleter, QDialog, QDialogButtonBox,
@@ -2045,10 +2045,17 @@ class YandexDiskBrowserDialog(QDialog):
         self.browser_stack.addWidget(self.icon_view)
         self.browser_stack.addWidget(self.column_view)
         layout.addWidget(self.browser_stack, 1)
-        self.tree.model().rowsInserted.connect(self._refresh_icon_view)
-        self.tree.model().rowsRemoved.connect(self._refresh_icon_view)
-        self.tree.model().dataChanged.connect(self._refresh_icon_view)
-        self.tree.model().layoutChanged.connect(self._refresh_icon_view)
+        # Листинг большой папки приходит одним ответом, но элементы затем
+        # добавляются в QTreeWidget по одному. Прямое подключение каждого
+        # rowsInserted к _refresh_icon_view пересобирало уже набранный список
+        # целиком N раз (O(N²)) и заметно подвешивало приложение при открытии
+        # браузера Диска. Объединяем серию model-сигналов в один проход цикла
+        # событий; пока режим иконок скрыт, обновлять его вообще не требуется.
+        self._icon_refresh_pending = False
+        self.tree.model().rowsInserted.connect(self._schedule_icon_view_refresh)
+        self.tree.model().rowsRemoved.connect(self._schedule_icon_view_refresh)
+        self.tree.model().dataChanged.connect(self._schedule_icon_view_refresh)
+        self.tree.model().layoutChanged.connect(self._schedule_icon_view_refresh)
 
         self.edit_sync_status_label = QLabel("")
         self.edit_sync_status_label.setVisible(False)
@@ -2371,6 +2378,24 @@ class YandexDiskBrowserDialog(QDialog):
             QSettings("Beast Auto Reporter", "Beast Auto Reporter").setValue(
                 "disk_browser/view_mode", mode
             )
+
+    def _schedule_icon_view_refresh(self, *_args) -> None:
+        if (
+            not hasattr(self, "browser_stack")
+            or self.browser_stack.currentWidget() is not self.icon_view
+            or self._icon_refresh_pending
+        ):
+            return
+        self._icon_refresh_pending = True
+        QTimer.singleShot(0, self._flush_scheduled_icon_view_refresh)
+
+    def _flush_scheduled_icon_view_refresh(self) -> None:
+        self._icon_refresh_pending = False
+        if (
+            not self._closing
+            and self.browser_stack.currentWidget() is self.icon_view
+        ):
+            self._refresh_icon_view()
 
     def _refresh_icon_view(self, *_args) -> None:
         if not hasattr(self, "icon_view") or getattr(self, "_refreshing_icon_view", False):

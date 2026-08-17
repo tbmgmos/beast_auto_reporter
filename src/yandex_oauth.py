@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 import urllib.parse
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+import certifi
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +73,11 @@ def _post_form(url: str, params: dict) -> dict:
     request = Request(url, data=data, method="POST",
                        headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
-        with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+        # Homebrew Python on ARM points its default trust store at a path
+        # under /opt/homebrew. That path does not exist on a Mac receiving
+        # only the packaged .app, so use the CA bundle shipped with the app.
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urlopen(request, timeout=REQUEST_TIMEOUT, context=ssl_context) as response:
             return json.loads(response.read())
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""

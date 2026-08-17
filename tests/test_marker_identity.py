@@ -31,11 +31,30 @@ def test_enrich_places_beast_id_immediately_before_timecode_and_keeps_nuendo_id(
     assigned = enrich_marker_csv(source, destination, registry_path=registry)
     rows = _read_rows(destination)
 
-    assert rows[0] == ["Track name", "Nuendo ID", "ID", "Timecode In", "Timecode Out", "Description"]
+    assert rows[0] == ["Track name", "ID", "Beast ID", "Timecode In", "Timecode Out", "Description"]
     assert rows[1][1] == "2"
     assert rows[1][2] == assigned[0]
     assert assigned == ["M1"]
     assert BEAST_ID_RE.fullmatch(assigned[0])
+
+
+def test_enrich_migrates_legacy_beast_and_nuendo_id_headers(tmp_path):
+    source = tmp_path / "legacy.csv"
+    destination = tmp_path / "out.csv"
+    _write_csv(
+        source,
+        ["Track name", "Nuendo ID", "ID", "Timecode In", "Description"],
+        [["Markers", "7", "M42", "01:00:01:00", "Щелчок"]],
+    )
+
+    assigned = enrich_marker_csv(
+        source, destination, registry_path=tmp_path / "registry.json"
+    )
+    rows = _read_rows(destination)
+
+    assert rows[0] == ["Track name", "ID", "Beast ID", "Timecode In", "Description"]
+    assert rows[1][1:3] == ["7", "M42"]
+    assert assigned == ["M42"]
 
 
 def test_enrich_can_remove_dcp_audio_columns_from_export_only(tmp_path):
@@ -55,7 +74,7 @@ def test_enrich_can_remove_dcp_audio_columns_from_export_only(tmp_path):
     )
 
     rows = _read_rows(destination)
-    assert rows[0] == ["ID", "Timecode In", "Description", "БЛОКЕР"]
+    assert rows[0] == ["Beast ID", "Timecode In", "Description", "БЛОКЕР"]
     assert rows[1][1:] == ["01:00:01:00", "Щелчок", "*"]
 
 
@@ -77,7 +96,7 @@ def test_next_version_keeps_carried_ids_and_assigns_new_marker_next_id(tmp_path)
 
     # The second review carries Beast IDs. Nuendo reuses native ID 2 for a
     # new marker, but the empty Beast ID makes it unambiguously new.
-    second_headers = ["Nuendo ID", "ID", "Timecode In", "Timecode Out", "Description", "БЛОКЕР"]
+    second_headers = ["ID", "Beast ID", "Timecode In", "Timecode Out", "Description", "БЛОКЕР"]
     _write_csv(new_source, second_headers, [
         ["1", old_ids[0], "01:00:01:10", "", "Полностью изменённое описание", ""],
         ["2", "", "01:00:20:00", "", "Новый маркер", ""],
@@ -143,7 +162,7 @@ def test_existing_beast_ids_are_preserved_and_read_back(tmp_path):
     markers = read_marker_csv(destination)
 
     assert assigned == [marker_id]
-    assert _read_rows(destination)[0] == ["ID", "Timecode In", "Description"]
+    assert _read_rows(destination)[0] == ["Beast ID", "Timecode In", "Description"]
     assert markers[0]["id"] == marker_id
 
 

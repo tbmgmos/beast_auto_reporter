@@ -36,6 +36,7 @@ echo "Проверка зависимостей..."
 python3 -c "import PyQt5" 2>/dev/null || { echo "❌ PyQt5 не установлен"; exit 1; }
 python3 -c "import fitz" 2>/dev/null || { echo "❌ PyMuPDF не установлен. Установите: pip install PyMuPDF"; exit 1; }
 python3 -c "import PyInstaller" 2>/dev/null || { echo "❌ PyInstaller не установлен. Установите: pip install pyinstaller"; exit 1; }
+python3 -c "import certifi; assert certifi.where()" 2>/dev/null || { echo "❌ certifi не установлен — вход в Яндекс OAuth не будет работать в standalone .app"; exit 1; }
 
 if ! command -v ffmpeg &>/dev/null; then
     echo "⚠️  ffmpeg не найден в PATH — приложение не сможет анализировать аудио"
@@ -86,6 +87,13 @@ if [ -d "$APP_PATH" ]; then
         echo "  ffmpeg:      включён в сборку ✅"
     else
         echo "  ffmpeg:      НЕ найден в сборке ⚠️"
+    fi
+
+    if find "$APP_PATH" -path "*/certifi/cacert.pem" -type f 2>/dev/null | head -1 | grep -q .; then
+        echo "  OAuth CA:    включён в сборку ✅"
+    else
+        echo "  OAuth CA:    НЕ найден — вход в Яндекс работать не будет ❌"
+        exit 1
     fi
 
     echo ""

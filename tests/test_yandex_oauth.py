@@ -1,3 +1,5 @@
+import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 
@@ -6,6 +8,7 @@ import pytest
 from src.yandex_oauth import (
     YandexOAuthError, is_configured, poll_for_token, request_device_code,
 )
+from src.yandex_ui.oauth_dialog import YandexOAuthDialog
 
 
 class DummyResponse:
@@ -53,7 +56,7 @@ def test_request_device_code_sends_scope_and_client_id(monkeypatch):
     monkeypatch.setattr("src.yandex_oauth.CLIENT_ID", "my-client-id")
     captured = {}
 
-    def fake_urlopen(request, timeout=None):
+    def fake_urlopen(request, timeout=None, context=None):
         captured["data"] = request.data.decode("utf-8")
         return DummyResponse(b'{"device_code": "d", "user_code": "u", '
                               b'"verification_url": "https://ya.ru/device", '
@@ -64,6 +67,23 @@ def test_request_device_code_sends_scope_and_client_id(monkeypatch):
 
     assert "client_id=my-client-id" in captured["data"]
     assert "cloud_api" in captured["data"]
+
+
+def test_oauth_uses_bundled_ca_store():
+    payload = (
+        b'{"device_code": "dc123", "user_code": "AB12CD", '
+        b'"verification_url": "https://ya.ru/device", "interval": 5, "expires_in": 600}'
+    )
+    context = object()
+
+    with patch("src.yandex_oauth.certifi.where", return_value="/bundle/cacert.pem") as where, \
+         patch("src.yandex_oauth.ssl.create_default_context", return_value=context) as create_context, \
+         patch("src.yandex_oauth.urlopen", return_value=DummyResponse(payload)) as open_url:
+        request_device_code()
+
+    where.assert_called_once_with()
+    create_context.assert_called_once_with(cafile="/bundle/cacert.pem")
+    assert open_url.call_args.kwargs["context"] is context
 
 
 def test_request_device_code_raises_on_missing_device_code():
@@ -136,3 +156,22 @@ def test_post_form_raises_on_network_error():
     with patch("src.yandex_oauth.urlopen", side_effect=URLError("no network")):
         with pytest.raises(YandexOAuthError):
             request_device_code()
+
+
+def test_open_browser_does_not_block_gui_thread():
+    release = threading.Event()
+    entered = threading.Event()
+
+    def slow_open(_url):
+        entered.set()
+        release.wait(timeout=2)
+
+    dialog = SimpleNamespace(
+        _verification_url="https://oauth.yandex.test/device",
+        _open_browser_url=slow_open,
+    )
+    YandexOAuthDialog._open_browser(dialog)
+    assert entered.wait(timeout=1)
+    # Метод уже вернулся, хотя работа фонового потока ещё заблокирована.
+    assert not release.is_set()
+    release.set()

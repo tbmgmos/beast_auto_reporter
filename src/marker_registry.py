@@ -22,11 +22,11 @@ from src.marker_identity import (
     MARKER_IDENTITIES_FILE,
     _fingerprint,
     _global_time_shift,
-    _header_index,
     _id_number,
     _marker_record,
     _match_score,
     _read_csv,
+    _stable_id_index,
     marker_list_key,
 )
 from src.report_filename import parse_report_filename
@@ -48,7 +48,7 @@ def _source_digest(path: str | Path) -> str:
 
 def _read_all_marker_rows(path: Path) -> list[dict]:
     headers, rows, _delimiter = _read_csv(path)
-    id_index = _header_index(headers, "id")
+    id_index = _stable_id_index(headers, rows)
     return [
         _marker_record(headers, row, index, row[id_index].strip() if id_index is not None else "")
         for index, row in enumerate(rows)

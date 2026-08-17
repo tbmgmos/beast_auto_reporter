@@ -56,7 +56,7 @@ def test_collect_pdf_paths_falls_back_to_legacy_two_paths():
     ]
 
 
-def test_marker_list_places_id_before_timecode_in_for_main_report():
+def test_marker_list_places_id_after_description_for_main_report():
     doc = Document()
 
     ExactReportGenerator()._add_marker_list_exact(
@@ -65,16 +65,16 @@ def test_marker_list_places_id_before_timecode_in_for_main_report():
 
     table = doc.tables[-1]
     assert [cell.text for cell in table.rows[0].cells[:4]] == [
-        "ID",
         "Timecode In",
         "Timecode Out",
         "Description",
+        "ID",
     ]
     assert [cell.text for cell in table.rows[1].cells[:4]] == [
-        "M1",
         "01:02:03:04",
         "01:02:05:06",
         "Test marker",
+        "M1",
     ]
     assert len(table.columns) == 12
     assert table.rows[1].cells[-1].text == "Test comment"
@@ -99,7 +99,7 @@ def test_marker_list_uses_ten_point_font_like_conclusion():
     assert font_sizes == {10.0}
 
 
-def test_marker_list_places_id_before_timecode_in_for_me_report():
+def test_marker_list_places_id_after_description_for_me_report():
     doc = Document()
 
     ExactReportGenerator()._add_marker_list_exact(
@@ -108,16 +108,16 @@ def test_marker_list_places_id_before_timecode_in_for_me_report():
 
     table = doc.tables[-1]
     assert [cell.text for cell in table.rows[0].cells[:4]] == [
-        "ID",
         "Timecode In",
         "Timecode Out",
         "Description",
+        "ID",
     ]
     assert [cell.text for cell in table.rows[1].cells[:4]] == [
-        "M1",
         "01:02:03:04",
         "01:02:05:06",
         "Test marker",
+        "M1",
     ]
     assert [cell.text for cell in table.rows[0].cells[4:10]] == [
         "2.0 ME", "5.1 ME", "2.0 DX", "5.1 DX", "2.0 OPT", "5.1 OPT",
@@ -205,11 +205,13 @@ def test_dcp_technical_table_adds_mix_and_split_channels():
 
     table = doc.tables[-1]
     assert [row.cells[0].text for row in table.rows[3:11]] == [
-        "51 DCP", "Video ref", "Left", "Right", "Center", "LFE",
-        "Left surround", "Right surround",
+        "51 DCP", "Left", "Right", "Center", "LFE",
+        "Left surround", "Right surround", "VIDEO",
     ]
     assert table.rows[3].cells[4].text == "-0.10 dBFS"
-    for row in table.rows[5:11]:
+    for row in table.rows[4:10]:
         assert row.cells[2].text == "0:01:00.000"
         assert row.cells[4].text == "-0.25 dBFS"
         assert row.cells[6].text == "PCM 48kHz 24 bit split"
+    assert table.rows[10].cells[1].text == "episode"
+    assert table.rows[10].cells[6].text == "MOV 25fps"

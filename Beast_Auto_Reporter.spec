@@ -55,6 +55,7 @@ datas = [
 # Словари орфографии (RU морфология pymorphy3 + EN частотный словарь)
 datas += collect_data_files('pymorphy3_dicts_ru')
 datas += collect_data_files('spellchecker')
+datas += collect_data_files('certifi')
 
 # ── Hidden imports ────────────────────────────────────────────────────────
 hidden_imports = [
@@ -71,7 +72,7 @@ hidden_imports = [
     'pandas', 'matplotlib', 'matplotlib.backends.backend_agg', 'seaborn',
     'PIL', 'PIL.Image',
     # Misc
-    'yaml', 'csv', 'json', 'tqdm',
+    'yaml', 'csv', 'json', 'tqdm', 'certifi',
     # Python 3.13 compat — removed stdlib modules re-packaged as PyPI packages
     'audioop_lts', 'standard_aifc', 'standard_sunau', 'standard_chunk',
     # Spellcheck (маркер-листы, RU/EN)
@@ -142,8 +143,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleName': 'Beast Auto Reporter',
         'CFBundleDisplayName': 'Beast Auto Reporter',
-        'CFBundleShortVersionString': '2.1.3',
-        'CFBundleVersion': '2.1.3',
+        'CFBundleShortVersionString': '2.1.4',
+        'CFBundleVersion': '2.1.4',
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.0',
         'NSRequiresAquaSystemAppearance': False,

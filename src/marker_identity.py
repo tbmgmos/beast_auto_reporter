@@ -31,6 +31,7 @@ _VERSION_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+_BEAST_ID_HEADERS = ("beast id", "beast marker id")
 _TC_IN_HEADERS = ("timecode in", "tc in", "tc_in")
 _TC_OUT_HEADERS = ("timecode out", "tc out", "tc_out")
 _DESCRIPTION_HEADERS = ("description", "описание проблемы", "описание")
@@ -109,6 +110,24 @@ def _value(headers: list[str], row: list[str], *names: str) -> str:
     return row[index].strip() if index is not None and index < len(row) else ""
 
 
+def _stable_id_index(headers: list[str], rows: list[list[str]]) -> int | None:
+    """Return the Beast ID column, including the legacy ``ID`` layout.
+
+    Nuendo owns the plain ``ID`` column and requires numeric marker IDs. Older
+    Beast reports used that same header for values such as ``M12``; recognize
+    those files by their contents so they can be migrated on the next export.
+    """
+    explicit_index = _header_index(headers, *_BEAST_ID_HEADERS)
+    if explicit_index is not None:
+        return explicit_index
+
+    legacy_index = _header_index(headers, "id")
+    if legacy_index is None:
+        return None
+    values = (row[legacy_index].strip() for row in rows if legacy_index < len(row))
+    return legacy_index if any(BEAST_ID_RE.fullmatch(value) for value in values) else None
+
+
 def _normalized_text(value: str) -> str:
     return " ".join(re.sub(r"[^a-zа-яё0-9]+", " ", value.casefold(), flags=re.IGNORECASE).split())
 
@@ -128,7 +147,9 @@ def _marker_record(headers: list[str], row: list[str], index: int, marker_id: st
         if _header_index(headers, name) is not None
     }
     stable_id = marker_id if BEAST_ID_RE.fullmatch(marker_id) else ""
-    native_id = _value(headers, row, "nuendo id", "marker id")
+    native_id = _value(headers, row, "id", "nuendo id", "marker id")
+    if BEAST_ID_RE.fullmatch(native_id):
+        native_id = ""
     if not native_id and marker_id and not stable_id:
         native_id = marker_id
     return {
@@ -358,19 +379,23 @@ def enrich_marker_csv(
     if tc_index is None:
         raise ValueError("CSV marker list has no Timecode In column")
 
-    id_index = _header_index(headers, "id")
+    id_index = _stable_id_index(headers, rows)
     existing_values = [row[id_index].strip() for row in rows] if id_index is not None else []
-    has_beast_ids = any(BEAST_ID_RE.fullmatch(value) for value in existing_values)
-    has_foreign_ids = any(value and not BEAST_ID_RE.fullmatch(value) for value in existing_values)
-    if has_beast_ids and has_foreign_ids:
-        raise ValueError("ID column mixes Beast marker IDs with foreign/Nuendo IDs")
-    if id_index is not None and has_foreign_ids:
-        headers[id_index] = _unique_header(headers, "Nuendo ID")
-        id_index = None
+    if any(value and not BEAST_ID_RE.fullmatch(value) for value in existing_values):
+        raise ValueError("Beast ID column contains an invalid marker ID")
+
+    # Migrate files made by older Beast versions. Nuendo's native ID keeps its
+    # standard name and numeric values; our persistent identity is a separate
+    # user attribute that Nuendo can safely round-trip.
+    if id_index is not None and headers[id_index].strip().casefold() == "id":
+        headers[id_index] = _unique_header(headers, "Beast ID")
+    legacy_nuendo_index = _header_index(headers, "nuendo id")
+    if legacy_nuendo_index is not None and _header_index(headers, "id") is None:
+        headers[legacy_nuendo_index] = "ID"
 
     if id_index is None:
         tc_index = _header_index(headers, *_TC_IN_HEADERS)
-        headers.insert(tc_index, "ID")
+        headers.insert(tc_index, "Beast ID")
         for row in rows:
             row.insert(tc_index, "")
         id_index = tc_index
@@ -447,7 +472,7 @@ def enrich_marker_csv(
 
 def read_marker_csv(path: str | Path) -> list[dict]:
     headers, rows, _delimiter_name = _read_csv(Path(path))
-    id_index = _header_index(headers, "id")
+    id_index = _stable_id_index(headers, rows)
     return [
         _marker_record(headers, row, index, row[id_index].strip() if id_index is not None else "")
         for index, row in enumerate(rows)
@@ -468,7 +493,7 @@ def read_marker_csv_bytes(data: bytes) -> list[dict]:
     headers = [header.strip() for header in parsed[0]]
     width = len(headers)
     rows = [(row + [""] * width)[:width] for row in parsed[1:]]
-    id_index = _header_index(headers, "id")
+    id_index = _stable_id_index(headers, rows)
     return [
         _marker_record(headers, row, index, row[id_index].strip() if id_index is not None else "")
         for index, row in enumerate(rows)

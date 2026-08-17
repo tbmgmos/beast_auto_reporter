@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import webbrowser
 
 from PyQt5.QtCore import QSize, QThread, Qt, QTimer, pyqtSignal
@@ -240,8 +241,25 @@ class YandexOAuthDialog(QDialog):
     def _open_browser(self):
         if not self._verification_url:
             return
+        # На macOS webbrowser.open() может ждать холодного запуска выбранного
+        # браузера (особенно Яндекс.Браузера) достаточно долго, чтобы Qt не
+        # обрабатывал перерисовку и окно выглядело зависшим. Само открытие URL
+        # не взаимодействует с Qt, поэтому безопасно выносим его из GUI-потока.
+        url = self._verification_url
         try:
-            webbrowser.open(self._verification_url)
+            threading.Thread(
+                target=self._open_browser_url,
+                args=(url,),
+                name="yandex-oauth-browser",
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            logger.warning(f"Не удалось открыть браузер для входа в Яндекс: {exc}")
+
+    @staticmethod
+    def _open_browser_url(url: str) -> None:
+        try:
+            webbrowser.open(url)
         except Exception as exc:
             logger.warning(f"Не удалось открыть браузер для входа в Яндекс: {exc}")
 
